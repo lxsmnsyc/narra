@@ -1,7 +1,7 @@
 ---
 id: parameter-defaults-design
 title: "Design: parameter defaults"
-status: todo
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 108841
 owns:
   - roadmaps/selfhost/nodes/parameter-defaults/**
   - roadmaps/selfhost/nodes/parameter-defaults-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D115, diag E1210-E1219]
+reserves: [decision D115]
 provides: []
 depends_on: []
 ---

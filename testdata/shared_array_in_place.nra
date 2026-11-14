@@ -1,0 +1,40 @@
+// Shared.update moves the array out of its slot while the callback runs, so
+// the Shared holds no reference then, and a thread that marked the array
+// shared does not make the update copy it behind the program's back: the
+// debug copy check reports no copy that no copy(...) explains.
+import * as Thread from "std/thread"
+import * as Shared from "std/shared"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+function append(numbers: Array<int>, number: int): Array<int> uses alloc {
+  let grown = copy(numbers)
+  Arrays.push(mutable grown, number)
+  return grown
+}
+
+function fill(numbers: Shared.Shared<Array<int>>, low: int) {
+  for (let number = low; number < low + 1000; number++) {
+    Shared.update(numbers, (current) => append(current, number))
+  }
+}
+
+function measure(numbers: Shared.Shared<Array<int>>): int {
+  return Shared.read(numbers, (current) => Arrays.length(current))
+}
+
+export function run(_args: Array<string>): int {
+  const empty: Array<int> = []
+  const numbers = Shared.create(empty)
+  fill(numbers, 0)
+  const seen = Thread.scope((scope) => {
+    Thread.start(scope, () => fill(numbers, 1000))
+    Thread.start(scope, () => fill(numbers, 2000))
+    return measure(numbers)
+  })
+  print(`length ${Int.toString(measure(numbers))}`)
+  if (seen >= 1000 && seen <= 3000) {
+    print("seen during the threads: between 1000 and 3000")
+  }
+  return 0
+}

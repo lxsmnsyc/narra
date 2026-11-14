@@ -1314,6 +1314,7 @@ function isHeapObject(checker: Checker, type: Type): bool {
       | Type.TStringBuilder
       | Type.TGenerator(_, _, _, _, _)
       | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
       | Type.TParam(_) => true
     _ => false
   }
@@ -1351,6 +1352,7 @@ function searchHeapValue(
       | Type.TStringBuilder
       | Type.TGenerator(_, _, _, _, _)
       | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
       | Type.TParam(_)
       | Type.TDynamic(_) => {
       return true
@@ -1501,7 +1503,7 @@ function canWriteInStatement(statement: Stmt): bool {
       canWriteInOptionalExpression(condition) ||
       canWriteInOptionalStatement(step) ||
       canWriteInBlock(body)
-    Stmt.ForStmt(_, _, _, _, iterable, body, reference) =>
+    Stmt.ForStmt(_, _, _, _, iterable, body, reference, _) =>
       reference is Some(_) || canWriteInExpression(iterable) || canWriteInBlock(body)
     Stmt.YieldStmt(_, value, _, _) => canWriteInExpression(value)
     Stmt.BreakStmt(_, _) => false
@@ -1775,7 +1777,7 @@ function walkStatement(checker: Checker, mutable walk: WriteWalk, statement: Stm
       }
       walkLoop(checker, mutable walk, condition, step, body, -1, [])
     }
-    Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference) => {
+    Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference, _) => {
       const shares = evaluateIterable(checker, mutable walk, iterable)
       const local = findDeclared(checker, nodeId)
       const outerHeld = copy(walk.loopHeld)
@@ -2443,7 +2445,11 @@ function evaluateCall(
   }
   // A task handle holds every argument of its task while it is live.
   const awaited = call is Expr.AwaitExpr(_, _, _)
-  if (!awaited && getNodeType(checker, nodeId) is Some(Type.TAsync(_))) {
+  // So does a stream, for its body (D110 item 6).
+  const handleResult =
+    getNodeType(checker, nodeId) is Some(Type.TAsync(_)) ||
+      getNodeType(checker, nodeId) is Some(Type.TAsyncGenerator(_, _, _, _))
+  if (!awaited && handleResult) {
     let held: Array<ValueShare> = []
     for (const shares of Arrays.values(argumentShares)) {
       appendShares(mutable held, shares)

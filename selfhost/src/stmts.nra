@@ -3,6 +3,7 @@
 // findAssignedLocal in exprs.nra). Locals go into the current body's
 // tables through declareLocal; block scopes are pushScope and
 // popScope (check.nra).
+import { isVector, checkVectorOperator } from "narrac/simdtypes"
 import {
   proveResult,
   rejectDelegatedResults,
@@ -54,6 +55,13 @@ import {
 import { checkIs, checkMatch, checkDestructure } from "narrac/match"
 import { markCapturedWrite } from "narrac/funcvalues"
 import { recordBuildCondition } from "narrac/buildconditions"
+import { checkStreamYield } from "narrac/asyncgenerators"
+import {
+  checkForAwaitPlace,
+  findStreamElement,
+  reportPlainStreamLoop,
+  reportMutableStreamLoop,
+} from "narrac/forawait"
 import {
   getPatternId,
   collectPatternLocals,
@@ -79,6 +87,7 @@ import * as Str from "std/string"
 import * as Int from "std/int"
 import * as Ranges from "std/range"
 import * as AsyncCheck from "narrac/asynccheck"
+import { isVoidInstance } from "narrac/asyncvoid"
 
 export function checkBlock<W: Walker>(
   mutable checker: Checker,
@@ -112,7 +121,7 @@ export function checkStatement<W: Walker>(
       }
     }
     Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
-    Stmt.ForStmt(_, _, _, _, iterable, _, _) => endExpressionNarrowing(mutable checker, iterable)
+    Stmt.ForStmt(_, _, _, _, iterable, _, _, _) => endExpressionNarrowing(mutable checker, iterable)
     Stmt.YieldStmt(_, value, _, _) => endExpressionNarrowing(mutable checker, value)
     _ => {}
   }
@@ -177,7 +186,7 @@ export function checkStatement<W: Walker>(
       step,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference) => checkFor(
+    Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference, awaitPos) => checkFor(
       mutable checker,
       walker,
       nodeId,
@@ -187,6 +196,7 @@ export function checkStatement<W: Walker>(
       iterable,
       body,
       reference,
+      awaitPos,
     )
     Stmt.BreakStmt(pos, label) => checkLoopExit(
       mutable checker,
@@ -512,6 +522,10 @@ function checkCompoundOperand<W: Walker>(
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
   const arithmetic = substring(operator, 0, Str.length(operator) - 1)
+  if (isVector(targetType) || isVector(valueType)) {
+    checkVectorOperator(mutable checker, pos, arithmetic, targetType, valueType)
+    return
+  }
   const valueText = typeString(checker, valueType)
   if (valueType == targetType) {
     if (arithmetic == "/" || arithmetic == "%") {
@@ -637,7 +651,11 @@ function checkReturn<W: Walker>(
     const errorsBefore = Arrays.length(checker.errors)
     const found = checkExpression(mutable checker, walker, expression, Some(want))
     if (want == Type.TVoid) {
-      reportError(mutable checker, pos, "E0231", "this function returns nothing")
+      // An instance whose T is void (a thread function that returns nothing)
+      // may return a value of that T: there is none to give.
+      if (!(found == Type.TVoid && isVoidInstance(checker))) {
+        reportError(mutable checker, pos, "E0231", "this function returns nothing")
+      }
       return
     }
     expectType(mutable checker, getExpressionPos(expression), Some(want), found)
@@ -1007,10 +1025,18 @@ function checkFor<W: Walker>(
   iterable: Expr,
   body: Block,
   reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
 ) uses alloc {
+  if (awaitPos is Some(written)) {
+    checkForAwaitPlace(mutable checker, written)
+  }
   if (reference is Some(marker)) {
-    checkReferenceFor(mutable checker, walker, nodeId, pos, label, name, iterable, body, marker)
-    return
+    if (awaitPos is Some(_)) {
+      reportMutableStreamLoop(mutable checker, pos)
+    } else {
+      checkReferenceFor(mutable checker, walker, nodeId, pos, label, name, iterable, body, marker)
+      return
+    }
   }
   // The iterable is a call of a std function that gives the element type.
   const outerLine = checker.forSourceLine
@@ -1035,7 +1061,9 @@ function checkFor<W: Walker>(
   }
   endLoopNarrowing(mutable checker, None, body)
   let element = Type.TVoid
-  if (builtin == "Range.upTo" || builtin == "Range.between") {
+  if (awaitPos is Some(_)) {
+    element = findStreamElement(mutable checker, iterable, iterableType)
+  } else if (builtin == "Range.upTo" || builtin == "Range.between") {
     element = Type.TInt
   } else if (builtin == "Array.values" || builtin == "Array.entries") {
     element = Type.TVoid
@@ -1068,6 +1096,8 @@ function checkFor<W: Walker>(
     element = arrayElement
   } else if (iterableType is Type.TFixedArray(fixedElement, _)) {
     element = fixedElement
+  } else if (iterableType is Type.TAsyncGenerator(_, _, _, _)) {
+    reportPlainStreamLoop(mutable checker, iterable, iterableType)
   } else {
     const text = typeString(checker, iterableType)
     reportError(
@@ -1137,7 +1167,7 @@ function checkReferenceFor<W: Walker>(
       "`for (mutable ...)` is not allowed in an async body; change the elements through an index, as in `items[index].field = value`",
     )
   }
-  if (checker.generator && checker.bodies[checker.body].arrowDepth == 0) {
+  if (checker.generator && !checker.asyncBody && checker.bodies[checker.body].arrowDepth == 0) {
     reportError(
       mutable checker,
       pos,
@@ -1322,6 +1352,10 @@ function checkYield<W: Walker>(
     return
   }
   const result = checker.resultType
+  if (result is Type.TAsyncGenerator(streamElement, _, _, _)) {
+    checkStreamYield(mutable checker, walker, pos, value, delegate, binding, streamElement)
+    return
+  }
   if (result is Type.TGenerator(element, _, _, _, input)) {
     if (binding is Some(_) && input == Type.TVoid) {
       const functionName = checker.functions[checker.functionIndex].name
@@ -1830,7 +1864,7 @@ function collectStatementUses(
         collectStatementUses(checker, mutable collector, stepStatement, chain, arms)
       }
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
       collector.blocks++
       const stepNode = -collector.blocks
       collectUses(
@@ -2038,7 +2072,7 @@ function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses a
         collectUses(checker, mutable collector, loopCondition, noCalls, noArms)
       }
     }
-    Stmt.ForStmt(_, _, _, _, iterable, _, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, _, _, _) => {
       isFixable = false
       collectUses(checker, mutable collector, iterable, noCalls, noArms)
     }

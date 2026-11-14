@@ -1,0 +1,869 @@
+// The compile-time thread rules of D111: the automatic trait Sendable (item 1),
+// the checks where a value crosses a thread, the form of thread functions, the
+// Scope escape rule and `==` on thread handles (item 4). The hot files carry
+// only the calls; every rule is here. Checks other than Sendable run only when
+// a module imports std/thread, std/parallel, std/channel, std/shared,
+// std/atomic or std/internal/thread (Checker.threads).
+import { Pos, Expr, Arg, FuncDecl } from "narrac/ast"
+import { quoteGo } from "narrac/parser"
+import { Type, Field, typeKey } from "narrac/types"
+import {
+  Checker,
+  reportError,
+  typeString,
+  getNodeType,
+  getRef,
+  Ref,
+  getExpressionId,
+  getExpressionPos,
+} from "narrac/check"
+import * as Arrays from "std/array"
+
+// A handle type of the std thread modules: shared by identity, never Sendable
+// unless it says so, and never compared with `==`.
+struct HandleType {
+  module: string
+  name: string
+  sendable: bool
+  // What to compare instead, for the E1195 message.
+  compare: string
+}
+
+// Sender, Receiver, Shared and Atomic are Sendable when their type argument is.
+const THREAD_HANDLES: Array<HandleType> = [
+  HandleType {
+    module: "std/thread",
+    name: "Thread",
+    sendable: false,
+    compare: "compare the values it gives",
+  },
+  HandleType {
+    module: "std/thread",
+    name: "Scope",
+    sendable: false,
+    compare: "compare the values it gives",
+  },
+  HandleType {
+    module: "std/channel",
+    name: "Sender",
+    sendable: true,
+    compare: "compare the values sent through the channel",
+  },
+  HandleType {
+    module: "std/channel",
+    name: "Receiver",
+    sendable: true,
+    compare: "compare the values received from the channel",
+  },
+  HandleType {
+    module: "std/shared",
+    name: "Shared",
+    sendable: true,
+    compare: "compare the values it holds, from Shared.get",
+  },
+  HandleType {
+    module: "std/atomic",
+    name: "Atomic",
+    sendable: true,
+    compare: "compare the values it holds, from Atomic.load",
+  },
+]
+
+// The std functions that run a function on another thread: the module, the
+// name and the position of the function argument.
+struct ThreadFunction {
+  module: string
+  name: string
+  work: int
+}
+
+const THREAD_FUNCTIONS: Array<ThreadFunction> = [
+  ThreadFunction { module: "std/thread", name: "start", work: 1 },
+  ThreadFunction { module: "std/parallel", name: "map", work: 1 },
+]
+
+// The part of a type that is not Sendable, and whether that part is a Cell, a
+// type parameter or a function, for the hint.
+struct Unsendable {
+  text: string
+  kind: string
+}
+
+export function isThreadModule(path: string): bool {
+  return path == "std/thread" ||
+    path == "std/parallel" ||
+    path == "std/channel" ||
+    path == "std/shared" ||
+    path == "std/atomic" ||
+    path == "std/internal/thread"
+}
+
+export function isSendableTrait(checker: Checker, traitIndex: int): bool {
+  // The prelude's Sendable; it is not derivable, so its TraitInfo.std is false.
+  return traitIndex >= 0 &&
+    checker.traits[traitIndex].module == "" &&
+    checker.traits[traitIndex].name == "Sendable"
+}
+
+function findSendableTrait(checker: Checker): int {
+  if (checker.scopes[0].traits["Sendable"] is Some(index)) {
+    if (isSendableTrait(checker, index)) {
+      return index
+    }
+  }
+  return -1
+}
+
+function findHandle(checker: Checker, type: Type): int {
+  if (type is Type.TStruct(index)) {
+    const info = checker.structs[index]
+    let position = 0
+    for (const handle of Arrays.values(THREAD_HANDLES)) {
+      if (info.name == handle.name && info.module == handle.module) {
+        return position
+      }
+      position++
+    }
+  }
+  return -1
+}
+
+export function isThreadHandle(checker: Checker, type: Type): bool {
+  return findHandle(checker, type) >= 0
+}
+
+function isScopeType(checker: Checker, type: Type): bool {
+  if (type is Type.TStruct(index)) {
+    return checker.structs[index].name == "Scope" && checker.structs[index].module == "std/thread"
+  }
+  return false
+}
+
+function isCell(checker: Checker, type: Type): bool {
+  if (type is Type.TStruct(index)) {
+    return checker.structs[index].module == "std/cell" && checker.structs[index].name == "Cell"
+  }
+  return false
+}
+
+export function isSendable(mutable checker: Checker, type: Type): bool uses alloc {
+  let seen: Map<string, bool> = Map {}
+  return findUnsendable(mutable checker, type, mutable seen).text == ""
+}
+
+function findUnsendable(
+  mutable checker: Checker,
+  type: Type,
+  mutable seen: Map<string, bool>,
+): Unsendable uses alloc {
+  // A type reached again through itself, as in `struct Tree { kids: Array<Tree> }`, adds nothing.
+  const key = typeKey(type)
+  if (seen[key] is Some(_)) {
+    return Unsendable { text: "", kind: "" }
+  }
+  seen[key] = true
+  const text = typeString(checker, type)
+  match (type) {
+    Type.TParam(param) => {
+      const sendable = findSendableTrait(checker)
+      if (checker.bounds[param] is Some(bounds)) {
+        for (const bound of Arrays.values(bounds)) {
+          if (bound == sendable) {
+            return Unsendable { text: "", kind: "" }
+          }
+        }
+      }
+      return Unsendable { text: text, kind: "parameter" }
+    }
+    Type.TFunc(_, _, _, _, _) => {
+      return Unsendable { text: text, kind: "function" }
+    }
+    Type.TPtr(_)
+      | Type.TDynamic(_)
+      | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
+      | Type.TGenerator(_, _, _, _, _)
+      | Type.THandle
+      | Type.TModule(_)
+      | Type.TVoid => {
+      return Unsendable { text: text, kind: "" }
+    }
+    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
+      return findUnsendable(mutable checker, element, mutable seen)
+    }
+    Type.TMap(keyType, valueType) => {
+      const keyPart = findUnsendable(mutable checker, keyType, mutable seen)
+      if (keyPart.text != "") {
+        return keyPart
+      }
+      return findUnsendable(mutable checker, valueType, mutable seen)
+    }
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return findUnsendable(mutable checker, base, mutable seen)
+      }
+      return Unsendable { text: "", kind: "" }
+    }
+    Type.TStruct(_) | Type.TEnum(_) => {
+      return findNominalUnsendable(mutable checker, type, text, mutable seen)
+    }
+    _ => {
+      // The primitives, strings, bytes, ranges and string builders.
+      return Unsendable { text: "", kind: "" }
+    }
+  }
+}
+
+function findNominalUnsendable(
+  mutable checker: Checker,
+  type: Type,
+  text: string,
+  mutable seen: Map<string, bool>,
+): Unsendable uses alloc {
+  if (isCell(checker, type)) {
+    return Unsendable { text: text, kind: "cell" }
+  }
+  const handle = findHandle(checker, type)
+  if (handle >= 0 && !THREAD_HANDLES[handle].sendable) {
+    return Unsendable { text: text, kind: "" }
+  }
+  // A Sendable handle is checked through its type arguments, not its fields.
+  if (handle >= 0) {
+    if (type is Type.TStruct(index)) {
+      for (const argument of Arrays.values(copy(checker.structs[index].arguments))) {
+        const argumentPart = findUnsendable(mutable checker, argument, mutable seen)
+        if (argumentPart.text != "") {
+          return argumentPart
+        }
+      }
+    }
+    return Unsendable { text: "", kind: "" }
+  }
+  let fields: Array<Field> = []
+  match (type) {
+    Type.TStruct(index) => {
+      fields = copy(checker.structs[index].fields)
+    }
+    Type.TEnum(index) => {
+      for (const variant of Arrays.values(copy(checker.enums[index].variants))) {
+        for (const field of Arrays.values(variant.fields)) {
+          Arrays.push(mutable fields, field)
+        }
+      }
+    }
+    _ => {}
+  }
+  for (const field of Arrays.values(fields)) {
+    const part = findUnsendable(mutable checker, field.fieldType, mutable seen)
+    if (part.text != "") {
+      return Unsendable {
+        text: `${part.text} in field ${quoteGo(field.name)} of ${text}`,
+        kind: part.kind,
+      }
+    }
+  }
+  return Unsendable { text: "", kind: "" }
+}
+
+export function checkSendable(
+  mutable checker: Checker,
+  pos: Pos,
+  type: Type,
+  site: string,
+) uses alloc {
+  // E1190 names the type, the part that is not Sendable and a way out.
+  let seen: Map<string, bool> = Map {}
+  const part = findUnsendable(mutable checker, type, mutable seen)
+  if (part.text == "") {
+    return
+  }
+  const text = typeString(checker, type)
+  let detail = ""
+  if (part.text != text) {
+    detail = `, because of ${part.text}`
+  }
+  if (part.kind == "cell") {
+    detail = `${detail}; keep state that threads share in a Shared from std/shared`
+  } else if (part.kind == "parameter") {
+    detail = `${detail}; declare the type parameter as <T: Sendable>`
+  } else if (part.kind == "function") {
+    detail = `${detail}; a function value does not show what it captures`
+  }
+  reportError(mutable checker, pos, "E1190", `${site}: ${text} is not Sendable${detail}`)
+}
+
+export function checkThreadCall(
+  mutable checker: Checker,
+  funcIndex: int,
+  arguments: Array<Arg>,
+  pos: Pos,
+  result: Type,
+) uses alloc {
+  // A call of Thread.start or Parallel.map: the function argument must show its
+  // captures, and they, its result and the items must be Sendable. The values
+  // of Channel.create must be Sendable too.
+  if (isInstanceBody(checker)) {
+    return
+  }
+  const info = copy(checker.functions[funcIndex])
+  if (info.module == "std/channel" && info.name == "create") {
+    checkChannelElement(mutable checker, pos, result)
+    return
+  }
+  if (info.module == "std/shared" || info.module == "std/atomic") {
+    checkSharedCall(mutable checker, info.module, info.name, arguments, pos, result)
+    return
+  }
+  let work = -1
+  for (const entry of Arrays.values(THREAD_FUNCTIONS)) {
+    if (info.name == entry.name && info.module == entry.module) {
+      work = entry.work
+    }
+  }
+  if (work < 0 || work >= Arrays.length(arguments)) {
+    return
+  }
+  checkThreadFunction(mutable checker, arguments[work].value)
+  if (info.module == "std/parallel" && Arrays.length(arguments) > 0) {
+    const items = arguments[0].value
+    const itemsType = copy(getNodeType(checker, getExpressionId(items)))
+    if (itemsType is Some(Type.TArray(element))) {
+      checkSendable(mutable checker, getExpressionPos(items), element, "the items of Parallel.map")
+    }
+  }
+}
+
+function checkChannelElement(mutable checker: Checker, pos: Pos, result: Type) uses alloc {
+  // The result is #[Sender<T>, Receiver<T>]; T is the type argument of the Sender.
+  if (result is Type.TStruct(tupleIndex)) {
+    const fields = copy(checker.structs[tupleIndex].fields)
+    if (Arrays.length(fields) > 0) {
+      if (fields[0].fieldType is Type.TStruct(senderIndex)) {
+        const arguments = copy(checker.structs[senderIndex].arguments)
+        if (Arrays.length(arguments) == 1) {
+          checkSendable(mutable checker, pos, arguments[0], "the values of Channel.create")
+        }
+      }
+    }
+  }
+}
+
+function checkSharedCall(
+  mutable checker: Checker,
+  module: string,
+  name: string,
+  arguments: Array<Arg>,
+  pos: Pos,
+  result: Type,
+) uses alloc {
+  // The value of Shared.create and Atomic.create must be Sendable, an Atomic
+  // holds bool or an integer, and the callbacks of Shared run under the lock.
+  if (name == "create") {
+    if (findHandleArgument(checker, result) is Some(valueType)) {
+      if (module == "std/shared") {
+        checkSendable(mutable checker, pos, valueType, "the value of Shared.create")
+      } else if (!isAtomicValue(valueType)) {
+        reportAtomicValue(mutable checker, pos, valueType)
+      }
+    }
+    return
+  }
+  if (module == "std/atomic" && name == "add" && Arrays.length(arguments) > 0) {
+    const atomicType = copy(getNodeType(checker, getExpressionId(arguments[0].value)))
+    if (atomicType is Some(type)) {
+      if (findHandleArgument(checker, type) is Some(Type.TBool)) {
+        reportError(
+          mutable checker,
+          pos,
+          "E1412",
+          "Atomic.add needs an integer type, found Atomic<bool>; use Atomic.store or Atomic.compareExchange",
+        )
+      }
+    }
+    return
+  }
+  if (
+    module == "std/shared" && (name == "update" || name == "read") && Arrays.length(arguments) > 1
+  ) {
+    checkLockCallback(mutable checker, arguments[1].value, `Shared.${name}`)
+  }
+}
+
+function findHandleArgument(checker: Checker, type: Type): Option<Type> uses alloc {
+  // The one type argument of Shared<T> or Atomic<T>.
+  if (type is Type.TStruct(index)) {
+    if (Arrays.length(checker.structs[index].arguments) == 1) {
+      return Some(copy(checker.structs[index].arguments[0]))
+    }
+  }
+  return None
+}
+
+function checkLockCallback(mutable checker: Checker, callback: Expr, name: string) uses alloc {
+  // An async arrow, an async function or any function that gives an Async
+  // would suspend, or hand off work, while the lock is held.
+  let isAsync = false
+  if (callback is Expr.AsyncExpr(_, _, _)) {
+    isAsync = true
+  }
+  const nodeId = getExpressionId(callback)
+  if (getRef(checker, nodeId) is Ref.Function(funcIndex)) {
+    if (checker.functions[funcIndex].declaration.isAsync) {
+      isAsync = true
+    }
+  }
+  if (getNodeType(checker, nodeId) is Some(Type.TFunc(_, Type.TAsync(_), _, _, _))) {
+    isAsync = true
+  }
+  if (isAsync) {
+    reportError(
+      mutable checker,
+      getExpressionPos(callback),
+      "E1410",
+      `the callback of ${name} cannot be async: it runs while the lock is held, and a task must not suspend there`,
+    )
+  }
+}
+
+function isAtomicValue(type: Type): bool {
+  return match (type) {
+    Type.TBool
+      | Type.TInt
+      | Type.TI8
+      | Type.TI16
+      | Type.TI32
+      | Type.TU8
+      | Type.TU16
+      | Type.TU32
+      | Type.TU64 => true
+    _ => false
+  }
+}
+
+function reportAtomicValue(mutable checker: Checker, pos: Pos, type: Type) uses alloc {
+  const text = typeString(checker, type)
+  reportError(
+    mutable checker,
+    pos,
+    "E1411",
+    `Atomic<${text}> is not allowed: an Atomic holds bool or an integer type up to 64 bits; keep other values in a Shared from std/shared`,
+  )
+}
+
+export function checkAtomicType(
+  mutable checker: Checker,
+  pos: Pos,
+  generic: int,
+  arguments: Array<Type>,
+) uses alloc {
+  // A written Atomic<T> type. Only std/atomic itself writes Atomic<T> with a
+  // type parameter, since no bound says "an integer type"; its instances
+  // repeat what the call that made them was checked for.
+  if (!checker.threads || Arrays.length(arguments) != 1) {
+    return
+  }
+  if (
+    checker.generics[generic].module != "std/atomic" || checker.generics[generic].name != "Atomic"
+  ) {
+    return
+  }
+  if (Arrays.length(checker.scopes) > 0 && checker.scopes[checker.current].path == "std/atomic") {
+    return
+  }
+  if (!isAtomicValue(arguments[0])) {
+    reportAtomicValue(mutable checker, pos, arguments[0])
+  }
+}
+
+function checkThreadFunction(mutable checker: Checker, work: Expr) uses alloc {
+  match (work) {
+    Expr.AsyncExpr(_, pos, _) => {
+      reportAsyncThread(mutable checker, pos)
+    }
+    Expr.ArrowExpr(nodeId, pos, _, _, _, _) => {
+      checkArrowCaptures(mutable checker, nodeId, pos)
+      checkThreadResult(mutable checker, nodeId, pos)
+    }
+    Expr.Ident(nodeId, pos, _) | Expr.FieldExpr(nodeId, pos, _, _) => {
+      // The name of a top-level function, of this module or an imported one.
+      checkNamedThreadFunction(mutable checker, nodeId, pos)
+    }
+    _ => {
+      reportFunctionValue(mutable checker, getExpressionPos(work))
+    }
+  }
+}
+
+function checkNamedThreadFunction(mutable checker: Checker, nodeId: int, pos: Pos) uses alloc {
+  if (getRef(checker, nodeId) is Ref.Function(funcIndex)) {
+    if (checker.functions[funcIndex].declaration.isAsync) {
+      reportAsyncThread(mutable checker, pos)
+      return
+    }
+    checkThreadResult(mutable checker, nodeId, pos)
+    return
+  }
+  reportFunctionValue(mutable checker, pos)
+}
+
+function reportAsyncThread(mutable checker: Checker, pos: Pos) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1192",
+    "a thread function cannot be async; write a plain function, which may start tasks of its own",
+  )
+}
+
+function reportFunctionValue(mutable checker: Checker, pos: Pos) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1193",
+    "a thread function must be an arrow function written at the call or the name of a top-level function, so its captures can be checked",
+  )
+}
+
+function checkArrowCaptures(mutable checker: Checker, nodeId: int, pos: Pos) uses alloc {
+  const body = checker.body
+  if (checker.bodies[body].closureIndex[nodeId] is Some(closure)) {
+    const captures = copy(checker.bodies[body].closures[closure].captures)
+    for (const index of Arrays.values(captures)) {
+      const local = copy(checker.bodies[body].locals[index])
+      // A captured Scope is E1191 already.
+      if (!isScopeType(checker, local.localType)) {
+        checkSendable(
+          mutable checker,
+          pos,
+          local.localType,
+          `capture ${quoteGo(local.name)} of the thread function`,
+        )
+      }
+    }
+  }
+}
+
+function checkThreadResult(mutable checker: Checker, nodeId: int, pos: Pos) uses alloc {
+  const workType = copy(getNodeType(checker, nodeId))
+  if (workType is Some(Type.TFunc(_, result, _, _, _))) {
+    if (result != Type.TVoid) {
+      checkSendable(mutable checker, pos, result, "the result of the thread function")
+    }
+  }
+}
+
+export function describeHandle(checker: Checker, type: Type): string uses alloc {
+  // The handle name for the E1195 messages, `a Thread`.
+  const handle = findHandle(checker, type)
+  if (handle < 0) {
+    return ""
+  }
+  if (THREAD_HANDLES[handle].name == "Atomic") {
+    return "an Atomic"
+  }
+  return `a ${THREAD_HANDLES[handle].name}`
+}
+
+export function describeCompare(checker: Checker, type: Type): string {
+  // What to compare in place of the handle, for the E1195 message.
+  const handle = findHandle(checker, type)
+  if (handle < 0) {
+    return ""
+  }
+  return THREAD_HANDLES[handle].compare
+}
+
+export function reportSendableWritten(mutable checker: Checker, pos: Pos, form: string) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1194",
+    `cannot write \`${form} Sendable\`: the compiler implements Sendable for every type whose parts can cross a thread`,
+  )
+}
+
+function containsScope(
+  checker: Checker,
+  type: Type,
+  mutable seen: Map<string, bool>,
+): bool uses alloc {
+  // A Scope at any depth, a function result included; a function parameter of
+  // type Scope is allowed.
+  const key = typeKey(type)
+  if (seen[key] is Some(_)) {
+    return false
+  }
+  seen[key] = true
+  match (type) {
+    Type.TFunc(_, result, _, _, _) => {
+      return containsScope(checker, result, mutable seen)
+    }
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TFixedArray(element, _)
+      | Type.TAsync(element)
+      | Type.TGenerator(element, _, _, _, _)
+      | Type.TAsyncGenerator(element, _, _, _) => {
+      return containsScope(checker, element, mutable seen)
+    }
+    Type.TMap(keyType, valueType) => {
+      return containsScope(checker, keyType, mutable seen) ||
+        containsScope(checker, valueType, mutable seen)
+    }
+    Type.TStruct(index) => {
+      if (isScopeType(checker, type)) {
+        return true
+      }
+      for (const field of Arrays.values(checker.structs[index].fields)) {
+        if (containsScope(checker, field.fieldType, mutable seen)) {
+          return true
+        }
+      }
+      return false
+    }
+    Type.TEnum(index) => {
+      for (const variant of Arrays.values(checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          if (containsScope(checker, field.fieldType, mutable seen)) {
+            return true
+          }
+        }
+      }
+      return false
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+function isFrameType(type: Type): bool {
+  // A generator, coroutine, stream or task keeps a frame that runs later.
+  return match (type) {
+    Type.TGenerator(_, _, _, _, _) => true
+    Type.TAsyncGenerator(_, _, _, _) => true
+    Type.TAsync(_) => true
+    _ => false
+  }
+}
+
+function anyScope(checker: Checker, types: Array<Type>): bool uses alloc {
+  for (const type of Arrays.values(types)) {
+    let seen: Map<string, bool> = Map {}
+    if (containsScope(checker, type, mutable seen)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isInstanceBody(checker: Checker): bool {
+  // An instance of a generic body repeats what its declaration was checked for.
+  const body = checker.body
+  return body >= 0 &&
+    body < Arrays.length(checker.bodies) &&
+    Arrays.length(checker.bodies[body].typeArguments) > 0
+}
+
+function holdsScope(checker: Checker, type: Type): bool uses alloc {
+  // A Scope itself may be passed around; a value that holds one may not.
+  if (isScopeType(checker, type)) {
+    return false
+  }
+  let seen: Map<string, bool> = Map {}
+  return containsScope(checker, type, mutable seen)
+}
+
+export function checkScopeValue(mutable checker: Checker, expression: Expr, type: Type) uses alloc {
+  // E1191 at the expressions that build a value: literals, constructors,
+  // calls and arrow functions. Reading a name or a field reports nothing more.
+  if (isInstanceBody(checker)) {
+    return
+  }
+  let parts: Array<Expr> = []
+  match (expression) {
+    Expr.ArrayLit(_, _, elements, _) => {
+      parts = elements
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        Arrays.push(mutable parts, field.value)
+      }
+      if (spread is Some(spreadValue)) {
+        Arrays.push(mutable parts, spreadValue)
+      }
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      parts = copy(keys)
+      for (const value of Arrays.values(values)) {
+        Arrays.push(mutable parts, value)
+      }
+    }
+    Expr.CallExpr(_, _, _, _, arguments) => {
+      for (const argument of Arrays.values(arguments)) {
+        Arrays.push(mutable parts, argument.value)
+      }
+      if (isFrameType(type) && checkFrameCall(mutable checker, expression, parts)) {
+        return
+      }
+    }
+    Expr.ArrowExpr(_, _, _, _, _, _) => {}
+    Expr.AsyncExpr(_, pos, Expr.ArrowExpr(_, _, _, _, _, _)) => {
+      // An async arrow keeps its parameters in its task's frame.
+      if (type is Type.TFunc(parameters, _, _, _, _)) {
+        if (anyScope(checker, parameters)) {
+          const text = typeString(checker, type)
+          reportScopeFrame(mutable checker, pos, text)
+        }
+      }
+      return
+    }
+    _ => {
+      return
+    }
+  }
+  if (!holdsScope(checker, type)) {
+    return
+  }
+  // A part that holds a Scope was reported already, so its enclosing value is not.
+  for (const part of Arrays.values(parts)) {
+    const partType = copy(getNodeType(checker, getExpressionId(part)))
+    if (partType is Some(knownType)) {
+      if (holdsScope(checker, knownType)) {
+        return
+      }
+    }
+  }
+  const pos = getExpressionPos(expression)
+  const text = typeString(checker, type)
+  if (type is Type.TFunc(_, result, _, _, _)) {
+    let seen: Map<string, bool> = Map {}
+    if (containsScope(checker, result, mutable seen)) {
+      reportScopeReturned(mutable checker, pos, text)
+    } else {
+      reportScopeFrame(mutable checker, pos, text)
+    }
+    return
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E1191",
+    `${text} holds a Scope; a Scope can be passed to a function, but not stored in a field, element, tuple or constructor`,
+  )
+}
+
+function checkFrameCall(
+  mutable checker: Checker,
+  call: Expr,
+  arguments: Array<Expr>,
+): bool uses alloc {
+  // A call that gives a generator, coroutine, stream or task keeps its
+  // arguments in the frame. A declared function with a Scope parameter is
+  // reported at its declaration instead, and an argument that holds a Scope
+  // was reported already.
+  if (getRef(checker, getExpressionId(call)) is Ref.Function(funcIndex)) {
+    if (isFrameFunction(checker, checker.functions[funcIndex].declaration)) {
+      return true
+    }
+  }
+  let types: Array<Type> = []
+  for (const argument of Arrays.values(arguments)) {
+    const argumentType = copy(getNodeType(checker, getExpressionId(argument)))
+    if (argumentType is Some(knownType)) {
+      if (holdsScope(checker, knownType)) {
+        return true
+      }
+      Arrays.push(mutable types, knownType)
+    }
+  }
+  if (!anyScope(checker, types)) {
+    return false
+  }
+  let text = ""
+  const callType = copy(getNodeType(checker, getExpressionId(call)))
+  if (callType is Some(knownType)) {
+    text = typeString(checker, knownType)
+  }
+  reportScopeFrame(mutable checker, getExpressionPos(call), text)
+  return true
+}
+
+function isFrameFunction(checker: Checker, declaration: FuncDecl): bool uses alloc {
+  if (!declaration.generator && !declaration.isAsync) {
+    return false
+  }
+  let types: Array<Type> = []
+  for (const parameter of Arrays.values(declaration.parameters)) {
+    Arrays.push(mutable types, checker.paramTypes[parameter.id])
+  }
+  return anyScope(checker, types)
+}
+
+export function checkScopeFunction(
+  mutable checker: Checker,
+  declaration: FuncDecl,
+  result: Type,
+) uses alloc {
+  // A declared result that holds a Scope, or a generator or async function
+  // whose frame keeps a Scope parameter.
+  let seen: Map<string, bool> = Map {}
+  if (containsScope(checker, result, mutable seen)) {
+    const text = typeString(checker, result)
+    reportScopeReturned(mutable checker, declaration.pos, text)
+    return
+  }
+  if (isFrameFunction(checker, declaration)) {
+    const resultText = typeString(checker, result)
+    reportScopeFrame(mutable checker, declaration.pos, resultText)
+  }
+}
+
+function reportScopeFrame(mutable checker: Checker, pos: Pos, text: string) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1191",
+    `a generator, coroutine, stream or task cannot hold a Scope (${text}): it can run after its Thread.scope returns`,
+  )
+}
+
+function reportScopeReturned(mutable checker: Checker, pos: Pos, text: string) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1191",
+    `a function cannot return a Scope (${text}): every thread of a Scope ends when its Thread.scope returns`,
+  )
+}
+
+export function checkScopeCapture(
+  mutable checker: Checker,
+  pos: Pos,
+  index: int,
+  first: int,
+  innermost: int,
+) uses alloc {
+  // A Scope captured by a closure that is not on the stack could outlive its
+  // Thread.scope; a thread function is such a closure.
+  const body = checker.body
+  const local = copy(checker.bodies[body].locals[index])
+  if (isInstanceBody(checker) || !isScopeType(checker, local.localType)) {
+    return
+  }
+  // A task copies its captures into a frame that runs later, on the stack or not.
+  for (let level = first; level <= innermost; level++) {
+    const closure = checker.bodies[body].arrows[level].closure
+    if (
+      !checker.bodies[body].closures[closure].stack || checker.bodies[body].closures[closure].isTask
+    ) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1191",
+        `an escaping closure or a task cannot capture Scope ${quoteGo(local.name)}; pass the Scope to a function as a parameter, or open a new Thread.scope inside the closure`,
+      )
+      return
+    }
+  }
+}

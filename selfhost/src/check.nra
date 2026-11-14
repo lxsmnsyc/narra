@@ -53,6 +53,8 @@ import {
   isBoxedEnum,
   isInteger,
   findFixedLength,
+  findLaneSize,
+  formatVectorName,
 } from "narrac/types"
 import { Registry, newRegistry } from "narrac/builtins"
 import {
@@ -62,6 +64,7 @@ import {
   createUnknownTarget,
 } from "narrac/buildtarget"
 import { collectFuncIds, collectBlockIds, collectExpressionIds } from "narrac/idcheck"
+import { writeTypeUses } from "narrac/typeuses"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
@@ -260,6 +263,8 @@ export struct ClosureInfo {
   hasHint: bool
   hintParameters: Array<Option<Type>>
   hintResult: Option<Type>
+  // The `from` parameter of the hint's function type, -1 for none.
+  hintShared: int = -1
 }
 
 // An arrow function being checked: the depth of the scope it appears in.
@@ -534,6 +539,9 @@ export struct Checker {
   packageName: string
   single: bool
   used: Array<string>
+  // Set when a module imports a std thread module: the thread checks of
+  // threadcheck.nra run only then.
+  threads: bool = false
   entries: Array<EntryInfo>
   entryTargets: Array<EntryTarget>
   // The body checker (body.nra, exprs.nra, statements.nra). checkingBodies is
@@ -603,6 +611,8 @@ export struct Checker {
   printEffects: bool = true
   // The Checker.functions index of the function whose call is being checked, or -1.
   calleeIndex: int = -1
+  // The id of the values array of the tagged template whose call is being checked, or -1.
+  taggedValues: int = -1
   generatorEffects: Map<string, Array<string>>
   // The type arguments written on the call being checked, by call node id
   // (`f<int>(x)`). checkCallEndingNarrowing sets them; the generic and trait
@@ -621,6 +631,10 @@ export struct Checker {
   // The call node id that made each of them: only that call fills it (a
   // generic `id(x)` returns the same type).
   boundCallIds: Array<int> = []
+  // The effect names the callee declared for each of them, its variables included. A
+  // function type bound inside a call result uses the same slots, through a binder of
+  // -2 - index.
+  boundNames: Array<Array<string>> = []
   // The id of the target of the assignment being checked, or -1 (Go's
   // c.assigning): a Map index there is a write.
   assigningId: int = -1
@@ -1081,6 +1095,7 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
     Type.TVoid => "void"
     Type.TStringBuilder => "StringBuilder"
     Type.THandle => "Handle"
+    Type.TSync => "Sync"
     Type.TStruct(index) => structString(checker, index)
     Type.TEnum(
       index,
@@ -1106,14 +1121,21 @@ export function typeString(checker: Checker, type: Type): string uses alloc {
       _,
       _,
       input,
-    ) => `${generatorName(checker, element, input)}${usesSuffix(generatorEffectList(checker, type))}`
+    ) => `${generatorName(checker, element, input)}${writeTypeUses(generatorEffectList(checker, type))}`
     Type.TAsync(value) => `Async<${typeString(checker, value)}>`
+    Type.TAsyncGenerator(
+      element,
+      _,
+      _,
+      _,
+    ) => `AsyncGenerator<${typeString(checker, element)}>${writeTypeUses(generatorEffectList(checker, type))}`
     Type.TModule(path) => `module ${path}`
     Type.TConst(value) => Int.toString(value)
     Type.TFixedArray(
       element,
       length,
     ) => `FixedArray<${typeString(checker, element)}, ${typeString(checker, length)}>`
+    Type.TVector(lane, count) => formatVectorName(lane, count)
   }
 }
 
@@ -1129,16 +1151,25 @@ export function generatorEffectList(
   type: Type,
 ): Array<string> from type uses alloc {
   // A private generator has its inferred effects once the effect pass has run.
-  if (type is Type.TGenerator(_, effects, _, origin, _)) {
-    if (origin == -1) {
-      return effects
-    }
-    if (origin < -1) {
-      return copy(checker.boundGenerators[-2 - origin])
-    }
-    if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
-      return copy(inferred)
-    }
+  let effects: Array<string> = []
+  let origin = -1
+  if (type is Type.TGenerator(_, generatorNames, _, generatorOrigin, _)) {
+    effects = generatorNames
+    origin = generatorOrigin
+  } else if (type is Type.TAsyncGenerator(_, streamNames, _, streamOrigin)) {
+    effects = streamNames
+    origin = streamOrigin
+  } else {
+    return []
+  }
+  if (origin == -1) {
+    return effects
+  }
+  if (origin < -1) {
+    return copy(checker.boundGenerators[-2 - origin])
+  }
+  if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
+    return copy(inferred)
   }
   return []
 }
@@ -1158,7 +1189,7 @@ export function functionUsesSuffix(
   if (!checker.printEffects || (binder >= 0 && binder != checker.functionIndex)) {
     return ""
   }
-  return usesSuffix(effects)
+  return writeTypeUses(effects)
 }
 
 function listSharedTypes(
@@ -1222,13 +1253,6 @@ export function findParameterIndex(parameters: Array<Param>, name: string): int 
   return -1
 }
 
-export function usesSuffix(effects: Array<string>): string uses alloc {
-  if (Arrays.length(effects) == 0) {
-    return ""
-  }
-  return ` uses ${Str.join(effects, ", ")}`
-}
-
 function structString(checker: Checker, index: int): string uses alloc {
   const info = checker.structs[index]
   if (info.tuple) {
@@ -1274,6 +1298,7 @@ export function containsTypeParameter(checker: Checker, type: Type): bool {
       containsTypeParameter(checker, element) || containsTypeParameter(checker, length)
     Type.TGenerator(element, _, _, _, input) =>
       containsTypeParameter(checker, element) || containsTypeParameter(checker, input)
+    Type.TAsyncGenerator(element, _, _, _) => containsTypeParameter(checker, element)
     Type.TMap(key, value) =>
       containsTypeParameter(checker, key) || containsTypeParameter(checker, value)
     Type.TStruct(index) => anyTypeParameter(checker, checker.structs[index].arguments)
@@ -1511,6 +1536,8 @@ function layoutValue(
         align: itemLayout.align,
       }
     }
+    // Vector types are aligned to 8, as runtime heap blocks are (D112).
+    Type.TVector(lane, count) => CLayout { size: findLaneSize(lane) * count, align: 8 }
     _ => CLayout { size: 8, align: 8 }
   }
 }
@@ -1619,12 +1646,14 @@ export function isCountedType(checker: Checker, type: Type): bool {
       | Type.TBytes
       | Type.TStringBuilder
       | Type.THandle
+      | Type.TSync
       | Type.TArray(_)
       | Type.TFunc(_, _, _, _, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
       | Type.TGenerator(_, _, _, _, _)
       | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
       | Type.TDynamic(_) => true
     Type.TStruct(index) => isCountedStruct(checker, index)
     Type.TEnum(index) => isCountedEnum(checker, index)
@@ -1798,6 +1827,7 @@ function measureValue(checker: Checker, type: Type, mutable memo: LayoutMemo): i
       roundUp(measureValue(checker, element, mutable memo)),
       Math.max(findFixedLength(type), 1),
     )
+    Type.TVector(lane, count) => findLaneSize(lane) * count
     _ => 8
   }
 }
@@ -2451,6 +2481,7 @@ export function getExpressionId(expression: Expr): int {
       | Expr.CharLit(nodeId, _, _)
       | Expr.BoolLit(nodeId, _, _)
       | Expr.TemplateLit(nodeId, _, _)
+      | Expr.TemplateParts(nodeId, _, _)
       | Expr.Ident(nodeId, _, _)
       | Expr.FieldExpr(nodeId, _, _, _)
       | Expr.IsExpr(nodeId, _, _, _)
@@ -2485,6 +2516,7 @@ export function getExpressionPos(expression: Expr): Pos {
       | Expr.CharLit(_, pos, _)
       | Expr.BoolLit(_, pos, _)
       | Expr.TemplateLit(_, pos, _)
+      | Expr.TemplateParts(_, pos, _)
       | Expr.Ident(_, pos, _)
       | Expr.FieldExpr(_, pos, _, _)
       | Expr.IsExpr(_, pos, _, _)

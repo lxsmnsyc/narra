@@ -60,11 +60,13 @@ import { makeEnv, envWith } from "narrac/generics"
 import { resolveOpt } from "narrac/resolve"
 import { dumpTypeString } from "narrac/declsdump"
 import * as Exprs from "narrac/exprs"
+import * as ParamDefaults from "narrac/paramdefaults"
 import * as Stmts from "narrac/stmts"
 import { checkEveryPathReturns } from "narrac/pathends"
 import { checkSharedResults, checkSharedResultsIn } from "narrac/sharedresults"
 import * as Match from "narrac/match"
 import * as Literals from "narrac/literals"
+import { prepareStreamBody } from "narrac/asyncgenerators"
 import * as Calls from "narrac/calls"
 import {
   checkRequires,
@@ -80,6 +82,7 @@ import { isNonEscaping } from "narrac/funcvalues"
 import * as Int from "std/int"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ThreadCheck from "narrac/threadcheck"
 
 struct BodyWalker implements Walker {}
 
@@ -325,6 +328,7 @@ function checkQueuedDefaults(mutable checker: Checker, walker: BodyWalker) uses 
 }
 
 function checkDefaults(mutable checker: Checker, walker: BodyWalker, file: File) uses alloc {
+  ParamDefaults.checkDeclarationDefaults(mutable checker, walker, file)
   const scope = checker.current
   for (const declaration of Arrays.values(file.declarations)) {
     if (declaration is Decl.Struct(structDecl)) {
@@ -523,6 +527,9 @@ function checkFunction(
   const typeParameters = copy(checker.functions[funcIndex].typeParameters)
   const environment = makeEnv(checker, typeParameters)
   const result = checker.functions[funcIndex].result
+  if (checker.threads) {
+    ThreadCheck.checkScopeFunction(mutable checker, funcDecl, result)
+  }
   let paramTypes: Array<Type> = []
   for (const param of Arrays.values(funcDecl.parameters)) {
     Arrays.push(mutable paramTypes, checker.paramTypes[param.id])
@@ -578,6 +585,9 @@ function checkFunctionBody(
   checker.functionIndex = funcIndex
   checker.generator = funcDecl.generator
   checker.asyncBody = funcDecl.isAsync
+  if (funcDecl.isAsync && funcDecl.generator) {
+    prepareStreamBody(mutable checker, result)
+  }
   if (key != "") {
     keyBody(mutable checker, key)
   }

@@ -46,7 +46,7 @@ import {
   isContentsType,
   findSharedParameter,
 } from "narrac/check"
-import { resolveOpt, resolveType, substitute } from "narrac/resolve"
+import { reportUnknownType, resolveOpt, resolveType, substitute } from "narrac/resolve"
 import { makeEnv } from "narrac/generics"
 import {
   checkImplementHead,
@@ -57,6 +57,7 @@ import { HIDDEN_SHAPE, isShapeDerive } from "narrac/deriveshape"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
+import * as ThreadCheck from "narrac/threadcheck"
 
 function isDerivable(name: string): bool {
   return name == "Equatable" || name == "Hashable" || name == "Ordered" || name == "Show"
@@ -270,6 +271,10 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
     if (traitIndex < 0) {
       continue
     }
+    if (ThreadCheck.isSendableTrait(checker, traitIndex)) {
+      ThreadCheck.reportSendableWritten(mutable checker, typeExpr.pos, "implements")
+      continue
+    }
     if (checker.typeTraits[entryIndex].listed[traitIndex] is Some(_)) {
       const message = `${checker.traits[traitIndex].name} is listed twice in \`implements\``
       reportError(mutable checker, typeExpr.pos, "E0501", message)
@@ -282,6 +287,10 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
       traitIndex = traitNamed(mutable checker, typeExpr)
     }
     if (traitIndex < 0) {
+      continue
+    }
+    if (ThreadCheck.isSendableTrait(checker, traitIndex)) {
+      ThreadCheck.reportSendableWritten(mutable checker, typeExpr.pos, "derives")
       continue
     }
     if (!checker.traits[traitIndex].std && !isShapeTrait(checker, traitIndex)) {
@@ -407,7 +416,7 @@ function checkListed(
   const info = copy(checker.typeTraits[entryIndex])
   for (const typeExpr of Arrays.values(info.implementationExpressions)) {
     const traitIndex = lookupTrait(checker, typeExpr.name)
-    if (traitIndex >= 0) {
+    if (traitIndex >= 0 && !ThreadCheck.isSendableTrait(checker, traitIndex)) {
       if (
         checker.typeTraits[entryIndex].blocks[traitIndex] is None &&
           checker.typeTraits[entryIndex].derived[traitIndex] is None
@@ -672,6 +681,10 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   if (traitIndex < 0) {
     return
   }
+  if (ThreadCheck.isSendableTrait(checker, traitIndex)) {
+    ThreadCheck.reportSendableWritten(mutable checker, implDecl.pos, "implement")
+    return
+  }
   const traitName = checker.traits[traitIndex].name
   const typeExpr = implDecl.type
   let entryIndex = -1
@@ -687,7 +700,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
         `${checker.generics[generic].module}|${checker.generics[generic].name}`,
       )
     } else if (typeExpr.name != "Array") {
-      reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
+      reportUnknownType(mutable checker, typeExpr)
       return
     }
   }
@@ -986,6 +999,10 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
   }
   const std = checker.traits[traitIndex].std
   const name = checker.traits[traitIndex].name
+  // Sendable is automatic at any depth (D111 item 1).
+  if (ThreadCheck.isSendableTrait(checker, traitIndex)) {
+    return ThreadCheck.isSendable(mutable checker, type)
+  }
   match (type) {
     Type.TParam(param) => {
       if (checker.bounds[param] is Some(bounds)) {
@@ -997,7 +1014,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
       }
       return false
     }
-    Type.TVoid | Type.TStringBuilder | Type.THandle => {
+    Type.TVoid | Type.TStringBuilder | Type.THandle | Type.TSync => {
       return false
     }
     // Arrays, boxes and the prelude enums implement a standard trait when their contents do.
@@ -1007,6 +1024,13 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
     Type.TDistinct(_) => {
       return distinctImplements(mutable checker, type, traitIndex)
     }
+    // A vector is Equatable and Show; an integer vector is Hashable too (D112).
+    Type.TVector(lane, _) => {
+      if (!std || name == "Ordered") {
+        return false
+      }
+      return name != "Hashable" || !(lane == Type.TF64 || lane == Type.TF32)
+    }
     Type.TStruct(_) | Type.TEnum(_) => {
       return nominalImplements(mutable checker, type, traitIndex)
     }
@@ -1015,6 +1039,7 @@ function computeImplements(mutable checker: Checker, type: Type, traitIndex: int
       | Type.TRange
       | Type.TGenerator(_, _, _, _, _)
       | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
       | Type.TPtr(_)
       | Type.TModule(_)
       | Type.TDynamic(_) => {
@@ -1187,8 +1212,8 @@ function distinctImplements(
 }
 
 function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int): bool uses alloc {
-  // A Cell is an identity type: no automatic Equatable or Hashable.
-  if (isCellType(checker, type)) {
+  // A Cell and the thread handles are identity types: no automatic Equatable or Hashable.
+  if (isCellType(checker, type) || ThreadCheck.isThreadHandle(checker, type)) {
     return false
   }
   const entryIndex = findTypeTraits(mutable checker, type)
@@ -1317,6 +1342,22 @@ export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) u
       "E1106",
       `cannot use == on ${text}: a task handle is shared by identity; await the handles and compare the values`,
     )
+  } else if (type is Type.TAsyncGenerator(_, _, _, _)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1106",
+      `cannot use == on ${text}: a stream is shared by identity; read the values and compare them`,
+    )
+  } else if (ThreadCheck.isThreadHandle(checker, type)) {
+    const handle = ThreadCheck.describeHandle(checker, type)
+    const instead = ThreadCheck.describeCompare(checker, type)
+    reportError(
+      mutable checker,
+      pos,
+      "E1195",
+      `cannot use == on ${text}: ${handle} is shared by identity; ${instead}`,
+    )
   } else if (isCellType(checker, type)) {
     reportError(
       mutable checker,
@@ -1397,7 +1438,10 @@ export function mapKeyProblem(
     Type.TVoid => {
       return "void has no value"
     }
-    Type.TArray(element) | Type.TBox(element) | Type.TFixedArray(element, _) => {
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TFixedArray(element, _)
+      | Type.TVector(element, _) => {
       return mapKeyProblem(mutable checker, element, mutable seen)
     }
     Type.TDistinct(index) => {
@@ -1421,6 +1465,9 @@ export function mapKeyProblem(
     Type.TAsync(_) => {
       return "an Async handle is shared by identity, not hashable"
     }
+    Type.TAsyncGenerator(_, _, _, _) => {
+      return "an AsyncGenerator is shared by identity, not hashable"
+    }
     Type.TPtr(_) => {
       return "a pointer is not hashable"
     }
@@ -1443,6 +1490,9 @@ function nominalKeyProblem(
 ): string uses alloc {
   if (isCellType(checker, type)) {
     return "a Cell is shared by identity, not hashable"
+  }
+  if (ThreadCheck.isThreadHandle(checker, type)) {
+    return `${ThreadCheck.describeHandle(checker, type)} is shared by identity, not hashable`
   }
   for (const field of Arrays.values(copy(listFields(checker, type)))) {
     const problem = mapKeyProblem(mutable checker, field.fieldType, mutable seen)
@@ -1475,8 +1525,10 @@ export function flushMapKeys(mutable checker: Checker) uses alloc {
       const message = `${typeString(checker, check.key)} cannot be a map key: ${problem}`
       // A handle as the key itself has a code of its own (D109 item 9).
       let code = "E0900"
-      if (check.key is Type.TAsync(_)) {
+      if (check.key is Type.TAsync(_) || check.key is Type.TAsyncGenerator(_, _, _, _)) {
         code = "E1106"
+      } else if (ThreadCheck.isThreadHandle(checker, check.key)) {
+        code = "E1195"
       }
       reportErrorIn(mutable checker, check.file, check.pos, code, message)
     }

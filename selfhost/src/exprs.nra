@@ -89,6 +89,7 @@ import {
 import {
   resolveType,
   instantiate,
+  findTupleType,
   substitute,
   buildGeneric,
   enterTypeofChain,
@@ -125,8 +126,17 @@ import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import { checkConstantName, describeUnknownParameter } from "narrac/constgenerics"
 import { checkFixedIndex, reportLiteralLength } from "narrac/fixedarrays"
+import {
+  isVector,
+  checkVectorOperator,
+  checkVectorUnary,
+  reportLaneCount,
+  reportLaneWrite,
+} from "narrac/simdtypes"
 import { checkLazyUse, reportLazyCycle } from "narrac/lazyvalues"
 import * as AsyncCheck from "narrac/asynccheck"
+import * as TaggedTemplates from "narrac/taggedtemplates"
+import * as ThreadCheck from "narrac/threadcheck"
 
 export function checkExpression<W: Walker>(
   mutable checker: Checker,
@@ -139,6 +149,9 @@ export function checkExpression<W: Walker>(
   }
   const found = checkExpressionKind(mutable checker, walker, expression, want)
   setNodeType(mutable checker, getExpressionId(expression), found)
+  if (checker.threads) {
+    ThreadCheck.checkScopeValue(mutable checker, expression, found)
+  }
   return found
 }
 
@@ -249,6 +262,11 @@ function checkExpressionKind<W: Walker>(
       Expr.CharLit(_, _, _) => Type.TChar
       Expr.BoolLit(_, _, _) => Type.TBool
       Expr.TemplateLit(_, _, parts) => checkTemplate(mutable checker, walker, parts)
+      Expr.TemplateParts(_, _, parts) => TaggedTemplates.checkTemplateParts(
+        mutable checker,
+        parts,
+        want,
+      )
       Expr.Ident(nodeId, pos, name) => checkName(mutable checker, walker, nodeId, pos, name, want)
       Expr.FieldExpr(nodeId, pos, target, name) => checkField(
         mutable checker,
@@ -311,9 +329,10 @@ function checkExpressionKind<W: Walker>(
         spread,
         want,
       )
-      Expr.ArrayLit(_, pos, elements, isTuple) => checkArrayLiteral(
+      Expr.ArrayLit(nodeId, pos, elements, isTuple) => checkArrayLiteral(
         mutable checker,
         walker,
+        nodeId,
         pos,
         elements,
         isTuple,
@@ -426,25 +445,169 @@ function bindCallResult(
   found: Type,
 ): Type from found uses alloc {
   // The effect pass replaces each effect variable by the effects of the argument that
-  // binds it, so the name never leaves the callee.
-  if (found is Type.TGenerator(element, _, binder, _, input)) {
-    let calleeIndex = -1
-    if (getRef(checker, nodeId) is Ref.Function(index)) {
-      calleeIndex = index
-    }
-    if (binder >= 0 && binder == calleeIndex) {
-      Arrays.push(mutable checker.boundGenerators, [])
-      Arrays.push(mutable checker.boundCallIds, nodeId)
-      return Type.TGenerator(
-        element,
-        [],
-        checker.functionIndex,
-        -1 - Arrays.length(checker.boundGenerators),
-        input,
-      )
+  // binds it, so the name never leaves the callee. The generator or function type may
+  // be the result itself or sit inside it, as in `Option<Generator<T> uses E>`. A
+  // function result is found through the call that made it, so it keeps its names.
+  let calleeIndex = -1
+  if (getRef(checker, nodeId) is Ref.Function(index)) {
+    calleeIndex = index
+  }
+  if (found is Type.TFunc(_, _, _, _, _)) {
+    return found
+  }
+  if (calleeIndex < 0 || !holdsBoundEffects(checker, found, calleeIndex)) {
+    return found
+  }
+  return bindResultType(mutable checker, nodeId, calleeIndex, found)
+}
+
+function holdsBoundEffects(checker: Checker, type: Type, calleeIndex: int): bool uses alloc {
+  return match (type) {
+    Type.TGenerator(element, _, binder, _, _) =>
+      binder == calleeIndex || holdsBoundEffects(checker, element, calleeIndex)
+    Type.TAsyncGenerator(element, _, binder, _) =>
+      binder == calleeIndex || holdsBoundEffects(checker, element, calleeIndex)
+    Type.TFunc(_, _, _, binder, _) => binder == calleeIndex
+    Type.TArray(element) | Type.TBox(element) | Type.TAsync(element) => holdsBoundEffects(
+      checker,
+      element,
+      calleeIndex,
+    )
+    Type.TFixedArray(element, _) => holdsBoundEffects(checker, element, calleeIndex)
+    Type.TMap(key, value) =>
+      holdsBoundEffects(checker, key, calleeIndex) || holdsBoundEffects(checker, value, calleeIndex)
+    Type.TStruct(index) => holdsAnyBoundEffects(
+      checker,
+      checker.structs[index].arguments,
+      calleeIndex,
+    )
+    Type.TEnum(index) => holdsAnyBoundEffects(checker, checker.enums[index].arguments, calleeIndex)
+    _ => false
+  }
+}
+
+function holdsAnyBoundEffects(
+  checker: Checker,
+  types: Array<Type>,
+  calleeIndex: int,
+): bool uses alloc {
+  for (const type of Arrays.values(types)) {
+    if (holdsBoundEffects(checker, type, calleeIndex)) {
+      return true
     }
   }
-  return found
+  return false
+}
+
+function bindResultType(
+  mutable checker: Checker,
+  nodeId: int,
+  calleeIndex: int,
+  type: Type,
+): Type from type uses alloc {
+  // Each generator or function type that names the callee's effect variables gets a
+  // slot of its own, which the effect pass fills from the names the callee declared.
+  // Struct and enum instances are made again with the bound arguments.
+  if (!holdsBoundEffects(checker, type, calleeIndex)) {
+    return type
+  }
+  match (type) {
+    Type.TGenerator(element, effects, binder, origin, input) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      if (binder != calleeIndex) {
+        return copy(Type.TGenerator(newElement, effects, binder, origin, input))
+      }
+      Arrays.push(mutable checker.boundGenerators, [])
+      Arrays.push(mutable checker.boundCallIds, nodeId)
+      Arrays.push(mutable checker.boundNames, copy(effects))
+      return copy(
+        Type.TGenerator(
+          newElement,
+          [],
+          checker.functionIndex,
+          -1 - Arrays.length(checker.boundGenerators),
+          input,
+        ),
+      )
+    }
+    Type.TAsyncGenerator(element, effects, binder, origin) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      if (binder != calleeIndex) {
+        return copy(Type.TAsyncGenerator(newElement, effects, binder, origin))
+      }
+      Arrays.push(mutable checker.boundGenerators, [])
+      Arrays.push(mutable checker.boundCallIds, nodeId)
+      Arrays.push(mutable checker.boundNames, copy(effects))
+      return copy(
+        Type.TAsyncGenerator(
+          newElement,
+          [],
+          checker.functionIndex,
+          -1 - Arrays.length(checker.boundGenerators),
+        ),
+      )
+    }
+    Type.TFunc(parameters, result, effects, _, shared) => {
+      // The binder of a bound function type is the slot, as the origin of a generator.
+      Arrays.push(mutable checker.boundGenerators, [])
+      Arrays.push(mutable checker.boundCallIds, nodeId)
+      Arrays.push(mutable checker.boundNames, copy(effects))
+      const slot = -1 - Arrays.length(checker.boundGenerators)
+      return copy(
+        internComposite(mutable checker, Type.TFunc(parameters, result, [], slot, shared)),
+      )
+    }
+    Type.TArray(element) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      return copy(internComposite(mutable checker, Type.TArray(newElement)))
+    }
+    Type.TBox(element) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      return copy(internComposite(mutable checker, Type.TBox(newElement)))
+    }
+    Type.TAsync(value) => {
+      const newValue = bindResultType(mutable checker, nodeId, calleeIndex, value)
+      return copy(internComposite(mutable checker, Type.TAsync(newValue)))
+    }
+    Type.TFixedArray(element, length) => {
+      const newElement = bindResultType(mutable checker, nodeId, calleeIndex, element)
+      return copy(internComposite(mutable checker, Type.TFixedArray(newElement, length)))
+    }
+    Type.TMap(key, value) => {
+      const newKey = bindResultType(mutable checker, nodeId, calleeIndex, key)
+      const newValue = bindResultType(mutable checker, nodeId, calleeIndex, value)
+      return copy(internComposite(mutable checker, Type.TMap(newKey, newValue)))
+    }
+    Type.TStruct(index) => {
+      const info = copy(checker.structs[index])
+      const arguments = bindResultTypes(mutable checker, nodeId, calleeIndex, info.arguments)
+      if (info.tuple) {
+        return copy(findTupleType(mutable checker, arguments))
+      }
+      return copy(instantiate(mutable checker, info.generic, arguments))
+    }
+    Type.TEnum(index) => {
+      const info = copy(checker.enums[index])
+      const arguments = bindResultTypes(mutable checker, nodeId, calleeIndex, info.arguments)
+      return copy(instantiate(mutable checker, info.generic, arguments))
+    }
+    _ => {
+      return type
+    }
+  }
+}
+
+function bindResultTypes(
+  mutable checker: Checker,
+  nodeId: int,
+  calleeIndex: int,
+  types: Array<Type>,
+): Array<Type> uses alloc {
+  let out: Array<Type> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable out, copy(bindResultType(mutable checker, nodeId, calleeIndex, type)))
+  }
+  return out
 }
 
 export function checkNoMutableEscape(mutable checker: Checker, value: Expr) uses alloc {
@@ -489,6 +652,21 @@ export function expectType(
             expected,
             wantBinder,
             wantOrigin != -1 || gotOrigin != -1,
+            got,
+          )
+          return
+        }
+      }
+    }
+    if (expected is Type.TAsyncGenerator(wantStream, _, wantStreamBinder, wantStreamOrigin)) {
+      if (got is Type.TAsyncGenerator(gotStream, _, _, gotStreamOrigin)) {
+        if (wantStream == gotStream) {
+          expectGenerator(
+            mutable checker,
+            pos,
+            expected,
+            wantStreamBinder,
+            wantStreamOrigin != -1 || gotStreamOrigin != -1,
             got,
           )
           return
@@ -591,6 +769,11 @@ function sameGeneratorShape(want: Type, got: Type): bool {
       return wantElement == gotElement && wantInput == gotInput
     }
   }
+  if (want is Type.TAsyncGenerator(wantStream, _, _, _)) {
+    if (got is Type.TAsyncGenerator(gotStream, _, _, _)) {
+      return wantStream == gotStream
+    }
+  }
   return false
 }
 
@@ -608,6 +791,18 @@ function checkGeneratorResult(
         want,
         wantBinder,
         wantOrigin != -1 || gotOrigin != -1,
+        got,
+      )
+    }
+  }
+  if (want is Type.TAsyncGenerator(_, _, wantStreamBinder, wantStreamOrigin)) {
+    if (got is Type.TAsyncGenerator(_, _, _, gotStreamOrigin)) {
+      expectGenerator(
+        mutable checker,
+        pos,
+        want,
+        wantStreamBinder,
+        wantStreamOrigin != -1 || gotStreamOrigin != -1,
         got,
       )
     }
@@ -1451,7 +1646,8 @@ function hasNoFields(fieldsType: Type): bool {
       | Type.TBytes
       | Type.TVoid
       | Type.TStringBuilder
-      | Type.THandle => true
+      | Type.THandle
+      | Type.TSync => true
     _ => false
   }
 }
@@ -1492,6 +1688,15 @@ function checkIndex<W: Walker>(
       checkFixedIndex(mutable checker, targetType, index)
     }
     return fixedElement
+  }
+  // A lane of a vector is read with the FixedArray proof, and never written.
+  if (targetType is Type.TVector(lane, _)) {
+    if (checker.assigningId == nodeId) {
+      reportLaneWrite(mutable checker, pos, targetType)
+    } else if (indexType == Type.TInt) {
+      checkFixedIndex(mutable checker, targetType, index)
+    }
+    return copy(lane)
   }
   if (targetType is Type.TStruct(structIndex)) {
     if (checker.structs[structIndex].tuple) {
@@ -1558,6 +1763,11 @@ function checkUnary<W: Walker>(
   }
   const operandType = checkExpression(mutable checker, walker, operand, want)
   checker.negatedLiteralId = -1
+  // `!` on a vector is the error it is on a number.
+  if (isVector(operandType) && operator != "!") {
+    checkVectorUnary(mutable checker, pos, operator, operandType)
+    return operandType
+  }
   if (operator == "-") {
     if (!isNumeric(operandType)) {
       const text = typeString(checker, operandType)
@@ -1736,6 +1946,9 @@ function checkBinary<W: Walker>(
     rightType = checkExpression(mutable checker, walker, right, Some(leftType))
     popScope(mutable checker)
   }
+  if (operator != "&&" && operator != "||" && (isVector(leftType) || isVector(rightType))) {
+    return checkVectorOperator(mutable checker, pos, operator, leftType, rightType)
+  }
   const leftText = typeString(checker, leftType)
   const rightText = typeString(checker, rightType)
 
@@ -1841,7 +2054,8 @@ export function containsOpen(checker: Checker, searched: Type, parameters: Array
     Type.TArray(element)
       | Type.TBox(element)
       | Type.TPtr(element)
-      | Type.TAsync(element) => containsOpen(checker, element, parameters)
+      | Type.TAsync(element)
+      | Type.TAsyncGenerator(element, _, _, _) => containsOpen(checker, element, parameters)
     Type.TFixedArray(element, length) =>
       containsOpen(checker, element, parameters) || containsOpen(checker, length, parameters)
     Type.TGenerator(element, _, _, _, input) =>
@@ -2102,11 +2316,16 @@ function inferGenericStruct<W: Walker>(
 function checkArrayLiteral<W: Walker>(
   mutable checker: Checker,
   walker: W,
+  nodeId: int,
   pos: Pos,
   elements: Array<Expr>,
   isTuple: bool,
   want: Option<Type>,
 ): Type from want uses alloc {
+  // The values of a tagged template are checked against the tag's value type.
+  if (nodeId == checker.taggedValues) {
+    return TaggedTemplates.checkTemplateValues(mutable checker, walker, elements, want)
+  }
   if (isTuple) {
     return copy(Walker.checkTuple(walker, mutable checker, pos, elements, want))
   }
@@ -2119,6 +2338,17 @@ function checkArrayLiteral<W: Walker>(
     if (want is Some(fixedType)) {
       reportLiteralLength(mutable checker, pos, fixedType, Arrays.length(elements))
       return fixedType
+    }
+  }
+  // An expected vector type makes the literal one, with every lane given.
+  if (want is Some(Type.TVector(lane, _))) {
+    for (const element of Arrays.values(elements)) {
+      const found = checkExpression(mutable checker, walker, element, Some(lane))
+      expectType(mutable checker, getExpressionPos(element), Some(lane), found)
+    }
+    if (want is Some(vectorType)) {
+      reportLaneCount(mutable checker, pos, vectorType, Arrays.length(elements))
+      return vectorType
     }
   }
   // The expected type gives the element type, or else the first element.
@@ -2420,7 +2650,7 @@ function collectStatementExpressions(statement: Stmt, mutable found: Array<Expr>
       }
       collectBlockExpressions(body, mutable found)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
       collectExpressionAndArms(iterable, mutable found)
       collectBlockExpressions(body, mutable found)
     }
@@ -2511,8 +2741,18 @@ export function checkBuiltinCall<W: Walker>(
   setRef(mutable checker, nodeId, Ref.Builtin(builtin))
   const info = copy(checker.registry.functions[builtin])
   if (info.check != "" && info.check != "fixed") {
+    // A std/simd call takes its vector type from a type argument, as from an expected type.
+    let callWant = want
+    if (Str.startsWith(info.check, "checkSimd")) {
+      if (checker.callTypeArguments[nodeId] is Some(written)) {
+        if (Arrays.length(written) == 1) {
+          callWant = Some(resolveType(mutable checker, written[0]))
+          checker.callTypeArguments[nodeId] = []
+        }
+      }
+    }
     return copy(
-      Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, want),
+      Walker.checkStdCall(walker, mutable checker, pos, arguments, info.name, info.check, callWant),
     )
   }
 
@@ -2907,6 +3147,7 @@ function checkConstValue(mutable checker: Checker, name: string, value: Expr): b
       | Expr.CharLit(_, _, _)
       | Expr.BoolLit(_, _, _) => true
     Expr.TemplateLit(_, _, parts) => checkConstValues(mutable checker, name, parts)
+    Expr.TemplateParts(_, _, _) => true
     Expr.Ident(_, _, _) => true
     Expr.FieldExpr(nodeId, _, target, _) => checkConstField(mutable checker, name, nodeId, target)
     Expr.UnaryExpr(_, _, _, operand) => checkConstValue(mutable checker, name, operand)
@@ -2992,9 +3233,10 @@ function checkConstCall(
   callee: Expr,
   arguments: Array<Arg>,
 ): bool uses alloc {
-  // Constructor calls and calls of `@const` functions are allowed, with constant arguments.
+  // Constructor calls, distinct type calls (`Port.from(8080)`, D116) and calls of `@const`
+  // functions are allowed, with constant arguments.
   const ref = getRef(checker, nodeId)
-  if (ref is Ref.Constructor(_, _) || isConstFunctionCall(checker, ref)) {
+  if (ref is Ref.Constructor(_, _) || ref is Ref.Distinct(_) || isConstFunctionCall(checker, ref)) {
     for (const arg of Arrays.values(arguments)) {
       if (!checkConstValue(mutable checker, name, arg.value)) {
         return false
@@ -3079,11 +3321,20 @@ export function isConstantValue(checker: Checker, expression: Expr): bool {
       | Expr.BoolLit(_, _, _) => true
     Expr.UnaryExpr(_, _, _, operand) => isConstantValue(checker, operand)
     Expr.ArrayLit(_, _, elements, _) => allConstant(checker, elements)
-    Expr.Ident(nodeId, _, _) => getRef(checker, nodeId) is Ref.Constructor(_, _)
-    Expr.CallExpr(nodeId, _, _, _, arguments) =>
-      getRef(checker, nodeId) is Ref.Constructor(_, _) && allArgumentsConstant(checker, arguments)
+    Expr.Ident(nodeId, _, _) | Expr.FieldExpr(nodeId, _, _, _) =>
+      getRef(checker, nodeId) is Ref.Constructor(_, _)
+    Expr.CallExpr(nodeId, _, callee, _, arguments) =>
+      isConstantCallee(checker, nodeId, callee) && allArgumentsConstant(checker, arguments)
     _ => false
   }
+}
+
+function isConstantCallee(checker: Checker, nodeId: int, callee: Expr): bool {
+  // A constructor, or a distinct type's `from`, which checkDistinctCall proves (D116).
+  if (getRef(checker, nodeId) is Ref.Distinct(_)) {
+    return callee is Expr.FieldExpr(_, _, _, "from")
+  }
+  return getRef(checker, nodeId) is Ref.Constructor(_, _)
 }
 
 function allArgumentsConstant(checker: Checker, arguments: Array<Arg>): bool {

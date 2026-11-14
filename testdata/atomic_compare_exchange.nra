@@ -1,0 +1,40 @@
+// A spin lock from Atomic.compareExchange on an Atomic<bool>: four threads
+// take the flag, add one to a count with a separate load and store, which
+// only the flag keeps from losing updates, and give the flag back.
+import * as Thread from "std/thread"
+import * as Atomic from "std/atomic"
+import * as Int from "std/int"
+
+function lock(flag: Atomic.Atomic<bool>): int {
+  // Spins until the flag goes from false to true; counts the failed tries.
+  let tries = 0
+  while (!Atomic.compareExchange(flag, false, true)) {
+    tries++
+  }
+  return tries
+}
+
+function work(flag: Atomic.Atomic<bool>, count: Atomic.Atomic<int>) {
+  for (let index = 0; index < 5000; index++) {
+    lock(flag)
+    // Only the holder of the flag reads and writes here, so a load and a
+    // store in two steps lose nothing.
+    Atomic.store(count, Atomic.load(count) + 1)
+    Atomic.store(flag, false)
+  }
+}
+
+export function run(_args: Array<string>): int {
+  const flag = Atomic.create(false)
+  const count = Atomic.create(0)
+  const started = Thread.scope((scope) => {
+    for (let index = 0; index < 4; index++) {
+      Thread.start(scope, () => work(flag, count))
+    }
+    return 4
+  })
+  print(`${Int.toString(started)} threads, count ${Int.toString(Atomic.load(count))}`)
+  print(`free again: ${Atomic.compareExchange(flag, false, true) ? "yes" : "no"}`)
+  print(`taken now: ${Atomic.compareExchange(flag, false, true) ? "no" : "yes"}`)
+  return 0
+}

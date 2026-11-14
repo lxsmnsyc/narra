@@ -1,0 +1,98 @@
+// break, continue, return and labeled exits out of nested `for await` loops.
+// Each exit releases the loop's stream: a stream nobody else holds is freed at
+// the yield it is parked at, with what its body holds there. The last stream
+// holds a connection at its yield, so the server reads the end of the stream
+// as soon as the loop breaks.
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Net from "std/async/net"
+import { Listener } from "std/async/net"
+
+async function* numbers(label: string, count: int): AsyncGenerator<int> uses (io, alloc) {
+  let held: Array<string> = []
+  for (let value = 1; value <= count; value++) {
+    held = [`${label} ${Int.toString(value)}`]
+    await Async.idle()
+    yield value
+  }
+  print(`${label} ends after ${held[0]}`)
+}
+
+async function findOver(limit: int): int uses io, alloc {
+  for await (const value of numbers("search", 10)) {
+    if (value > limit) {
+      return value
+    }
+  }
+  return -1
+}
+
+async function* connected(port: int): AsyncGenerator<int> uses (io, alloc) {
+  const connection = await Net.connect("127.0.0.1", port)
+  if (connection is Err(_)) {
+    return
+  }
+  yield 1
+  yield 2
+  // Never reached: the reader breaks at the first value.
+  const _written = await Net.write(connection.value, Bytes.fromString("late"))
+}
+
+async function readEnd(listener: Listener): string uses io, alloc {
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(_)) {
+    return "accept failed"
+  }
+  const data = await Net.read(accepted.value, 16)
+  if (data is Err(_)) {
+    return "read failed"
+  }
+  return `server read ${Int.toString(Bytes.length(data.value))} bytes`
+}
+
+export async function run(_args: Array<string>): int {
+  // continue skips the even values; break leaves at 5.
+  for await (const value of numbers("plain", 9)) {
+    if (value % 2 == 0) {
+      continue
+    }
+    if (value > 5) {
+      break
+    }
+    print(`plain got ${Int.toString(value)}`)
+  }
+  print("after plain")
+
+  // A labeled continue and a labeled break leave the inner loop for the outer one.
+  outer: for await (const row of numbers("rows", 3)) {
+    for await (const column of numbers("columns", 3)) {
+      if (column == 2 && row == 1) {
+        continue outer
+      }
+      if (row == 3) {
+        break outer
+      }
+      print(`cell ${Int.toString(row)} ${Int.toString(column)}`)
+    }
+  }
+  print("after nested")
+
+  // return from inside the loop.
+  print(`found ${Int.toString(await findOver(3))}`)
+
+  // The stream holds its connection at the yield; the break frees both.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    print("listen failed")
+    return 1
+  }
+  const server = readEnd(listener.value)
+  for await (const value of connected(Net.localPort(listener.value))) {
+    print(`connected got ${Int.toString(value)}`)
+    break
+  }
+  print("after connected")
+  print(await server)
+  return 0
+}

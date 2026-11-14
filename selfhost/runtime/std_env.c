@@ -103,8 +103,7 @@ static char* narra_env_buf;
 static size_t narra_env_len;
 static int64_t narra_env_n = -1;
 
-static void narra_env_load(void) {
-  if (narra_env_n >= 0) return;
+static void narra_env_read(void) {
   narra_env_n = 0;
   FILE* f = fopen("/proc/self/cmdline", "rb");
   if (!f) return;
@@ -126,6 +125,16 @@ static void narra_env_load(void) {
     if (narra_env_buf[i] == 0) narra_env_n++;
   }
 }
+
+// In thread mode (D111) two threads may ask at once, so the file is read once.
+#ifdef NARRA_THREADS
+static pthread_once_t narra_env_once = PTHREAD_ONCE_INIT;
+static void narra_env_load(void) { pthread_once(&narra_env_once, narra_env_read); }
+#else
+static void narra_env_load(void) {
+  if (narra_env_n < 0) narra_env_read();
+}
+#endif
 static int64_t narra_env_argc(void) { narra_env_load(); return narra_env_n; }
 static lstr* narra_env_arg(int64_t i) {
   narra_env_load();

@@ -1,0 +1,44 @@
+// One thread allocates many small values and another frees them, round after
+// round. Frees from the second thread go back to the heap of the first, which
+// a later thread takes over, so memory stays bounded however many rounds run.
+import * as Thread from "std/thread"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+function makeValues(round: int): Array<string> uses alloc {
+  let values: Array<string> = []
+  for (const index of Ranges.between(0, 5000)) {
+    Arrays.push(mutable values, `value ${Int.toString(round)}-${Int.toString(index)}`)
+  }
+  return values
+}
+
+function measure(values: Array<string>): int {
+  let total = 0
+  for (const value of Arrays.values(values)) {
+    total += Str.length(value)
+  }
+  return total
+}
+
+export function run(args: Array<string>): int {
+  // An argument doubles the rounds, to compare the memory of two runs.
+  let rounds = 40
+  if (Arrays.length(args) > 1) {
+    rounds = 80
+  }
+  let total = 0
+  for (const round of Ranges.between(0, rounds)) {
+    total += Thread.scope((scope) => {
+      const producer = Thread.start(scope, () => makeValues(round % 10))
+      const values = Thread.join(producer)
+      // The values are freed here when the scope's body ends: not on their thread.
+      const consumer = Thread.start(scope, () => measure(values))
+      return Thread.join(consumer)
+    })
+  }
+  print(`total ${Int.toString(total)}`)
+  return 0
+}

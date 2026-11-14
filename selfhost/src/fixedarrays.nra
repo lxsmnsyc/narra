@@ -10,7 +10,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import { Expr, Pos, Stmt } from "narrac/ast"
-import { Type, findFixedLength, typeKeys } from "narrac/types"
+import { Type, findFixedLength, findIndexedLength, typeKeys } from "narrac/types"
 import {
   Checker,
   Ref,
@@ -33,7 +33,7 @@ import {
 
 export function checkFixedIndex(mutable checker: Checker, arrayType: Type, index: Expr) uses alloc {
   // An open length is proven in each instance, where it is a constant.
-  const length = findFixedLength(arrayType)
+  const length = findIndexedLength(arrayType)
   if (length < 0) {
     return
   }
@@ -64,7 +64,12 @@ export function checkFixedIndex(mutable checker: Checker, arrayType: Type, index
   if (isComparisonProven(fact, ">=", 0) && isComparisonProven(fact, "<", length)) {
     return
   }
-  const hint = describeIndexHint(checker, index, fact, length)
+  // A vector lane has no FixedArrays.get to fall back on.
+  let fallback = ", or read it with FixedArrays.get"
+  if (arrayType is Type.TVector(_, _)) {
+    fallback = ""
+  }
+  const hint = describeIndexHint(checker, index, fact, length, fallback)
   const instance = describeInstance(checker)
   reportError(
     mutable checker,
@@ -86,6 +91,7 @@ function describeIndexHint(
   index: Expr,
   fact: Fact,
   length: int,
+  fallback: string,
 ): string uses alloc {
   const example = `if (i >= 0 && i < ${Int.toString(length)}) { ... }`
   if (index is Expr.Ident(nodeId, _, name)) {
@@ -96,10 +102,10 @@ function describeIndexHint(
       } else if (isComparisonProven(fact, "<", length)) {
         missing = "check that it is not negative first"
       }
-      return `${missing}, as in \`if (${name} >= 0 && ${name} < ${Int.toString(length)}) { ... }\`, or read it with FixedArrays.get`
+      return `${missing}, as in \`if (${name} >= 0 && ${name} < ${Int.toString(length)}) { ... }\`${fallback}`
     }
   }
-  return `put the index in a local and check it first, as in \`${example}\`, or read it with FixedArrays.get`
+  return `put the index in a local and check it first, as in \`${example}\`${fallback}`
 }
 
 function describeInstance(checker: Checker): string uses alloc {

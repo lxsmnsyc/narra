@@ -1,0 +1,55 @@
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as F32 from "std/f32"
+import * as Simd from "std/simd"
+
+// The values are multiples of 1/8 and 1/4, so every sum is exact and the answer
+// does not depend on the order of the additions.
+function fillLeft(count: int): Array<f32> uses alloc {
+  let items: Array<f32> = Arrays.withCapacity(count)
+  for (let i = 0; i < count; i++) {
+    Arrays.push(mutable items, F32.from(i % 16 - 8) * 0.125)
+  }
+  return items
+}
+
+function fillRight(count: int): Array<f32> uses alloc {
+  let items: Array<f32> = Arrays.withCapacity(count)
+  for (let i = 0; i < count; i++) {
+    Arrays.push(mutable items, F32.from(i % 7 - 3) * 0.25)
+  }
+  return items
+}
+
+function dot(left: Array<f32>, right: Array<f32>, passes: int): f32 {
+  // Eight lanes at a time through an F32x8 accumulator, summed once at the end.
+  let total: F32x8 = Simd.splat(0.0)
+  for (let pass = 0; pass < passes; pass++) {
+    let start = 0
+    while (true) {
+      const a: Option<F32x8> = Simd.load(left, start)
+      const b: Option<F32x8> = Simd.load(right, start)
+      if (a is Some(leftLanes)) {
+        if (b is Some(rightLanes)) {
+          const product = leftLanes * rightLanes
+          total += product
+          start += 8
+          continue
+        }
+      }
+      break
+    }
+  }
+  return Simd.sum(total)
+}
+
+export function run(_args: Array<string>): int {
+  const count = 1048576
+  const left = fillLeft(count)
+  const right = fillRight(count)
+  const result = dot(left, right, 200)
+  // The sum is a multiple of 1/32.
+  const scaled = match (F32.truncate(result * 32.0)) { Some(value) => value, None => 0 }
+  print(Int.toString(scaled))
+  return 0
+}

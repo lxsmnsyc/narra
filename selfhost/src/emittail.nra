@@ -7,7 +7,7 @@
 // A large parameter is a pointer to the caller's value until the first jump,
 // and then to a variable of the function that holds the new value.
 import { filledArray } from "narrac/textops"
-import { Stmt, Block, Expr, Arg, FuncDecl, MatchArm } from "narrac/ast"
+import { Stmt, Block, Expr, Arg, Param, FuncDecl, MatchArm } from "narrac/ast"
 import { Type } from "narrac/types"
 import {
   Ref,
@@ -35,7 +35,9 @@ import {
   isPointerParameter,
   needsRc,
   retainCode,
+  switchBody,
 } from "narrac/emitstate"
+import * as ParamDefaults from "narrac/paramdefaults"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 
@@ -88,6 +90,39 @@ function passesParameter(emitter: Emitter, argument: Expr, index: int): bool {
   return false
 }
 
+function orderTailArguments(
+  checker: Checker,
+  nodeId: int,
+  written: Array<Arg>,
+  parameters: Array<Param>,
+): Array<Arg> uses alloc {
+  // Every argument in parameter order; a left-out default is passed too (D115).
+  if (ParamDefaults.leavesOutDefaults(parameters, written)) {
+    return ParamDefaults.fillArguments(parameters, written)
+  }
+  return copy(orderArguments(checker, nodeId, written))
+}
+
+function findTailParameterIndexes(
+  checker: Checker,
+  nodeId: int,
+  written: Array<Arg>,
+  parameters: Array<Param>,
+): Array<int> uses alloc {
+  // The parameter of each written argument.
+  if (!ParamDefaults.leavesOutDefaults(parameters, written)) {
+    return findParameterIndexes(checker, nodeId, Arrays.length(written))
+  }
+  let indexes = filledArray(-1, Arrays.length(written))
+  const writtenIndexes = ParamDefaults.findWrittenIndexes(parameters, written)
+  for (const parameter of Ranges.between(0, Arrays.length(parameters))) {
+    if (writtenIndexes[parameter] >= 0) {
+      indexes[writtenIndexes[parameter]] = parameter
+    }
+  }
+  return indexes
+}
+
 function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): bool uses alloc {
   // A function-type parameter keeps the plain call, because a closure made for
   // the call may live on the stack of the iteration that ends at the jump. A
@@ -95,8 +130,8 @@ function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): b
   if (expression is Expr.CallExpr(nodeId, _, _, _, written)) {
     if (callTarget(emitter, nodeId) is Some(target)) {
       if (cachedFunctionName(emitter.checker, emitter.typeNames, target) == emitter.owner) {
-        const arguments = orderArguments(emitter.checker, nodeId, written)
         const parameters = functionDeclaration(emitter.checker, program).parameters
+        const arguments = orderTailArguments(emitter.checker, nodeId, written, parameters)
         const types = parameterTypes(emitter.checker, program)
         if (Arrays.length(arguments) != Arrays.length(parameters)) {
           return false
@@ -196,7 +231,7 @@ function scanStatement(
   if (statement is Stmt.CForStmt(_, _, _, _, _, cForBody)) {
     scanBlock(emitter, program, cForBody, false, mutable found)
   }
-  if (statement is Stmt.ForStmt(_, _, _, _, _, forBody, _)) {
+  if (statement is Stmt.ForStmt(_, _, _, _, _, forBody, _, _)) {
     scanBlock(emitter, program, forBody, false, mutable found)
   }
   if (statement is Stmt.ExprStmt(_, expression)) {
@@ -256,7 +291,7 @@ function findPassedThrough(
   let passed = filledArray(true, Arrays.length(declaration.parameters))
   for (const call of Arrays.values(calls)) {
     if (call is Expr.CallExpr(nodeId, _, _, _, written)) {
-      const arguments = orderArguments(emitter.checker, nodeId, written)
+      const arguments = orderTailArguments(emitter.checker, nodeId, written, declaration.parameters)
       for (const index of Ranges.between(0, Arrays.length(arguments))) {
         if (!passesParameter(emitter, arguments[index].value, index)) {
           passed[index] = false
@@ -333,12 +368,14 @@ export function emitTailJump<W: EmitWalker>(
     const parameters = copy(functionDeclaration(emitter.checker, program).parameters)
     const types = copy(parameterTypes(emitter.checker, program))
     // Evaluate in written order; values is in parameter order.
-    const parameterIndexes = findParameterIndexes(
+    const callId = getExpressionId(call)
+    const parameterIndexes = findTailParameterIndexes(
       emitter.checker,
-      getExpressionId(call),
-      Arrays.length(arguments),
+      callId,
+      arguments,
+      parameters,
     )
-    let values = filledArray("", Arrays.length(arguments))
+    let values = filledArray("", Arrays.length(parameters))
     for (const index of Ranges.between(0, Arrays.length(arguments))) {
       const parameter = parameterIndexes[index]
       if (!parameters[parameter].isMutable && !isBorrowedParameter(emitter, parameter)) {
@@ -348,6 +385,29 @@ export function emitTailJump<W: EmitWalker>(
           value = temp(mutable emitter, types[parameter], value)
         }
         values[parameter] = value
+      }
+    }
+    // A left-out default is built from the call's default body, after the written arguments.
+    for (const parameter of Arrays.values(
+      ParamDefaults.findFilledParameters(parameters, arguments),
+    )) {
+      if (parameters[parameter].default is Some(defaultValue)) {
+        const body = ParamDefaults.findCallDefaultBody(
+          emitter.checker,
+          emitter.body,
+          callId,
+          parameter,
+        )
+        if (body >= 0) {
+          const callerBody = switchBody(mutable emitter, body)
+          const code = EmitWalker.emitExpression(walker, mutable emitter, defaultValue)
+          emitter.body = callerBody
+          let value = consume(mutable emitter, code.text, code.owned, types[parameter])
+          if (!needsRc(emitter, types[parameter])) {
+            value = temp(mutable emitter, types[parameter], value)
+          }
+          values[parameter] = value
+        }
       }
     }
     unwindAll(mutable emitter)

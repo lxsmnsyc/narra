@@ -30,9 +30,12 @@ import {
   Stmt,
   Expr,
   Arg,
+  FieldInit,
+  Param,
   findAttribute,
 } from "narrac/ast"
 import { checkTrusted } from "narrac/unsafecode"
+import { writeTypeEffects } from "narrac/typeuses"
 import { POSITION_LIMIT } from "narrac/lexer"
 import { checkExternFunctions } from "narrac/externs"
 import { quoteDump } from "narrac/modules"
@@ -47,6 +50,9 @@ import {
   reportErrorIn,
   enter,
   findBodySlot,
+  findBody,
+  containsTypeParameter,
+  instanceDefaultKey,
   getExpressionId,
   getExpressionPos,
   orderArguments,
@@ -66,6 +72,7 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 export struct Effect {
   name: string
@@ -327,7 +334,9 @@ function checkFunctionStores(mutable checker: Checker, mutable state: EffectStat
         }
         // Creating a generator allocs its frame, and a function type cannot list that
         // effect apart from the effects of its generator result
-        const createsGenerator = wantResult is Type.TGenerator(_, _, _, _, _)
+        const createsGenerator =
+          wantResult is Type.TGenerator(_, _, _, _, _) ||
+            wantResult is Type.TAsyncGenerator(_, _, _, _)
         let extra = false
         for (const name of Arrays.values(found)) {
           if (createsGenerator && name == "alloc") {
@@ -380,7 +389,19 @@ function generatorEffects(
   type: Type,
 ): Array<string> from type uses alloc {
   let names: Array<string> = []
-  if (type is Type.TGenerator(_, effects, _, origin, _)) {
+  let effects: Array<string> = []
+  let origin = -1
+  let isGenerator = false
+  if (type is Type.TGenerator(_, generatorNames, _, generatorOrigin, _)) {
+    effects = generatorNames
+    origin = generatorOrigin
+    isGenerator = true
+  } else if (type is Type.TAsyncGenerator(_, streamNames, _, streamOrigin)) {
+    effects = streamNames
+    origin = streamOrigin
+    isGenerator = true
+  }
+  if (isGenerator) {
     // A private function* has no effects in its type: they are the body effects found so far.
     if (origin == -1) {
       return effects
@@ -407,7 +428,7 @@ function walkGeneratorRun(
   expression: Expr,
 ) uses alloc {
   if (copy(findNodeType(checker, state.body, getExpressionId(expression))) is Some(found)) {
-    if (found is Type.TGenerator(_, _, _, _, _)) {
+    if (found is Type.TGenerator(_, _, _, _, _) || found is Type.TAsyncGenerator(_, _, _, _)) {
       const via = typeString(checker, found)
       const pos = getExpressionPos(expression)
       const names = copy(generatorEffects(checker, state, found))
@@ -683,18 +704,23 @@ function analyseFunction(
       declaration.pos,
     )] = inferred
   }
-  if (!state.report || !declaration.exported || state.entries[key] is Some(_)) {
+  if (!state.report || state.entries[key] is Some(_)) {
     return
   }
 
   // The body may use only the declared effects. An exported function* runs
-  // its body where the generator runs, so they are in its return type.
+  // its body where the generator runs, so they are in its return type. A
+  // private function is inferred, unless it writes a `uses` list: then the
+  // list holds as it does for an exported one.
   let declared = declaration.effects
   if (declaration.generator) {
     declared = []
     if (declaration.result is Some(resultType)) {
       declared = resultType.effects
     }
+  }
+  if (!declaration.exported && Arrays.length(declared) == 0) {
+    return
   }
   for (const name of Arrays.values(sortEffectNames(out))) {
     if (containsName(declared, name)) {
@@ -863,7 +889,8 @@ function findCallee(
 
 function funcEffects(state: EffectState, callee: Callee): Array<Effect> from state uses alloc {
   // A call of an async function also allocates the task frame (D109 item 9).
-  if (callee.declaration.isAsync) {
+  // An async generator runs none of its body, as a function* (D110 item 6).
+  if (callee.declaration.isAsync && !callee.declaration.generator) {
     let set = copy(findBodyEffects(state, callee))
     addEffect(mutable set, "alloc", Pos { line: 0, column: 0 }, "")
     return set
@@ -937,6 +964,14 @@ function findTypeEffects(
       Type.TFunc(_, _, effects, binder, _),
     )
   ) {
+    // A function type bound inside a call result has its effects in the slot.
+    if (binder < -1) {
+      let bound: Array<Effect> = []
+      for (const name of Arrays.values(checker.boundGenerators[-2 - binder])) {
+        addEffect(mutable bound, name, Pos { line: 0, column: 0 }, "")
+      }
+      return Some(bound)
+    }
     let source: Option<Expr> = None
     if (binder >= 0) {
       source = findSourceCall(checker, state, expression)
@@ -1121,9 +1156,13 @@ function walkStatement(
         walkStatement(mutable checker, mutable state, mutable out, stepStatement)
       }
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, awaitPos) => {
       walkExpression(mutable checker, mutable state, mutable out, iterable)
       walkGeneratorRun(mutable checker, state, mutable out, iterable)
+      // Each turn of `for await` allocates a step, as Async.next does.
+      if (awaitPos is Some(written)) {
+        addEffect(mutable out, "alloc", written, "for await")
+      }
       walkBlock(mutable checker, mutable state, mutable out, body)
     }
     Stmt.YieldStmt(_, value, delegate, _) => {
@@ -1256,12 +1295,14 @@ function walkExpression(
         addEffect(mutable out, "alloc", pos, "string +")
       }
     }
-    Expr.StructLit(_, _, _, _, fields, spread) => {
+    Expr.StructLit(nodeId, pos, _, _, fields, spread) => {
       for (const field of Arrays.values(fields)) {
         walkExpression(mutable checker, mutable state, mutable out, field.value)
       }
       if (spread is Some(base)) {
         walkExpression(mutable checker, mutable state, mutable out, base)
+      } else {
+        walkLeftOutFieldDefaults(mutable checker, mutable state, mutable out, nodeId, pos, fields)
       }
     }
     Expr.ArrayLit(literalId, pos, elements, isTuple) => {
@@ -1386,6 +1427,104 @@ function walkCall(
   }
 }
 
+function walkFilledDefaults(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  nodeId: int,
+  pos: Pos,
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+) uses alloc {
+  // A left-out default is built at the call, so its effects (`alloc` for an
+  // array literal) belong to the call, as if the caller had written it.
+  const callerBody = state.body
+  for (const index of Arrays.values(ParamDefaults.findFilledParameters(parameters, arguments))) {
+    const body = ParamDefaults.findCallDefaultBody(checker, callerBody, nodeId, index)
+    if (body < 0) {
+      continue
+    }
+    if (parameters[index].default is Some(value)) {
+      let inner: Array<Effect> = []
+      state.body = body
+      walkExpression(mutable checker, mutable state, mutable inner, value)
+      state.body = callerBody
+      for (const effect of Arrays.values(inner)) {
+        addEffect(mutable out, effect.name, pos, `the default of ${parameters[index].name}`)
+      }
+    }
+  }
+}
+
+function findFieldDefaultKey(checker: Checker, structIndex: int, field: string): string uses alloc {
+  // The body key the checker gave the default (see checkFieldDefaults in body.nra).
+  const info = checker.structs[structIndex]
+  if (info.generic >= 0) {
+    for (const declared of Arrays.values(checker.generics[info.generic].fields)) {
+      if (declared.name == field && containsTypeParameter(checker, declared.fieldType)) {
+        return instanceDefaultKey(Type.TStruct(structIndex), field)
+      }
+    }
+  }
+  if (info.module == "") {
+    return `default|${info.name}|${field}`
+  }
+  return `default|${info.module}.${info.name}|${field}`
+}
+
+function walkLeftOutFieldDefaults(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  nodeId: int,
+  pos: Pos,
+  fields: Array<FieldInit>,
+) uses alloc {
+  // A left-out field default is built at the literal, so its effects (`alloc`
+  // for an array literal) belong to the literal, as if the caller had written it.
+  if (findNodeType(checker, state.body, nodeId) is Some(Type.TStruct(structIndex))) {
+    walkStructDefaults(mutable checker, mutable state, mutable out, structIndex, pos, fields)
+  }
+}
+
+function walkStructDefaults(
+  mutable checker: Checker,
+  mutable state: EffectState,
+  mutable out: Array<Effect>,
+  structIndex: int,
+  pos: Pos,
+  fields: Array<FieldInit>,
+) uses alloc {
+  const literalBody = state.body
+  for (const declared of Arrays.values(copy(checker.structs[structIndex].fields))) {
+    if (declared.default is None) {
+      continue
+    }
+    let isGiven = false
+    for (const field of Arrays.values(fields)) {
+      if (field.name == declared.name) {
+        isGiven = true
+      }
+    }
+    if (isGiven) {
+      continue
+    }
+    const body = findBody(checker, findFieldDefaultKey(checker, structIndex, declared.name))
+    if (body < 0) {
+      continue
+    }
+    if (declared.default is Some(value)) {
+      let inner: Array<Effect> = []
+      state.body = body
+      walkExpression(mutable checker, mutable state, mutable inner, value)
+      state.body = literalBody
+      for (const effect of Arrays.values(inner)) {
+        addEffect(mutable out, effect.name, pos, `the default of ${declared.name}`)
+      }
+    }
+  }
+}
+
 function walkCallEffects(
   mutable checker: Checker,
   mutable state: EffectState,
@@ -1411,7 +1550,20 @@ function walkCallEffects(
       addCalleeEdge(mutable state, calleeInfo)
     }
     // The callee's parameters pair with the arguments in parameter order.
-    const ordered = orderArguments(checker, nodeId, arguments)
+    let ordered = orderArguments(checker, nodeId, arguments)
+    const parameters = calleeInfo.declaration.parameters
+    if (ParamDefaults.leavesOutDefaults(parameters, arguments)) {
+      ordered = ParamDefaults.fillArguments(parameters, arguments)
+      walkFilledDefaults(
+        mutable checker,
+        mutable state,
+        mutable out,
+        nodeId,
+        pos,
+        parameters,
+        arguments,
+      )
+    }
     walkUserCall(mutable checker, mutable state, mutable out, pos, calleeInfo, ordered)
     bindResultEffects(mutable checker, state, nodeId, calleeInfo, ordered)
     return
@@ -1447,7 +1599,10 @@ function walkCallEffects(
       if (
         findNodeType(checker, state.body, getExpressionId(callee)) is Some(
           Type.TFunc(_, Type.TGenerator(_, _, _, _, _), _, _, _),
-        )
+        ) ||
+          findNodeType(checker, state.body, getExpressionId(callee)) is Some(
+            Type.TFunc(_, Type.TAsyncGenerator(_, _, _, _), _, _, _),
+          )
       ) {
         addEffect(mutable out, "alloc", pos, "")
       }
@@ -1555,6 +1710,9 @@ function addValueBoundEffects(
       } else if (parameters[index] is Type.TGenerator(_, generatorNames, generatorBinder, _, _)) {
         parameterEffects = generatorNames
         binder = generatorBinder
+      } else if (parameters[index] is Type.TAsyncGenerator(_, streamNames, streamBinder, _)) {
+        parameterEffects = streamNames
+        binder = streamBinder
       }
       if (binder < 0) {
         continue
@@ -1641,28 +1799,84 @@ function bindResultEffects(
   callee: Callee,
   arguments: Array<Arg>,
 ) uses alloc {
-  if (findNodeType(checker, state.body, nodeId) is Some(Type.TGenerator(_, _, _, origin, _))) {
-    // Only the call that made the type fills it.
-    if (origin >= -1 || checker.boundCallIds[-2 - origin] != nodeId) {
-      return
-    }
-    const declaration = callee.declaration
+  // Most programs bind no slot, so most calls skip the type walk.
+  if (Arrays.length(checker.boundCallIds) == 0) {
+    return
+  }
+  const slots = findBoundSlots(checker, state.body, nodeId)
+  const declaration = callee.declaration
+  const nowhere = Pos { line: 0, column: 0 }
+  for (const slot of Arrays.values(slots)) {
+    // A name that is not a variable of the callee stands for itself.
     let set: Array<Effect> = []
-    const nowhere = Pos { line: 0, column: 0 }
-    if (declaration.result is Some(resultType)) {
-      for (const name of Arrays.values(resultType.effects)) {
-        if (!containsName(declaration.effectParameters, name)) {
-          addEffect(mutable set, name, nowhere, "")
-          continue
-        }
-        for (const passed of Arrays.values(
-          findBoundEffects(checker, state, declaration, arguments, name),
-        )) {
-          addEffect(mutable set, passed, nowhere, "")
-        }
+    for (const name of Arrays.values(copy(checker.boundNames[slot]))) {
+      if (!containsName(declaration.effectParameters, name)) {
+        addEffect(mutable set, name, nowhere, "")
+        continue
+      }
+      for (const passed of Arrays.values(
+        findBoundEffects(checker, state, declaration, arguments, name),
+      )) {
+        addEffect(mutable set, passed, nowhere, "")
       }
     }
-    checker.boundGenerators[-2 - origin] = sortEffectNames(set)
+    checker.boundGenerators[slot] = sortEffectNames(set)
+  }
+}
+
+function findBoundSlots(checker: Checker, body: int, nodeId: int): Array<int> uses alloc {
+  // The slots that this call made, read from its result type.
+  let slots: Array<int> = []
+  if (findNodeType(checker, body, nodeId) is Some(resultType)) {
+    collectBoundSlots(checker, nodeId, resultType, mutable slots)
+  }
+  return copy(slots)
+}
+
+function collectBoundSlots(
+  checker: Checker,
+  nodeId: int,
+  type: Type,
+  mutable slots: Array<int>,
+) uses alloc {
+  // Only the call that made a slot fills it: a generic `id(x)` returns the same type.
+  match (type) {
+    Type.TGenerator(element, _, _, origin, _) => {
+      if (origin < -1 && checker.boundCallIds[-2 - origin] == nodeId) {
+        Arrays.push(mutable slots, -2 - origin)
+      }
+      collectBoundSlots(checker, nodeId, element, mutable slots)
+    }
+    Type.TAsyncGenerator(element, _, _, origin) => {
+      if (origin < -1 && checker.boundCallIds[-2 - origin] == nodeId) {
+        Arrays.push(mutable slots, -2 - origin)
+      }
+      collectBoundSlots(checker, nodeId, element, mutable slots)
+    }
+    Type.TFunc(_, _, _, binder, _) => {
+      if (binder < -1 && checker.boundCallIds[-2 - binder] == nodeId) {
+        Arrays.push(mutable slots, -2 - binder)
+      }
+    }
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TAsync(element)
+      | Type.TFixedArray(element, _) => collectBoundSlots(checker, nodeId, element, mutable slots)
+    Type.TMap(key, value) => {
+      collectBoundSlots(checker, nodeId, key, mutable slots)
+      collectBoundSlots(checker, nodeId, value, mutable slots)
+    }
+    Type.TStruct(index) => {
+      for (const argument of Arrays.values(checker.structs[index].arguments)) {
+        collectBoundSlots(checker, nodeId, argument, mutable slots)
+      }
+    }
+    Type.TEnum(index) => {
+      for (const argument of Arrays.values(checker.enums[index].arguments)) {
+        collectBoundSlots(checker, nodeId, argument, mutable slots)
+      }
+    }
+    _ => {}
   }
 }
 
@@ -1747,7 +1961,8 @@ function walkUserCall(
     if (Arrays.length(extra) > 0) {
       const argumentPos = getExpressionPos(arguments[index].value)
       const quoted = Str.join(extra, "`, `")
-      const listed = Str.join(extra, ", ")
+      // The type form: `uses io`, or `uses (alloc, io)` for two or more.
+      const listed = writeTypeEffects(extra)
       reportError(
         mutable checker,
         argumentPos,

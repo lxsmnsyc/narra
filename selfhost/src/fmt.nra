@@ -32,6 +32,7 @@ import {
   getStmtPos,
   getExprId,
   getPatternId,
+  getPatternStart,
 } from "narrac/trivia"
 import {
   Pos,
@@ -89,7 +90,7 @@ function printError(text: string) {
   const _ = Fs.writeText("/dev/stderr", `${text}\n`)
 }
 
-function writeStdout(text: string): int uses io {
+function writeStdout(text: string): int uses io, alloc {
   const written = Fs.writeText("/dev/stdout", text)
   if (written is Err(message)) {
     printError(message)
@@ -771,7 +772,7 @@ function printTypeParameters(
   return Docs.concat([text("<"), Docs.join(text(", "), items), text(">")])
 }
 
-function printParameter(printer: Printer, parameter: Param): Doc uses alloc {
+function printParameter(printer: Printer, parameter: Param): Doc from printer uses alloc {
   let parts: Array<Doc> = []
   if (parameter.isMutable) {
     Arrays.push(mutable parts, text("mutable "))
@@ -784,26 +785,17 @@ function printParameter(printer: Printer, parameter: Param): Doc uses alloc {
     Arrays.push(mutable parts, text(": "))
     Arrays.push(mutable parts, printer.printType(printer, type))
   }
+  if (parameter.default is Some(value)) {
+    Arrays.push(mutable parts, text(" = "))
+    Arrays.push(mutable parts, printer.printExpression(printer, value))
+  }
   return withComments(printer, getIdKey(parameter.id), Docs.concat(parts))
-}
-
-function canEndWithComma(declaration: FuncDecl): bool {
-  if (Arrays.length(declaration.parameters) == 0) {
-    return true
-  }
-  const last = declaration.parameters[Arrays.length(declaration.parameters) - 1]
-  if (last.type is Some(lastType)) {
-    // After a function type with `uses`, the comma would read as part of the effect list.
-    return !Exprs.endsWithUses(lastType)
-  }
-  return true
 }
 
 function printParameterList(
   printer: Printer,
   anchor: string,
   parameters: Array<Doc>,
-  hasTrailingComma: bool,
 ): Doc uses alloc {
   // A comment in an empty list is dangling on the function and goes inside the parentheses.
   if (Arrays.length(parameters) == 0 && hasDangling(printer, anchor)) {
@@ -814,7 +806,7 @@ function printParameterList(
       text(")"),
     ])
   }
-  return printList(printer, "(", ")", parameters, hasTrailingComma)
+  return printList(printer, "(", ")", parameters, true)
 }
 
 function printFunction(printer: Printer, declaration: FuncDecl): Doc from printer uses alloc {
@@ -833,12 +825,7 @@ function printFunction(printer: Printer, declaration: FuncDecl): Doc from printe
       declaration.effectParameters,
       declaration.constantParameters,
     ),
-    printParameterList(
-      printer,
-      getPosKey("d", declaration.pos),
-      parameters,
-      canEndWithComma(declaration),
-    ),
+    printParameterList(printer, getPosKey("d", declaration.pos), parameters),
   ]
   if (declaration.result is Some(result)) {
     Arrays.push(mutable parts, text(": "))
@@ -1004,7 +991,32 @@ function printDistinct(printer: Printer, declaration: DistinctDecl): Doc uses al
     text(`${prefix}distinct type ${declaration.name} = `),
     printer.printType(printer, declaration.base),
     printTraitLists(printer, declaration.implementations, declaration.derived),
+    copy(printRefinement(printer, declaration)),
   ])
+}
+
+function printRefinement(printer: Printer, declaration: DistinctDecl): Doc from printer uses alloc {
+  // ` requires a && b`, kept on the next line when it was written there.
+  if (Arrays.length(declaration.refinement) == 0) {
+    return text("")
+  }
+  let items: Array<Doc> = []
+  for (const index of Ranges.between(0, Arrays.length(declaration.refinement))) {
+    if (index > 0) {
+      Arrays.push(mutable items, text(" && "))
+    }
+    Arrays.push(mutable items, printer.printPattern(printer, declaration.refinement[index]))
+  }
+  const first = declaration.refinement[0]
+  const list = withComments(
+    printer,
+    `n${Int.toString(getPatternId(first))}`,
+    Docs.concat([text("requires "), Docs.concat(items)]),
+  )
+  if (getPatternStart(first).line > declaration.pos.line) {
+    return Docs.indent(Docs.concat([Doc.HardLine, list]))
+  }
+  return Docs.concat([text(" "), list])
 }
 
 function printAlias(printer: Printer, declaration: AliasDecl): Doc uses alloc {
@@ -1138,7 +1150,7 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc from printer
       step,
       body,
     )
-    Stmt.ForStmt(_, pos, label, name, iterable, body, reference) => printFor(
+    Stmt.ForStmt(_, pos, label, name, iterable, body, reference, awaitPos) => printFor(
       printer,
       pos,
       label,
@@ -1146,6 +1158,7 @@ function printStatementBody(printer: Printer, statement: Stmt): Doc from printer
       iterable,
       body,
       reference,
+      awaitPos,
     )
     Stmt.YieldStmt(_, value, delegate, binding) => printYield(printer, value, delegate, binding)
     Stmt.BreakStmt(_, label) => text(getJump("break", label))
@@ -1441,6 +1454,7 @@ function printFor(
   iterable: Expr,
   body: Block,
   reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
 ): Doc from printer uses alloc {
   let keyword = "const "
   let declaredName = name
@@ -1495,12 +1509,21 @@ function printFor(
   if (declaredPattern is Some(headPattern)) {
     head = Docs.concat([text(keyword), active.printPattern(active, headPattern)])
   }
+  // `for await (`: the keyword keeps the comments written on either side of it.
+  let opening = text("for (")
+  if (awaitPos is Some(written)) {
+    opening = Docs.concat([
+      text("for "),
+      withComments(active, getPosKey("k", written), text("await")),
+      text(" ("),
+    ])
+  }
   // A comment before the `)` stays inside the header, on a line of its own.
   const iterableDocument = active.printExpression(active, iterable)
   if (!hasTrailing(active, getIdKey(getExprId(iterable)))) {
     return Docs.concat([
       taken.prefix,
-      text("for ("),
+      opening,
       head,
       text(" of "),
       iterableDocument,
@@ -1510,7 +1533,7 @@ function printFor(
   }
   const header = Docs.group(
     Docs.concat([
-      text("for ("),
+      opening,
       head,
       text(" of "),
       Docs.indent(iterableDocument),

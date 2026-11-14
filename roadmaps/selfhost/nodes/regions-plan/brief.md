@@ -1,7 +1,7 @@
 ---
 id: regions-plan
 title: "Plan: regions from D100"
-status: todo
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 182127
 owns:
   - roadmaps/selfhost/nodes/regions/**
   - roadmaps/selfhost/nodes/regions-plan/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D113, diag E1270-E1279]
+reserves: [decision D113]
 provides: []
 depends_on: []
 ---

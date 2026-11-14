@@ -31,6 +31,7 @@ import {
   underlyingType,
   retainCode,
   releaseCode,
+  shareCode,
   noteHelper,
   useHelper,
 } from "narrac/emitstate"
@@ -190,18 +191,30 @@ function typeDefinition(emitter: Emitter, type: Type): string uses alloc {
 function buildVariantMembers(emitter: Emitter, enumIndex: int): string uses alloc {
   let builder = Str.builder()
   for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
-    if (Arrays.length(variant.fields) > 0) {
+    // A field of type void (Option<void> in a Thread<void>) has no member.
+    if (hasValueFields(variant)) {
       Str.append(mutable builder, " struct {")
       for (const field of Arrays.values(variant.fields)) {
-        Str.append(
-          mutable builder,
-          ` ${cachedCType(emitter.checker, emitter.typeNames, field.fieldType)} ${fieldName(field.name)};`,
-        )
+        if (field.fieldType != Type.TVoid) {
+          Str.append(
+            mutable builder,
+            ` ${cachedCType(emitter.checker, emitter.typeNames, field.fieldType)} ${fieldName(field.name)};`,
+          )
+        }
       }
       Str.append(mutable builder, ` } ${variantName(variant)};`)
     }
   }
   return Str.build(builder)
+}
+
+function hasValueFields(variant: Variant): bool {
+  for (const field of Arrays.values(variant.fields)) {
+    if (field.fieldType != Type.TVoid) {
+      return true
+    }
+  }
+  return false
 }
 
 export function emitHeapDefinitions(emitter: Emitter, used: Map<string, bool>): string uses alloc {
@@ -234,7 +247,8 @@ export struct HelperSlot {
   type: Type
 }
 
-const TYPE_OPERATIONS = ["drop", "credit", "uncredit", "retain", "release"]
+// "share" exists only in thread mode (D111 item 2): nothing names it otherwise.
+const TYPE_OPERATIONS = ["drop", "credit", "uncredit", "retain", "release", "share"]
 const ARRAY_OPERATIONS = [
   "new",
   "retain",
@@ -245,8 +259,9 @@ const ARRAY_OPERATIONS = [
   "get",
   "at",
   "filled",
+  "share",
 ]
-const BOX_OPERATIONS = ["new", "retain", "unique", "at", "drop", "release"]
+const BOX_OPERATIONS = ["new", "retain", "unique", "at", "drop", "release", "share"]
 
 export function indexHelpers(emitter: Emitter): Map<string, HelperSlot> uses alloc {
   // The names come from typeId, not the cache: the cache records the types
@@ -257,6 +272,7 @@ export function indexHelpers(emitter: Emitter): Map<string, HelperSlot> uses all
       const id = typeId(emitter.checker, type)
       slots[opFuncName("retain", id)] = HelperSlot { operation: "retain", type: copy(type) }
       slots[opFuncName("release", id)] = HelperSlot { operation: "release", type: copy(type) }
+      slots[opFuncName("share", id)] = HelperSlot { operation: "share", type: copy(type) }
       if (isHeapEnumType(emitter.checker, type)) {
         for (const operation of Arrays.values(["drop", "credit", "uncredit"])) {
           slots[opFuncName(operation, id)] = HelperSlot { operation: operation, type: copy(type) }
@@ -271,6 +287,8 @@ export function indexHelpers(emitter: Emitter): Map<string, HelperSlot> uses all
       operations = ARRAY_OPERATIONS
     } else if (composite is Type.TBox(_)) {
       operations = BOX_OPERATIONS
+    } else if (composite is Type.TMap(_, _)) {
+      operations = ["share"]
     }
     if (Arrays.length(operations) > 0) {
       const id = typeId(emitter.checker, composite)
@@ -286,6 +304,7 @@ export function emitHelper(emitter: Emitter, slot: HelperSlot): string uses allo
   return match (slot.type) {
     Type.TArray(_) => arrayFunction(emitter, slot.type, slot.operation)
     Type.TBox(_) => boxFunction(emitter, slot.type, slot.operation)
+    Type.TMap(_, _) => mapShareFunction(emitter, slot.type)
     _ => typeRcFunction(emitter, slot.type, slot.operation)
   }
 }
@@ -324,6 +343,9 @@ function appendContainerPrototypes(
   if (hasHelper(helpers, `${name}_release`)) {
     Str.append(mutable builder, `static void ${name}_release(${name}* a);\n`)
   }
+  if (hasHelper(helpers, `${name}_share`)) {
+    Str.append(mutable builder, `static void ${name}_share(${name}* a);\n`)
+  }
 }
 
 export function emitRcFunctions(emitter: Emitter, helpers: Map<string, string>): string uses alloc {
@@ -334,7 +356,7 @@ export function emitRcFunctions(emitter: Emitter, helpers: Map<string, string>):
     if (needsRc(emitter, type)) {
       const id = cachedTypeId(emitter.checker, emitter.typeNames, type)
       const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
-      for (const operation of Arrays.values(["retain", "release"])) {
+      for (const operation of Arrays.values(["retain", "release", "share"])) {
         if (hasHelper(helpers, opFuncName(operation, id))) {
           Str.append(
             mutable builder,
@@ -346,6 +368,12 @@ export function emitRcFunctions(emitter: Emitter, helpers: Map<string, string>):
   }
   for (const array of Arrays.values(arrays)) {
     appendContainerPrototypes(mutable builder, containerName(emitter, array), helpers)
+  }
+  for (const map of Arrays.values(listMapTypes(emitter))) {
+    const mapName = containerName(emitter, map)
+    if (hasHelper(helpers, `${mapName}_share`)) {
+      Str.append(mutable builder, `static void ${mapName}_share(${mapName}* a);\n`)
+    }
   }
   // The credit functions exist only where the debug copy check does.
   for (const type of Arrays.values(emitter.checker.order)) {
@@ -386,6 +414,9 @@ export function emitRcFunctions(emitter: Emitter, helpers: Map<string, string>):
   for (const box of Arrays.values(compositeTypes(emitter, true))) {
     appendContainerFunctions(mutable builder, containerName(emitter, box), BOX_OPERATIONS, helpers)
   }
+  for (const map of Arrays.values(listMapTypes(emitter))) {
+    appendContainerFunctions(mutable builder, containerName(emitter, map), ["share"], helpers)
+  }
   return Str.build(builder)
 }
 
@@ -409,6 +440,25 @@ function appendContainerFunctions(
   }
 }
 
+function listMapTypes(emitter: Emitter): Array<Type> uses alloc {
+  // The map types in the order of their C names, for the share functions.
+  let items: Array<SortItem> = []
+  for (const entry of Maps.entries(emitter.checker.composites)) {
+    const #[_, composite] = entry
+    if (composite is Type.TMap(_, _)) {
+      Arrays.push(mutable items, SortItem {
+        key: typeId(emitter.checker, composite),
+        type: composite,
+      })
+    }
+  }
+  let sorted: Array<Type> = []
+  for (const item of Arrays.values(mergeSort(items))) {
+    Arrays.push(mutable sorted, item.type)
+  }
+  return sorted
+}
+
 function buildCountCode(
   emitter: Emitter,
   operation: string,
@@ -417,6 +467,9 @@ function buildCountCode(
 ): string uses alloc {
   if (operation == "retain") {
     return retainCode(emitter, type, value)
+  }
+  if (operation == "share") {
+    return shareCode(emitter, type, value)
   }
   return releaseCode(emitter, type, value)
 }
@@ -431,6 +484,9 @@ function typeRcFunction(emitter: Emitter, type: Type, operation: string): string
     }
     if (operation == "credit" || operation == "uncredit") {
       return buildCreditFunction(emitter, type, enumIndex, operation)
+    }
+    if (operation == "share") {
+      return buildShareFunction(emitter, type, enumIndex)
     }
   }
   let builder = Str.builder()
@@ -459,7 +515,9 @@ function typeRcFunction(emitter: Emitter, type: Type, operation: string): string
     }
   }
   if (type is Type.TEnum(_)) {
-    if (operation == "retain") {
+    if (operation == "retain" && emitter.threads) {
+      Str.append(mutable builder, "  NARRA_COPY_HELD(v);\n  if (v.u) NARRA_RC_RETAIN(v.u->rc);\n")
+    } else if (operation == "retain") {
       Str.append(mutable builder, "  NARRA_COPY_HELD(v);\n  if (v.u) v.u->rc++;\n")
     } else {
       // In debug builds, the mark counts the copies that retained the box.
@@ -470,7 +528,14 @@ function typeRcFunction(emitter: Emitter, type: Type, operation: string): string
       noteHelper(emitter, uncreditName)
       noteHelper(emitter, dropName)
       Str.append(mutable builder, `  NARRA_COPY_ENDED(v, ${uncreditName});\n`)
-      Str.append(mutable builder, `  if (v.u && --v.u->rc == 0) narra_drop(v.u, ${dropName});\n`)
+      if (emitter.threads) {
+        Str.append(
+          mutable builder,
+          `  if (v.u && NARRA_RC_RELEASE(v.u->rc)) narra_drop(v.u, ${dropName});\n`,
+        )
+      } else {
+        Str.append(mutable builder, `  if (v.u && --v.u->rc == 0) narra_drop(v.u, ${dropName});\n`)
+      }
     }
   }
   Str.append(mutable builder, "}\n")
@@ -509,6 +574,76 @@ function buildDropFunction(emitter: Emitter, type: Type, enumIndex: int): string
   }
   Str.append(mutable builder, "  default: break;\n  }\n  narra_free(q);\n}\n")
   return Str.build(builder)
+}
+
+function buildShareFunction(emitter: Emitter, type: Type, enumIndex: int): string uses alloc {
+  // Marks the payload shared and queues the fields of its variant
+  // (narra_share), so a long list does not use the C stack. A payload that is
+  // shared already was walked before, so the walk stops there.
+  let builder = Str.builder()
+  const id = cachedTypeId(emitter.checker, emitter.typeNames, type)
+  const shareName = opFuncName("share", id)
+  const parameterType = parameterCType(emitter.checker, emitter.typeNames, type, false)
+  const enumValue = formatRcValue(emitter, type)
+  const payload = payloadName(emitter.checker, type)
+  Str.append(
+    mutable builder,
+    `static void ${shareName}_parts(void* p) {\n  ${payload}* q = p;\n  switch (q->tag) {\n`,
+  )
+  for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+    let statements: Array<string> = []
+    for (const field of Arrays.values(variant.fields)) {
+      const statement = shareCode(
+        emitter,
+        field.fieldType,
+        `q->${variantName(variant)}.${fieldName(field.name)}`,
+      )
+      if (statement != "") {
+        Arrays.push(mutable statements, statement)
+      }
+    }
+    if (Arrays.length(statements) > 0) {
+      Str.append(
+        mutable builder,
+        `  case ${Int.toString(variant.index)}: ${Str.join(statements, " ")} break;\n`,
+      )
+    }
+  }
+  Str.append(mutable builder, "  default: break;\n  }\n}\n")
+  Str.append(
+    mutable builder,
+    `static void ${shareName}(${parameterType} v) {\n  if (${enumValue}.u && narra_rc_share(&${enumValue}.u->rc)) narra_share(${enumValue}.u, ${shareName}_parts);\n}\n`,
+  )
+  return Str.build(builder)
+}
+
+function buildContainerShare(name: string, parts: string): string uses alloc {
+  // A container marks itself and queues its parts (narra_share), as drop does.
+  if (parts == "") {
+    return `static void ${name}_share(${name}* a) { narra_rc_share(&a->rc); }\n`
+  }
+  return `static void ${name}_share_parts(void* p) {\n  ${name}* a = p;\n${parts}}\nstatic void ${name}_share(${name}* a) {\n  if (narra_rc_share(&a->rc)) narra_share(a, ${name}_share_parts);\n}\n`
+}
+
+function mapShareFunction(emitter: Emitter, map: Type): string uses alloc {
+  // Marks the map shared, then its live keys and values.
+  const name = containerName(emitter, map)
+  let parts: Array<string> = []
+  if (map is Type.TMap(keyType, valueType)) {
+    const keyText = shareCode(emitter, keyType, "a->keys[i]")
+    if (keyText != "") {
+      Arrays.push(mutable parts, keyText)
+    }
+    const valueText = shareCode(emitter, valueType, "a->vals[i]")
+    if (valueText != "") {
+      Arrays.push(mutable parts, valueText)
+    }
+  }
+  let loop = ""
+  if (Arrays.length(parts) > 0) {
+    loop = `  for (int64_t i = 0; i < a->used; i++) {\n    if (a->alive[i]) { ${Str.join(parts, " ")} }\n  }\n`
+  }
+  return buildContainerShare(name, loop)
 }
 
 function buildCreditFunction(
@@ -790,6 +925,12 @@ function formatRcValue(emitter: Emitter, type: Type): string uses alloc {
 function arrayFunction(emitter: Emitter, array: Type, operation: string): string uses alloc {
   const name = containerName(emitter, array)
   const element = getElementType(array)
+  if (emitter.threads) {
+    const threaded = arrayThreadFunction(emitter, array, operation)
+    if (threaded != "") {
+      return threaded
+    }
+  }
   const elementType = cachedCType(emitter.checker, emitter.typeNames, element)
   return match (operation) {
     "new" => `static ${name}* ${name}_new(int64_t cap) {
@@ -859,9 +1000,99 @@ static inline ${name}* ${name}_unique(${name}* a) {
   }
 }
 
+function arrayThreadFunction(emitter: Emitter, array: Type, operation: string): string uses alloc {
+  // The functions whose counts differ in thread mode, or "" for the others.
+  const name = containerName(emitter, array)
+  const element = getElementType(array)
+  const elementType = cachedCType(emitter.checker, emitter.typeNames, element)
+  return match (operation) {
+    "retain" => `static void ${name}_retain(${name}* a) { NARRA_RC_RETAIN(a->rc); NARRA_COPY_SHARED(a); }
+`
+    "release" => `static void ${name}_release(${name}* a) {
+  NARRA_COPY_DROP(a);
+  if (NARRA_RC_RELEASE(a->rc)) {
+    for (int64_t i = 0; i < a->len; i++) { ${releaseCode(emitter, element, "a->items[i]")} }
+    narra_free(a->items);
+    narra_free(a);
+  }
+}
+`
+    "unique" => `// Returns an array the caller owns alone, copying it when it is shared.
+static ${name}* ${useHelper(emitter, name, "copy")}(${name}* a);
+static inline ${name}* ${name}_unique(${name}* a) {
+  if (NARRA_LIKELY(!NARRA_RC_UNSHARE(a->rc))) return a;
+  return ${name}_copy(a);
+}
+`
+    "copy" => `NARRA_NOINLINE static ${name}* ${name}_copy(${name}* a) {
+  NARRA_COPY_WRITE(a, 0);
+  ${name}* c = ${useHelper(emitter, name, "new")}(a->cap);
+  memcpy(c->items, a->items, sizeof(${elementType}) * (size_t)a->len);
+  c->len = a->len;
+  for (int64_t i = 0; i < c->len; i++) { ${retainCode(emitter, element, "c->items[i]")} }
+  NARRA_COPY_WRITTEN();
+  ${useHelper(emitter, name, "release")}(a);
+  return c;
+}
+`
+    "share" => buildArrayShare(emitter, name, element)
+    _ => ""
+  }
+}
+
+function buildArrayShare(emitter: Emitter, name: string, element: Type): string uses alloc {
+  const item = shareCode(emitter, element, "a->items[i]")
+  if (item == "") {
+    return buildContainerShare(name, "")
+  }
+  return buildContainerShare(name, `  for (int64_t i = 0; i < a->len; i++) { ${item} }\n`)
+}
+
+function buildBoxShare(emitter: Emitter, name: string, element: Type): string uses alloc {
+  const value = shareCode(emitter, element, "a->f_value")
+  if (value == "") {
+    return buildContainerShare(name, "")
+  }
+  return buildContainerShare(name, `  ${value}\n`)
+}
+
+function boxThreadFunction(emitter: Emitter, box: Type, operation: string): string uses alloc {
+  // The functions whose counts differ in thread mode, or "" for the others.
+  const name = containerName(emitter, box)
+  const element = getElementType(box)
+  return match (operation) {
+    "retain" => `static void ${name}_retain(${name}* a) { NARRA_RC_RETAIN(a->rc); NARRA_COPY_SHARED(a); }
+`
+    "unique" => `// Returns a box the caller owns alone, copying it when it is shared.
+static ${name}* ${name}_unique(${name}* a) {
+  if (!NARRA_RC_UNSHARE(a->rc)) return a;
+  NARRA_COPY_WRITE(a, 1);
+  ${name}* c = ${useHelper(emitter, name, "new")}(a->f_value);
+  ${retainCode(emitter, element, "c->f_value")}
+  NARRA_COPY_WRITTEN();
+  ${useHelper(emitter, name, "release")}(a);
+  return c;
+}
+`
+    "release" => `static void ${name}_release(${name}* a) {
+  NARRA_COPY_DROP(a);
+  if (NARRA_RC_RELEASE(a->rc)) narra_drop(a, ${useHelper(emitter, name, "drop")});
+}
+`
+    "share" => buildBoxShare(emitter, name, element)
+    _ => ""
+  }
+}
+
 function boxFunction(emitter: Emitter, box: Type, operation: string): string uses alloc {
   const name = containerName(emitter, box)
   const element = getElementType(box)
+  if (emitter.threads) {
+    const threaded = boxThreadFunction(emitter, box, operation)
+    if (threaded != "") {
+      return threaded
+    }
+  }
   const elementType = cachedCType(emitter.checker, emitter.typeNames, element)
   return match (operation) {
     "new" => `static ${name}* ${name}_new(${elementType} v) {
@@ -921,14 +1152,22 @@ export function enumAllocation(
   const info = copy(emitter.checker.enums[enumIndex].variants[variant])
   const name = cachedCType(emitter.checker, emitter.typeNames, baseType)
   const tag = Int.toString(info.index)
-  if (Arrays.length(fields) == 0) {
+  // A void field has no member; its value is a call that runs for its effect.
+  for (const index of Ranges.between(0, Arrays.length(fields))) {
+    if (index < Arrays.length(info.fields) && info.fields[index].fieldType == Type.TVoid) {
+      writeLine(mutable emitter, `${fields[index]};`)
+    }
+  }
+  if (Arrays.length(fields) == 0 || !hasValueFields(info)) {
     return Code { text: `((${name}){.tag = ${tag}})`, owned: false }
   }
   if (!isHeapEnum(emitter.checker, enumIndex)) {
     // An inline payload is a compound literal; the value owns the fields.
     let members: Array<string> = []
     for (const index of Ranges.between(0, Arrays.length(info.fields))) {
-      Arrays.push(mutable members, `.${fieldName(info.fields[index].name)} = ${fields[index]}`)
+      if (info.fields[index].fieldType != Type.TVoid) {
+        Arrays.push(mutable members, `.${fieldName(info.fields[index].name)} = ${fields[index]}`)
+      }
     }
     return Code {
       text: `((${name}){.tag = ${tag}, .u.${variantName(info)} = {${Str.join(members, ", ")}}})`,
@@ -942,10 +1181,12 @@ export function enumAllocation(
   writeLine(mutable emitter, `${payload}* ${pointer} = narra_alloc(sizeof(${payload}));`)
   writeLine(mutable emitter, `${pointer}->rc = 1; ${pointer}->tag = ${tag};`)
   for (const index of Ranges.between(0, Arrays.length(info.fields))) {
-    writeLine(
-      mutable emitter,
-      `${pointer}->${variantName(info)}.${fieldName(info.fields[index].name)} = ${fields[index]};`,
-    )
+    if (info.fields[index].fieldType != Type.TVoid) {
+      writeLine(
+        mutable emitter,
+        `${pointer}->${variantName(info)}.${fieldName(info.fields[index].name)} = ${fields[index]};`,
+      )
+    }
   }
   return Code { text: `((${name}){.tag = ${tag}, .u = ${pointer}})`, owned: false }
 }

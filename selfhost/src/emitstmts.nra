@@ -49,6 +49,8 @@ import {
 } from "narrac/emitstate"
 import { pointerTemp, declaredLocal, emitArithmetic } from "narrac/emitexprs"
 import * as Generators from "narrac/emitgenerators"
+import { emitStreamYield } from "narrac/emitasyncgenerators"
+import { emitForAwait } from "narrac/emitforawait"
 import * as Async from "narrac/emitasync"
 import * as Maps from "narrac/emitmaps"
 import * as Match from "narrac/emitmatch"
@@ -142,7 +144,7 @@ export function emitStatement<W: EmitWalker>(
       step,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference) => emitFor(
+    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference, awaitPos) => emitFor(
       walker,
       mutable emitter,
       statement,
@@ -152,16 +154,17 @@ export function emitStatement<W: EmitWalker>(
       iterable,
       body,
       reference,
+      awaitPos,
     )
     Stmt.BreakStmt(_, label) => emitLoopExit(mutable emitter, label, true)
     Stmt.ContinueStmt(_, label) => emitLoopExit(mutable emitter, label, false)
-    Stmt.YieldStmt(_, value, delegate, binding) => Generators.emitYield(
-      walker,
-      mutable emitter,
-      value,
-      delegate,
-      binding,
-    )
+    Stmt.YieldStmt(_, value, delegate, binding) => {
+      if (emitter.inStream) {
+        emitStreamYield(walker, mutable emitter, value, delegate)
+      } else {
+        Generators.emitYield(walker, mutable emitter, value, delegate, binding)
+      }
+    }
   }
 }
 
@@ -364,10 +367,18 @@ function emitReturn<W: EmitWalker>(
   if (value is Some(returned)) {
     const code = EmitWalker.emitExpression(walker, mutable emitter, returned)
     const returnedType = copy(readNodeType(emitter, getExpressionId(returned)))
-    const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
-    const result = temp(mutable emitter, returnedType, consumed)
-    unwindAll(mutable emitter)
-    writeLine(mutable emitter, `return ${result};`)
+    if (returnedType == Type.TVoid) {
+      // A void instance (Thread.join of a Thread<void>) returns a value of
+      // type void: it runs for its effect, and the function returns nothing.
+      writeLine(mutable emitter, `${code.text};`)
+      unwindAll(mutable emitter)
+      writeLine(mutable emitter, "return;")
+    } else {
+      const consumed = consume(mutable emitter, code.text, code.owned, returnedType)
+      const result = temp(mutable emitter, returnedType, consumed)
+      unwindAll(mutable emitter)
+      writeLine(mutable emitter, `return ${result};`)
+    }
   } else {
     unwindAll(mutable emitter)
     writeLine(mutable emitter, "return;")
@@ -574,10 +585,13 @@ function emitFor<W: EmitWalker>(
   iterable: Expr,
   body: Block,
   reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
 ) uses alloc {
   const name = iterableName(emitter, iterable)
   beginStatement(mutable emitter)
-  if (reference is Some(marker)) {
+  if (awaitPos is Some(_)) {
+    emitForAwait(walker, mutable emitter, nodeId, pos, label, iterable, body)
+  } else if (reference is Some(marker)) {
     emitReferenceFor(walker, mutable emitter, nodeId, pos, label, iterable, body, marker)
   } else if (name == "Range.upTo" || name == "Range.between") {
     emitRangeFor(walker, mutable emitter, nodeId, pos, label, iterable, body, name)
@@ -1035,7 +1049,7 @@ function scanHoistStatement(emitter: Emitter, mutable scan: HoistScan, statement
       }
       scanHoistBlock(emitter, mutable scan, body)
     }
-    Stmt.ForStmt(_, _, _, _, iterable, body, _) => {
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
       scanHoistExpression(emitter, mutable scan, iterable)
       scanHoistBlock(emitter, mutable scan, body)
     }

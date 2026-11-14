@@ -1,0 +1,77 @@
+// Net.chunks over a local connection. The server waits, writes a message and
+// closes its side; the reader gets every byte in chunks of at most 4 bytes,
+// then the stream ends. A second stream that reads the same connection while
+// the first one waits gets one Err and ends.
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Net from "std/async/net"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+import { Connection, Listener } from "std/async/net"
+import { sleep } from "std/async/time"
+
+async function serve(listener: Listener, message: string): int uses io, alloc {
+  // The connection closes when serve returns, which ends the reader's stream.
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(_)) {
+    return -1
+  }
+  const _slept = await sleep(Time.milliseconds(50))
+  const written = await Net.write(accepted.value, Bytes.fromString(message))
+  if (written is Err(_)) {
+    return -1
+  }
+  return written.value
+}
+
+async function collect(connection: Connection): string uses io, alloc {
+  let text = ""
+  let count = 0
+  for await (const result of Net.chunks(connection, 4)) {
+    if (result is Err(_)) {
+      return "read failed"
+    }
+    if (Bytes.length(result.value) > 4) {
+      return "chunk too long"
+    }
+    const part = Bytes.toString(result.value)
+    if (part is Err(_)) {
+      return "not text"
+    }
+    text = `${text}${part.value}`
+    count += 1
+  }
+  if (count < 2) {
+    return "too few chunks"
+  }
+  return text
+}
+
+export async function run(_args: Array<string>): int {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    print("listen failed")
+    return 1
+  }
+  const message = "hello from the server"
+  const server = serve(listener.value, message)
+  const connection = await Net.connect("127.0.0.1", Net.localPort(listener.value))
+  if (connection is Err(_)) {
+    print("connect failed")
+    return 1
+  }
+  const reader = collect(connection.value)
+
+  // The first stream waits in its read, so this one fails at once.
+  for await (const result of Net.chunks(connection.value, 4)) {
+    if (result is Err(AsyncError.Failed(reason))) {
+      print(`second stream: ${reason}`)
+    } else {
+      print("second stream: unexpected value")
+    }
+  }
+  print("second stream ended")
+  print(`server wrote ${Int.toString(await server)} bytes`)
+  print(`reader got "${await reader}"`)
+  return 0
+}

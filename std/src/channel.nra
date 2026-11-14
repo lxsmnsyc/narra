@@ -1,0 +1,166 @@
+// std/channel: bounded channels between threads (SPEC.md section 8, D111 item 4).
+//
+// Channel.create gives a Sender and a Receiver over one queue of a fixed
+// number of slots. send blocks while the queue is full, receive blocks while it
+// is empty. Copies of an end share it; when the last copy of the sender is
+// dropped the channel closes, and when the last copy of the receiver is
+// dropped send gives false. Importing this module builds the program in thread
+// mode (D111 item 2).
+
+import * as Arrays from "std/array"
+import * as Boxes from "std/box"
+import * as CellSlot from "std/internal/cell"
+import * as Threads from "std/internal/thread"
+
+// The conditions of the Sync: a value was queued (or the channel closed), and
+// a slot was freed.
+const VALUE_READY = 0
+const ROOM_READY = 1
+
+// The end counts of the Sync.
+const SENDERS = 0
+const RECEIVERS = 1
+
+// Where the oldest value is, how many values wait, and whether close ran.
+// Read and written only with the lock held.
+struct QueueState {
+  head: int
+  count: int
+  closed: bool
+}
+
+// The ring of slots, each a box of its own, so a send or a receive writes one
+// slot in place and never copies the ring.
+struct Queue<T> {
+  sync: Sync
+  state: Box<QueueState>
+  slots: Array<Box<Option<T>>>
+}
+
+export opaque struct Sender<T> {
+  queue: Queue<T>
+  end: Sync
+}
+
+export opaque struct Receiver<T> {
+  queue: Queue<T>
+  end: Sync
+}
+
+// A channel with room for capacity values; a capacity below 1 is 1. The
+// element type must be Sendable (E1190).
+export function create<T>(capacity: int): #[Sender<T>, Receiver<T>] uses alloc {
+  let size = capacity
+  if (size < 1) {
+    size = 1
+  }
+  let slots: Array<Box<Option<T>>> = []
+  for (let index = 0; index < size; index++) {
+    const slot: Box<Option<T>> = Boxes.new(None)
+    Arrays.push(mutable slots, slot)
+  }
+  const sync = Threads.sync()
+  const queue = Queue {
+    sync: sync,
+    state: Boxes.new(QueueState { head: 0, count: 0, closed: false }),
+    slots: slots,
+  }
+  const sender = Sender { queue: queue, end: Threads.end(sync, SENDERS) }
+  const receiver = Receiver { queue: queue, end: Threads.end(sync, RECEIVERS) }
+  return #[sender, receiver]
+}
+
+// Queues value, waiting while the channel is full. Gives false, and keeps
+// nothing, once the channel is closed or every receiver is gone.
+export function send<T>(sender: Sender<T>, value: T): bool uses io {
+  const queue = sender.queue
+  // The value is marked shared before a receiver on another thread can reach it.
+  Threads.share(value)
+  Threads.lock(queue.sync)
+  while (canSend(queue) && queue.state.value.count == Arrays.length(queue.slots)) {
+    Threads.wait(queue.sync, ROOM_READY)
+  }
+  if (!canSend(queue)) {
+    Threads.unlock(queue.sync)
+    return false
+  }
+  const state = queue.state.value
+  const tail = wrapSlot(state.head + state.count, Arrays.length(queue.slots))
+  CellSlot.store(queue.slots[tail], Some(value))
+  CellSlot.store(queue.state, QueueState {
+    head: state.head,
+    count: state.count + 1,
+    closed: false,
+  })
+  Threads.wakeOne(queue.sync, VALUE_READY)
+  Threads.unlock(queue.sync)
+  return true
+}
+
+// Takes the oldest value, waiting while the channel is empty. Gives None once
+// the channel is closed and empty.
+export function receive<T>(receiver: Receiver<T>): Option<T> uses io {
+  const queue = receiver.queue
+  Threads.lock(queue.sync)
+  while (queue.state.value.count == 0 && isOpen(queue)) {
+    Threads.wait(queue.sync, VALUE_READY)
+  }
+  if (queue.state.value.count == 0) {
+    Threads.unlock(queue.sync)
+    return None
+  }
+  const state = queue.state.value
+  // The value moves out of its slot, so the receiver holds the only reference.
+  const value = Threads.take(queue.slots[state.head])
+  CellSlot.store(queue.state, QueueState {
+    head: wrapSlot(state.head + 1, Arrays.length(queue.slots)),
+    count: state.count - 1,
+    closed: state.closed,
+  })
+  Threads.wakeOne(queue.sync, ROOM_READY)
+  Threads.unlock(queue.sync)
+  return value
+}
+
+// The values of the channel, in the order they were sent, until it is closed and empty.
+export function* values<T>(receiver: Receiver<T>): Generator<T> uses io {
+  let open = true
+  while (open) {
+    const next = receive(receiver)
+    if (next is Some(value)) {
+      yield value
+    } else {
+      open = false
+    }
+  }
+}
+
+// Closes the channel for every copy of the sender. The values already queued
+// can still be received.
+export function close<T>(sender: Sender<T>) {
+  const queue = sender.queue
+  Threads.lock(queue.sync)
+  const state = queue.state.value
+  CellSlot.store(queue.state, QueueState { head: state.head, count: state.count, closed: true })
+  Threads.wakeAll(queue.sync, VALUE_READY)
+  Threads.wakeAll(queue.sync, ROOM_READY)
+  Threads.unlock(queue.sync)
+}
+
+// With the lock held: the channel takes values while it is not closed and a receiver is left.
+function canSend<T>(queue: Queue<T>): bool {
+  return !queue.state.value.closed && Threads.ends(queue.sync, RECEIVERS) > 0
+}
+
+// With the lock held: more values can come while it is not closed and a sender is left.
+function isOpen<T>(queue: Queue<T>): bool {
+  return !queue.state.value.closed && Threads.ends(queue.sync, SENDERS) > 0
+}
+
+// The slot a position past the end of the ring comes back to.
+function wrapSlot(position: int, size: int): int {
+  if (size == 0) {
+    return 0
+  }
+  return position % size
+}

@@ -1,0 +1,49 @@
+// Once every copy of the receiver is gone, send gives false and the value it
+// was given is freed (the leak check sees it). A thread blocked on a full
+// channel wakes up when the last receiver goes.
+import * as Channel from "std/channel"
+import * as Thread from "std/thread"
+import { Sender } from "std/channel"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+function openWithoutReceiver(): Sender<Array<string>> uses alloc {
+  const #[sender, _receiver] = Channel.create<Array<string>>(2)
+  return sender
+}
+
+// The producer fills the one slot, says so on ready, and blocks on its second
+// send. This function drops the only receiver when it returns, which wakes the
+// producer with false.
+function startProducer(scope: Thread.Scope): Thread.Thread<int> uses io, alloc {
+  const #[sender, _receiver] = Channel.create<string>(1)
+  const #[readySender, readyReceiver] = Channel.create<bool>(1)
+  const producer = Thread.start(scope, () => {
+    let accepted = 0
+    for (let i = 0; i < 5; i++) {
+      if (Channel.send(sender, `item ${Int.toString(i)}`)) {
+        accepted++
+      }
+      if (i == 0) {
+        Channel.send(readySender, true)
+      }
+    }
+    return accepted
+  })
+  Channel.receive(readyReceiver)
+  return producer
+}
+
+export function run(_args: Array<string>): int {
+  const lonely = openWithoutReceiver()
+  const words = ["a", "list", "of", "words"]
+  if (!Channel.send(lonely, words)) {
+    print(`not sent, ${Int.toString(Arrays.length(words))} words kept`)
+  }
+  const accepted = Thread.scope((scope) => {
+    const producer = startProducer(scope)
+    return Thread.join(producer)
+  })
+  print(`accepted ${Int.toString(accepted)}`)
+  return 0
+}

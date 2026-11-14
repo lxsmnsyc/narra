@@ -1,0 +1,346 @@
+// Refinement types (D116): a distinct type over an integer type or `string` with a
+// `requires` list of `ensures`-style patterns joined by `&&`. The list is checked
+// after each module's declarations, from names and constants alone, and kept in
+// DistinctInfo as tests: `T.from` is proven against them at compile time, `T.check`
+// runs them, and unwrapping a refined integer gives the prover their hull
+// (findOperandFact in operands.nra).
+import { Pos, Expr, Arg, File, Decl, Pattern, DistinctDecl } from "narrac/ast"
+import { Type, RefinementTest, RefinementHull, isInteger } from "narrac/types"
+import { Checker, reportError, typeString, getExpressionPos } from "narrac/check"
+import { collectBounds, describePattern, isFittingBound, findLiteralValue } from "narrac/contracts"
+import {
+  Fact,
+  findOperandFact,
+  findTypedConstant,
+  isComparisonProven,
+  isUnboundedEnd,
+  refineBounds,
+  createUnknownFact,
+  joinFacts,
+} from "narrac/operands"
+import { makePreludeEnum } from "narrac/stdcheckhelp"
+import { writeRefinementItems, quoteString } from "narrac/querysignature"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Math from "std/math"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+const MAXIMUM_TEXT_DEPTH = 8
+
+export function checkModuleRefinements(
+  mutable checker: Checker,
+  file: File,
+  made: Array<Type>,
+) uses alloc {
+  // made holds the type declared for each declaration, by position.
+  for (const index of Ranges.between(0, Arrays.length(file.declarations))) {
+    if (file.declarations[index] is Decl.Distinct(distinctDecl)) {
+      if (Arrays.length(distinctDecl.refinement) > 0) {
+        if (made[index] is Type.TDistinct(distinctIndex)) {
+          checkRefinement(mutable checker, distinctDecl, distinctIndex)
+        }
+      }
+    }
+  }
+}
+
+function checkRefinement(
+  mutable checker: Checker,
+  distinctDecl: DistinctDecl,
+  distinctIndex: int,
+) uses alloc {
+  let base = Type.TVoid
+  if (checker.distincts[distinctIndex].base is Some(declared)) {
+    base = declared
+  }
+  if (!isInteger(base) && base != Type.TStr) {
+    const baseText = typeString(checker, base)
+    reportError(
+      mutable checker,
+      distinctDecl.pos,
+      "E1221",
+      `distinct type ${distinctDecl.name} cannot have a requires list: its base ${baseText} is not an integer type or string`,
+    )
+    return
+  }
+  // Each comparison bound is folded once, from names and constants alone.
+  const scope = checker.current
+  let bounds: Map<int, int> = Map {}
+  for (const item of Arrays.values(distinctDecl.refinement)) {
+    collectBounds(checker, scope, [], item, mutable bounds)
+  }
+  const errorsBefore = Arrays.length(checker.errors)
+  let tests: Array<Array<RefinementTest>> = []
+  let described: Array<string> = []
+  for (const item of Arrays.values(distinctDecl.refinement)) {
+    let alternatives: Array<RefinementTest> = []
+    collectTests(mutable checker, distinctDecl.name, item, base, bounds, mutable alternatives)
+    Arrays.push(mutable tests, alternatives)
+    Arrays.push(mutable described, writeRefinementItems([item]))
+  }
+  // A list with a wrong item proves and tests nothing; its errors are enough.
+  if (Arrays.length(checker.errors) > errorsBefore) {
+    return
+  }
+  if (isInteger(base)) {
+    checker.distincts[distinctIndex].hull = findHull(tests)
+  }
+  checker.distincts[distinctIndex].tests = tests
+  checker.distincts[distinctIndex].described = described
+}
+
+function collectTests(
+  mutable checker: Checker,
+  typeName: string,
+  pattern: Pattern,
+  base: Type,
+  bounds: Map<int, int>,
+  mutable tests: Array<RefinementTest>,
+) uses alloc {
+  // An or-pattern adds each of its alternatives.
+  const baseText = typeString(checker, base)
+  match (pattern) {
+    Pattern.PatOr(_, _, alternatives) => {
+      for (const alternative of Arrays.values(alternatives)) {
+        collectTests(mutable checker, typeName, alternative, base, bounds, mutable tests)
+      }
+    }
+    Pattern.PatCompare(nodeId, pos, operator, _) => {
+      if (base == Type.TStr) {
+        reportError(
+          mutable checker,
+          pos,
+          "E1222",
+          `${typeName} refines string, so its patterns are string literals; \`${operator}\` compares integers`,
+        )
+      } else if (bounds[nodeId] is Some(bound)) {
+        if (isFittingBound(bound, base)) {
+          Arrays.push(mutable tests, RefinementTest { operator: operator, bound: bound, text: "" })
+        } else {
+          reportError(
+            mutable checker,
+            pos,
+            "E1222",
+            `the bound of \`${operator}\` does not fit ${typeName}'s base ${baseText}`,
+          )
+        }
+      } else {
+        reportError(
+          mutable checker,
+          pos,
+          "E1222",
+          `the bound of \`${operator}\` must be an integer constant: a literal or a top-level const`,
+        )
+      }
+    }
+    Pattern.PatLit(_, pos, literal) => {
+      if (base == Type.TStr) {
+        if (literal is Expr.StringLit(_, _, value, _)) {
+          Arrays.push(mutable tests, RefinementTest { operator: "==", bound: 0, text: value })
+          return
+        }
+      } else if (findLiteralValue(literal) is Some(value)) {
+        if (isFittingBound(value, base) && !isUnboundedEnd(value)) {
+          Arrays.push(mutable tests, RefinementTest { operator: "==", bound: value, text: "" })
+        } else {
+          reportError(
+            mutable checker,
+            pos,
+            "E1222",
+            `the literal ${describePattern(pattern, bounds)} cannot be proven for ${typeName}'s base ${baseText}; the prover keeps integers as int and cannot prove 2^63 - 1, -(2^63 - 1) or a u64 from 2^63 up`,
+          )
+        }
+        return
+      }
+      reportError(
+        mutable checker,
+        pos,
+        "E1222",
+        `the literal ${describePattern(pattern, bounds)} is not a value of ${typeName}'s base ${baseText}`,
+      )
+    }
+    _ => {
+      reportError(
+        mutable checker,
+        findPatternPos(pattern),
+        "E1222",
+        `a refinement pattern is a comparison, a literal or alternatives of them, found ${describePattern(pattern, bounds)}`,
+      )
+    }
+  }
+}
+
+function findPatternPos(pattern: Pattern): Pos {
+  return match (pattern) {
+    Pattern.PatWildcard(_, pos)
+      | Pattern.PatName(_, pos, _)
+      | Pattern.PatCtor(_, pos, _, _, _, _)
+      | Pattern.PatStruct(_, pos, _)
+      | Pattern.PatTuple(_, pos, _)
+      | Pattern.PatArray(_, pos, _, _)
+      | Pattern.PatLit(_, pos, _)
+      | Pattern.PatOr(_, pos, _)
+      | Pattern.PatCompare(_, pos, _, _) => copy(pos)
+  }
+}
+
+function findHull(tests: Array<Array<RefinementTest>>): Option<RefinementHull> uses alloc {
+  // Each item narrows the value; the alternatives of one item join.
+  let hull = createUnknownFact()
+  for (const alternatives of Arrays.values(tests)) {
+    let joined = createUnknownFact()
+    for (const index of Ranges.between(0, Arrays.length(alternatives))) {
+      const alternative = alternatives[index]
+      const fact = refineBounds(createUnknownFact(), alternative.operator, alternative.bound)
+      if (index == 0) {
+        joined = fact
+      } else {
+        joined = joinFacts(joined, fact)
+      }
+    }
+    hull = Fact {
+      low: Math.max(hull.low, joined.low),
+      high: Math.min(hull.high, joined.high),
+      nonzero: hull.nonzero || joined.nonzero || joined.low > 0 || joined.high < 0,
+    }
+  }
+  const unknown = createUnknownFact()
+  if (hull.low == unknown.low && hull.high == unknown.high && !hull.nonzero) {
+    return None
+  }
+  return Some(RefinementHull { low: hull.low, high: hull.high, nonzero: hull.nonzero })
+}
+
+export function proveRefinedFrom(
+  mutable checker: Checker,
+  distinctIndex: int,
+  value: Expr,
+) uses alloc {
+  // `T.from(value)` proves every item, as a call proves `requires`; E1223 names the failed ones.
+  const info = copy(checker.distincts[distinctIndex])
+  if (Arrays.length(info.tests) == 0) {
+    return
+  }
+  let base = Type.TVoid
+  if (info.base is Some(declared)) {
+    base = declared
+  }
+  let failed: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(info.tests))) {
+    if (!isItemProven(checker, value, info.tests[index], base)) {
+      Arrays.push(mutable failed, info.described[index])
+    }
+  }
+  if (Arrays.length(failed) == 0) {
+    return
+  }
+  const items = Str.join(failed, " && ")
+  const pos = getExpressionPos(value)
+  if (findWrittenValue(checker, value, base) is Some(written)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1223",
+      `${written} does not satisfy ${info.name} (${items})`,
+    )
+    return
+  }
+  const valueText = writeExpressionText(value, 0)
+  reportError(
+    mutable checker,
+    pos,
+    "E1223",
+    `${info.name}.from needs ${valueText} to satisfy ${items}; check it first or call ${info.name}.check`,
+  )
+}
+
+function writeExpressionText(expression: Expr, depth: int): string uses alloc {
+  // The argument as written, for the names, fields, calls, indexes and constants an argument is made of.
+  if (depth > MAXIMUM_TEXT_DEPTH) {
+    return "..."
+  }
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.IntLit(_, _, text) => text
+    Expr.StringLit(_, _, value, _) => quoteString(value)
+    Expr.FieldExpr(_, _, target, name) => `${writeExpressionText(target, depth + 1)}.${name}`
+    Expr.IndexExpr(
+      _,
+      _,
+      target,
+      index,
+    ) => `${writeExpressionText(target, depth + 1)}[${writeExpressionText(index, depth + 1)}]`
+    Expr.CallExpr(_, _, callee, _, arguments) => writeCallText(callee, arguments, depth)
+    Expr.UnaryExpr(
+      _,
+      _,
+      operator,
+      operand,
+    ) => `${operator}${writeExpressionText(operand, depth + 1)}`
+    Expr.BinaryExpr(
+      _,
+      _,
+      operator,
+      left,
+      right,
+    ) => `${writeExpressionText(left, depth + 1)} ${operator} ${writeExpressionText(right, depth + 1)}`
+    _ => "its argument"
+  }
+}
+
+function writeCallText(callee: Expr, arguments: Array<Arg>, depth: int): string uses alloc {
+  let texts: Array<string> = []
+  for (const argument of Arrays.values(arguments)) {
+    Arrays.push(mutable texts, writeExpressionText(argument.value, depth + 1))
+  }
+  return `${writeExpressionText(callee, depth + 1)}(${Str.join(texts, ", ")})`
+}
+
+function isItemProven(
+  checker: Checker,
+  value: Expr,
+  alternatives: Array<RefinementTest>,
+  base: Type,
+): bool uses alloc {
+  // One alternative proven proves the item.
+  for (const alternative of Arrays.values(alternatives)) {
+    if (base == Type.TStr) {
+      if (value is Expr.StringLit(_, _, written, _)) {
+        if (written == alternative.text) {
+          return true
+        }
+      }
+    } else if (
+      isComparisonProven(
+        findOperandFact(checker, value, base),
+        alternative.operator,
+        alternative.bound,
+      )
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function findWrittenValue(checker: Checker, value: Expr, base: Type): Option<string> uses alloc {
+  // A constant or a string literal is named by its value.
+  if (value is Expr.StringLit(_, _, written, _)) {
+    return Some(quoteString(written))
+  }
+  if (isInteger(base)) {
+    if (findTypedConstant(checker, value, base) is Some(known)) {
+      return Some(Int.toString(known))
+    }
+  }
+  return None
+}
+
+export function findCheckType(
+  mutable checker: Checker,
+  distinctIndex: int,
+): Type from checker uses alloc {
+  // `T.check(value)` gives Some(value) when every item holds.
+  return makePreludeEnum(mutable checker, "Option", [Type.TDistinct(distinctIndex)])
+}

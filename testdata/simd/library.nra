@@ -1,0 +1,141 @@
+// The std/simd functions: masks from comparisons, select, loads and stores,
+// shuffles, reductions and lane functions.
+import * as Simd from "std/simd"
+import * as Arrays from "std/array"
+import * as F32 from "std/f32"
+import * as Int from "std/int"
+
+function showLoad(loaded: Option<F32x4>): string uses alloc {
+  if (loaded is Some(vector)) {
+    return Show.show(vector)
+  }
+  return "None"
+}
+
+function dot(left: Array<f32>, right: Array<f32>): f32 {
+  // Eight lanes at a time; the lanes left over are added one by one.
+  let total: F32x8 = Simd.splat(0.0)
+  let start = 0
+  while (true) {
+    const a: Option<F32x8> = Simd.load(left, start)
+    const b: Option<F32x8> = Simd.load(right, start)
+    if (a is Some(leftLanes)) {
+      if (b is Some(rightLanes)) {
+        total += leftLanes * rightLanes
+        start += 8
+        continue
+      }
+    }
+    break
+  }
+  let rest = Simd.sum(total)
+  for (let i = start; i < Arrays.length(left) && i < Arrays.length(right); i++) {
+    rest += left[i] * right[i]
+  }
+  return rest
+}
+
+function shiftBoth(values: I32x4, count: int): I32x4 {
+  // A count checked against both ends is proven.
+  if (count >= 0 && count < 32) {
+    return Simd.shiftLeft(values, count)
+  }
+  return values
+}
+
+export function run(_args: Array<string>): int {
+  // Comparisons give masks of -1 and 0.
+  const a: F32x4 = [1.0, 5.0, 3.0, -2.0]
+  const b: F32x4 = [2.0, 5.0, 1.0, -2.0]
+  print(Show.show(Simd.equal(a, b)))
+  print(Show.show(Simd.notEqual(a, b)))
+  print(Show.show(Simd.less(a, b)))
+  print(Show.show(Simd.lessOrEqual(a, b)))
+  print(Show.show(Simd.greater(a, b)))
+  print(Show.show(Simd.greaterOrEqual(a, b)))
+  const bytes: U8x16 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 255]
+  const fives: U8x16 = Simd.splat(5)
+  print(Show.show(Simd.less(bytes, fives)))
+  const counts: I64x2 = [-3, 7]
+  const zeros: I64x2 = Simd.splat(0)
+  print(Show.show(Simd.greater(counts, zeros)))
+
+  // select takes each lane from the first vector where the mask is set.
+  const smaller = Simd.less(a, b)
+  print(Show.show(Simd.select(smaller, a, b)))
+  const picked: I32x4 = [10, 20, 30, 40]
+  const other: I32x4 = [-1, -2, -3, -4]
+  const half: I32x4 = [-1, 0, -1, 0]
+  print(Show.show(Simd.select(half, picked, other)))
+
+  // any and all test the lanes of a mask.
+  print(Show.show(Simd.any(smaller)))
+  print(Show.show(Simd.all(smaller)))
+  print(Show.show(Simd.all(Simd.lessOrEqual(fives, fives))))
+  print(Show.show(Simd.any(Simd.less(fives, fives))))
+
+  // load reads count lanes, or gives None when they are not all in range.
+  const items: Array<f32> = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  print(showLoad(Simd.load(items, 2)))
+  print(showLoad(Simd.load(items, 3)))
+  print(showLoad(Simd.load(items, -1)))
+  const wholes: Array<int> = [4, 5, 6]
+  print(Show.show(Simd.load<I64x2>(wholes, 1)))
+  print(Show.show(Simd.load<I64x2>(wholes, 2)))
+
+  // store writes the lanes, or writes nothing and gives false.
+  let target: Array<f32> = [0.0, 0.0, 0.0, 0.0, 0.0]
+  print(Show.show(Simd.store(mutable target, 1, a)))
+  print(Show.show(target))
+  print(Show.show(Simd.store(mutable target, 2, b)))
+  print(Show.show(Simd.store(mutable target, -1, b)))
+  print(Show.show(target))
+  let shorts: Array<i16> = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+  const rising: I16x8 = [1, 2, 3, 4, 5, 6, 7, 8]
+  print(Show.show(Simd.store(mutable shorts, 1, rising)))
+  print(Show.show(shorts))
+
+  // shuffle reorders the lanes of one vector.
+  print(Show.show(Simd.shuffle(a, [3, 2, 1, 0])))
+  print(Show.show(Simd.shuffle(picked, [0, 0, 3, 1])))
+
+  // sum adds the high half to the low half until one lane is left.
+  const eight: F32x8 = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  const ordered =
+    (eight[0] + eight[4] + (eight[2] + eight[6])) + (eight[1] + eight[5] + (eight[3] + eight[7]))
+  print(F32.toString(Simd.sum(eight)))
+  print(Show.show(Simd.sum(eight) == ordered))
+  const wrapping: I32x4 = [2147483647, 1, 0, 0]
+  print(Show.show(Simd.sum(wrapping)))
+  print(Show.show(Simd.sum(bytes)))
+  const pairs: I64x4 = [1, 2, 3, 4]
+  print(Int.toString(Simd.sum(pairs)))
+
+  // min and max work per lane; abs keeps the lowest integer.
+  print(Show.show(Simd.min(a, b)))
+  print(Show.show(Simd.max(a, b)))
+  print(Show.show(Simd.min(bytes, fives)))
+  print(Show.show(Simd.max(bytes, fives)))
+  const signed: I32x4 = [-2147483648, -7, 0, 9]
+  print(Show.show(Simd.abs(signed)))
+  const floats: F64x2 = [-0.5, 2.0]
+  print(Show.show(Simd.abs(floats)))
+
+  // Shifts: arithmetic on signed lanes, logical on unsigned ones.
+  print(Show.show(Simd.shiftLeft(signed, 1)))
+  print(Show.show(Simd.shiftRight(signed, 1)))
+  print(Show.show(Simd.shiftRight(bytes, 4)))
+  print(Show.show(Simd.shiftLeft(bytes, 7)))
+  print(Show.show(shiftBoth(picked, 2)))
+  print(Show.show(shiftBoth(picked, 40)))
+
+  // A dot product over arrays whose length is not a multiple of eight.
+  let left: Array<f32> = []
+  let right: Array<f32> = []
+  for (let i = 0; i < 19; i++) {
+    Arrays.push(mutable left, 1.0)
+    Arrays.push(mutable right, 2.0)
+  }
+  print(F32.toString(dot(left, right)))
+  return 0
+}

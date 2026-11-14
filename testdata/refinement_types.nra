@@ -1,0 +1,138 @@
+// Refinement types: a distinct type with a `requires` list (D116).
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+
+export distinct type Port = int derives Show requires >= 1 && <= 65535
+export distinct type Method = string derives Show requires "GET" | "POST"
+distinct type Bit = u8
+  requires < 8
+distinct type Odd = int derives Show requires 1 | 3 | 5 | 7 | 9 && != 5
+
+const DEFAULT_PORT = Port.from(8080)
+const HIGHEST = 65535
+const LAST_PORT = Port.from(HIGHEST)
+
+struct Shift {
+  bit: Bit
+}
+
+struct Server {
+  port: Port = Port.from(8)
+  method: Method = Method.from("GET")
+}
+
+function fromChecked(raw: int): Port {
+  if (raw >= 1 && raw <= 65535) {
+    return Port.from(raw)
+  }
+  return DEFAULT_PORT
+}
+
+function fromRequired(raw: int): Port
+  requires raw >= 1 && raw <= 65535
+{
+  return Port.from(raw)
+}
+
+function share(total: int, port: Port): int {
+  return total / Port.toInt(port)
+}
+
+function shiftBy(value: u8, shift: Shift): u8 {
+  return value << Bit.toU8(shift.bit)
+}
+
+function slot(index: int): int
+  requires index >= 1
+{
+  return index * 2
+}
+
+function slotOfPort(port: Port): int {
+  const n = Port.toInt(port)
+  return slot(n) + slot(Port.toInt(port))
+}
+
+function positive(port: Port): int
+  ensures >= 1
+{
+  return Port.toInt(port)
+}
+
+function describeMethod(method: Option<Method>): string {
+  if (method is Some(found)) {
+    return Method.toString(found)
+  }
+  return "none"
+}
+
+// The evaluator runs the same tests as the emitted check.
+@const
+function countPorts(low: int, high: int): int {
+  let count = 0
+  for (let value = low; value <= high; value++) {
+    if (Port.check(value) is Some(_)) {
+      count++
+    }
+  }
+  return count
+}
+
+@const
+function countMethods(texts: Array<string>): int {
+  let count = 0
+  for (const text of texts) {
+    if (Method.check(text) is Some(_)) {
+      count++
+    }
+  }
+  return count
+}
+
+@const
+function countOdd(): int {
+  let count = 0
+  for (let value = 0; value < 12; value++) {
+    if (Odd.check(value) is Some(_)) {
+      count++
+    }
+  }
+  return count
+}
+
+const METHODS = ["GET", "PUT", "POST", "get"]
+const CONSTANT_COUNTS = [
+  countPorts(-2, 2),
+  countPorts(65533, 65538),
+  countMethods(METHODS),
+  countOdd(),
+]
+
+export function run(_args: Array<string>): int {
+  print(Show.show(DEFAULT_PORT))
+  const server = Server {}
+  print(`${Show.show(server.port)} ${Show.show(server.method)}`)
+  print(Show.show(LAST_PORT))
+  print(Show.show(fromChecked(443)))
+  print(Show.show(fromChecked(0)))
+  print(Show.show(fromRequired(22)))
+  print(Show.show(Port.check(0)))
+  print(Show.show(Port.check(1)))
+  print(Show.show(Port.check(65535)))
+  print(Show.show(Port.check(65536)))
+  print(describeMethod(Method.check("GET")))
+  print(describeMethod(Method.check("PUT")))
+  print(Show.show(Method.check(`PO${"ST"}`)))
+  print(Show.show(Odd.check(5)))
+  print(Show.show(Odd.check(7)))
+  print(Show.show(Odd.check(8)))
+  print(Int.toString(share(80800, DEFAULT_PORT)))
+  print(Show.show(shiftBy(1, Shift { bit: Bit.from(3) })))
+  print(Int.toString(slotOfPort(LAST_PORT)))
+  print(Int.toString(positive(fromRequired(7))))
+  const runCounts = [countPorts(-2, 2), countPorts(65533, 65538), countMethods(METHODS), countOdd()]
+  for (const index of Ranges.between(0, 4)) {
+    print(`${Int.toString(CONSTANT_COUNTS[index])} ${Int.toString(runCounts[index])}`)
+  }
+  return 0
+}

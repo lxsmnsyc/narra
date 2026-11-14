@@ -1,0 +1,369 @@
+// Parameter defaults (D115): `function render(node: Node, depth: int = 0)`.
+//
+// A default is checked once at its declaration, as a body of its own keyed
+// "paramdefault|func|<funcIndex>|<parameter index>", and only a default that
+// holds there gets the key. Each call that leaves the parameter out checks the
+// default again with the parameter type of that call, in a body keyed
+// "paramdefault|<caller body>|<call id>|<parameter index>", so a generic
+// default such as `fallback: Option<T> = None` has the types of the instance.
+// The effect pass, the constant evaluator and the emitter read the left-out
+// value from that body. Each function stays one C function: the call passes
+// every argument.
+import { File, Decl, FuncDecl, Param, Arg } from "narrac/ast"
+import { Type } from "narrac/types"
+import { quoteGo } from "narrac/parser"
+import {
+  Checker,
+  BodyRoot,
+  Walker,
+  reportError,
+  enter,
+  startBody,
+  finishBody,
+  keyBody,
+  findBody,
+  getExpressionPos,
+} from "narrac/check"
+import { makeEnv } from "narrac/generics"
+import * as Exprs from "narrac/exprs"
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function hasDefaults(parameters: Array<Param>): bool {
+  for (const parameter of Arrays.values(parameters)) {
+    if (parameter.default is Some(_)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function countRequired(parameters: Array<Param>): int {
+  let count = 0
+  for (const parameter of Arrays.values(parameters)) {
+    if (parameter.default is None) {
+      count++
+    }
+  }
+  return count
+}
+
+export function leavesOutDefaults(parameters: Array<Param>, arguments: Array<Arg>): bool {
+  // After the checker, a call passes each parameter at most once, so fewer
+  // arguments than parameters means some defaults are filled in.
+  return Arrays.length(arguments) < Arrays.length(parameters) && hasDefaults(parameters)
+}
+
+export function findWrittenIndexes(
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+): Array<int> uses alloc {
+  // The written index of each parameter's argument, or -1 when the call leaves it out.
+  let written: Array<int> = []
+  for (const _ of Arrays.values(parameters)) {
+    Arrays.push(mutable written, -1)
+  }
+  for (const index of Ranges.between(0, Arrays.length(arguments))) {
+    let parameter = index
+    if (arguments[index].name is Some(argumentName)) {
+      parameter = findParameter(parameters, argumentName)
+    }
+    if (parameter >= 0 && parameter < Arrays.length(parameters)) {
+      written[parameter] = index
+    }
+  }
+  return written
+}
+
+function findParameter(parameters: Array<Param>, name: string): int {
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (parameters[index].name == name) {
+      return index
+    }
+  }
+  return -1
+}
+
+export function findPassedParameters(
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+): Array<Param> from parameters uses alloc {
+  // The parameters the call writes an argument for, in parameter order.
+  if (!leavesOutDefaults(parameters, arguments)) {
+    return parameters
+  }
+  const written = findWrittenIndexes(parameters, arguments)
+  let passed: Array<Param> = []
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (written[index] >= 0) {
+      Arrays.push(mutable passed, parameters[index])
+    }
+  }
+  return passed
+}
+
+export function fillArguments(
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+): Array<Arg> uses alloc {
+  // Every argument in parameter order, with the default of each left-out parameter.
+  const written = findWrittenIndexes(parameters, arguments)
+  let filled: Array<Arg> = []
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (written[index] >= 0) {
+      Arrays.push(mutable filled, copy(arguments[written[index]]))
+    } else if (parameters[index].default is Some(value)) {
+      Arrays.push(mutable filled, Arg {
+        pos: getExpressionPos(value),
+        name: None,
+        isMutable: false,
+        value: copy(value),
+      })
+    }
+  }
+  return filled
+}
+
+export function findFilledParameters(
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+): Array<int> uses alloc {
+  // The indexes of the parameters whose default the call fills in.
+  let filled: Array<int> = []
+  if (!leavesOutDefaults(parameters, arguments)) {
+    return filled
+  }
+  const written = findWrittenIndexes(parameters, arguments)
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (written[index] < 0) {
+      Arrays.push(mutable filled, index)
+    }
+  }
+  return filled
+}
+
+export function findCallDefaultBody(
+  checker: Checker,
+  callerBody: int,
+  callId: int,
+  parameter: int,
+): int uses alloc {
+  return findBody(
+    checker,
+    `paramdefault|${Int.toString(callerBody)}|${Int.toString(callId)}|${Int.toString(parameter)}`,
+  )
+}
+
+export function checkDeclarationDefaults<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  file: File,
+) uses alloc {
+  for (const declaration of Arrays.values(file.declarations)) {
+    match (declaration) {
+      Decl.Func(funcDecl) => checkFunctionDefaults(mutable checker, walker, funcDecl)
+      Decl.Trait(traitDecl) => {
+        for (const member of Arrays.values(traitDecl.functions)) {
+          reportPlacedDefaults(
+            mutable checker,
+            member,
+            "E1214",
+            "a trait function cannot have parameter defaults",
+          )
+        }
+      }
+      Decl.Impl(implDecl) => {
+        for (const member of Arrays.values(implDecl.functions)) {
+          reportPlacedDefaults(
+            mutable checker,
+            member,
+            "E1214",
+            "a trait function cannot have parameter defaults",
+          )
+        }
+      }
+      _ => {}
+    }
+  }
+}
+
+function reportPlacedDefaults(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  code: string,
+  message: string,
+) uses alloc {
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    if (parameter.default is Some(value)) {
+      reportError(mutable checker, getExpressionPos(value), code, message)
+    }
+  }
+}
+
+function checkFunctionDefaults<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  funcDecl: FuncDecl,
+) uses alloc {
+  if (!hasDefaults(funcDecl.parameters)) {
+    return
+  }
+  if (funcDecl.externBlock is Some(_)) {
+    reportPlacedDefaults(
+      mutable checker,
+      funcDecl,
+      "E1215",
+      "a function of an extern block cannot have parameter defaults",
+    )
+    return
+  }
+  // Defaults are trailing, and a mutable parameter takes a place of the caller.
+  let first = ""
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    if (parameter.default is Some(value)) {
+      if (first == "") {
+        first = parameter.name
+      }
+      if (parameter.isMutable) {
+        reportError(
+          mutable checker,
+          getExpressionPos(value),
+          "E1211",
+          "a mutable parameter cannot have a default",
+        )
+      }
+    } else if (first != "") {
+      reportError(
+        mutable checker,
+        parameter.pos,
+        "E1210",
+        `a parameter without a default cannot follow one with a default; give ${quoteGo(parameter.name)} a default or move it before ${quoteGo(first)}`,
+      )
+    }
+  }
+  const funcIndex = findFunctionIndex(checker, funcDecl)
+  if (funcIndex < 0) {
+    return
+  }
+  // A generic default is checked with the type parameters open.
+  const environment = makeEnv(checker, checker.functions[funcIndex].typeParameters)
+  for (const index of Ranges.between(0, Arrays.length(funcDecl.parameters))) {
+    const parameter = funcDecl.parameters[index]
+    if (parameter.isMutable) {
+      continue
+    }
+    if (parameter.default is Some(value)) {
+      const before = Arrays.length(checker.errors)
+      const saved = startBody(
+        mutable checker,
+        "default",
+        `${funcDecl.name}.${parameter.name}`,
+        [],
+        BodyRoot.RootExpr(value),
+        Type.TVoid,
+        environment,
+      )
+      const want = Some(checker.paramTypes[parameter.id])
+      const found = Exprs.checkExpression(mutable checker, walker, value, want)
+      Exprs.expectType(mutable checker, getExpressionPos(value), want, found)
+      if (!Exprs.isConstantValue(checker, value)) {
+        reportError(
+          mutable checker,
+          getExpressionPos(value),
+          "E1212",
+          "a parameter default must be a constant",
+        )
+      }
+      // Calls fill in only a default that holds.
+      if (Arrays.length(checker.errors) == before) {
+        keyBody(
+          mutable checker,
+          `paramdefault|func|${Int.toString(funcIndex)}|${Int.toString(index)}`,
+        )
+      }
+      finishBody(mutable checker, saved)
+    }
+  }
+}
+
+function findFunctionIndex(checker: Checker, funcDecl: FuncDecl): int {
+  const scope = checker.current
+  if (checker.scopes[scope].functions[funcDecl.name] is Some(index)) {
+    if (
+      checker.functions[index].declaration.pos == funcDecl.pos &&
+        checker.functions[index].scope == scope
+    ) {
+      return index
+    }
+  }
+  let index = 0
+  for (const info of Arrays.values(checker.functions)) {
+    if (info.scope == scope && info.declaration.pos == funcDecl.pos) {
+      return index
+    }
+    index++
+  }
+  return -1
+}
+
+export function checkFilledDefaults<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  funcIndex: int,
+  arguments: Array<Arg>,
+) uses alloc {
+  // A call that writes every parameter fills no default, so it skips the copy.
+  if (
+    Arrays.length(arguments) >= Arrays.length(checker.functions[funcIndex].declaration.parameters)
+  ) {
+    return
+  }
+  // Each left-out default gets a body of its own for this call, with this call's parameter types.
+  const info = copy(checker.functions[funcIndex])
+  const parameters = info.declaration.parameters
+  const filled = findFilledParameters(parameters, arguments)
+  if (Arrays.length(filled) == 0) {
+    return
+  }
+  const callerBody = checker.body
+  let parameterTypes: Array<Type> = []
+  for (const parameter of Arrays.values(parameters)) {
+    Arrays.push(mutable parameterTypes, checker.paramTypes[parameter.id])
+  }
+  let environment = makeEnv(checker, info.typeParameters)
+  if (callerBody >= 0) {
+    if (checker.bodies[callerBody].instanceRefs[nodeId] is Some(instance)) {
+      parameterTypes = copy(checker.instanceList[instance].parameters)
+      environment = copy(checker.instanceList[instance].environment)
+    }
+  }
+  const savedScope = enter(mutable checker, info.scope)
+  for (const index of Arrays.values(filled)) {
+    const declared = `paramdefault|func|${Int.toString(funcIndex)}|${Int.toString(index)}`
+    if (findBody(checker, declared) < 0) {
+      continue
+    }
+    if (parameters[index].default is Some(value)) {
+      const saved = startBody(
+        mutable checker,
+        "default",
+        `${info.name}.${parameters[index].name}`,
+        [],
+        BodyRoot.RootExpr(value),
+        Type.TVoid,
+        environment,
+      )
+      keyBody(
+        mutable checker,
+        `paramdefault|${Int.toString(callerBody)}|${Int.toString(nodeId)}|${Int.toString(index)}`,
+      )
+      const want = Some(parameterTypes[index])
+      const found = Exprs.checkExpression(mutable checker, walker, value, want)
+      Exprs.expectType(mutable checker, getExpressionPos(value), want, found)
+      finishBody(mutable checker, saved)
+    }
+  }
+  enter(mutable checker, savedScope)
+}

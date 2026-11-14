@@ -1,0 +1,291 @@
+// Async generators in C (D110 items 1, 4 and 5). An `async function*`
+// compiles to a task frame (emitTaskParts in emitasync.nra) whose header is
+// followed by narra_stream_part, the stream's FIFO of pending steps
+// (std_async.c). Beside the frame, named from the C name of the function:
+//
+// - The step struct V...: the header narra_step, then `value`, the Option<T>
+//   that Async.next gives. Its creation function n... allocates one that
+//   holds None, and its release function w... drops what it holds.
+// - The creation function, the function itself: it allocates the frame,
+//   stores and retains the parameters, and runs nothing of the body. The
+//   stream starts parked, out of the loop's list of live tasks.
+//
+// A `yield` fills the first pending step with Some(value), records the state
+// and pauses: with more steps pending the stream queues itself, otherwise it
+// parks, which frees a stream nobody holds. The end of the body gives None to
+// every pending step. There is no clone: copies of a stream share the frame.
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Expr, Block, FuncDecl, Arg } from "narrac/ast"
+import { Type, typeKeys } from "narrac/types"
+import { Checker, getExpressionId } from "narrac/check"
+import { cachedCType, generatorPart } from "narrac/cnames"
+import {
+  Emitter,
+  EmitWalker,
+  Code,
+  TempVar,
+  writeLine,
+  ownedTemp,
+  consume,
+  beginStatement,
+  endStatement,
+  readNodeType,
+  readLocal,
+  localName,
+  isPointerParameter,
+  retainCode,
+  releaseCode,
+  noteHelper,
+} from "narrac/emitstate"
+import { recordLive } from "narrac/emitgenerators"
+import { TaskNames, emitTaskParts } from "narrac/emitasync"
+import { enumAllocation } from "narrac/emitdecls"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const ASYNC_MODULE = "std/internal/async"
+
+// The C names of a stream's step struct and its creation and release functions.
+struct StepNames {
+  step: string
+  creation: string
+  release: string
+}
+
+export function emitStreamFunction<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  declaration: FuncDecl,
+  block: Block,
+  result: Type,
+  signature: string,
+  owner: string,
+): string uses alloc {
+  // The caller has started the function (startFunction); signature is its C
+  // signature and owner its C name. The frame owns the parameters.
+  const names = TaskNames {
+    frame: generatorPart("T", owner),
+    resume: generatorPart("r", owner),
+    release: generatorPart("q", owner),
+  }
+  const steps = StepNames {
+    step: generatorPart("V", owner),
+    creation: generatorPart("n", owner),
+    release: generatorPart("w", owner),
+  }
+  let element = Type.TVoid
+  if (result is Type.TAsyncGenerator(streamElement, _, _, _)) {
+    element = copy(streamElement)
+  }
+  emitter.streamOption = findStreamOption(emitter.checker, element)
+  emitter.inStream = true
+  let inputs: Array<int> = []
+  for (const index of Ranges.upTo(Arrays.length(declaration.parameters))) {
+    Arrays.push(mutable inputs, index)
+  }
+  const parts = emitTaskParts(
+    walker,
+    mutable emitter,
+    inputs,
+    block,
+    Type.TVoid,
+    names,
+    declaration.pos,
+  )
+  emitter.inStream = false
+  emitStepParts(mutable emitter, steps)
+  Str.append(mutable emitter.out, parts)
+  writeLine(mutable emitter, `${signature} {`)
+  emitStreamCreation(mutable emitter, inputs, names, steps)
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, "")
+  const text = Str.build(emitter.out)
+  emitter.out = Str.builder()
+  return text
+}
+
+export function findStreamOption(checker: Checker, element: Type): Type from checker uses alloc {
+  // The checker made the instance before the body (prepareStreamBody).
+  if (checker.scopes[0].generics["Option"] is Some(generic)) {
+    if (checker.instances[`${Int.toString(generic)}|${typeKeys([element])}`] is Some(found)) {
+      return found
+    }
+  }
+  panic("internal error: an async generator has no Option instance for its steps")
+  return Type.TVoid
+}
+
+function findOptionVariant(emitter: Emitter, name: string): int {
+  if (emitter.streamOption is Type.TEnum(enumIndex)) {
+    for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+      if (variant.name == name) {
+        return variant.index
+      }
+    }
+  }
+  return -1
+}
+
+function emitStepParts(mutable emitter: Emitter, steps: StepNames) uses alloc {
+  // A new step holds None, so the end of the body and a read of a finished
+  // stream need no value of their own.
+  const optionType = copy(emitter.streamOption)
+  const optionName = cachedCType(emitter.checker, emitter.typeNames, optionType)
+  const noneIndex = findOptionVariant(emitter, "None")
+  const none = enumAllocation(mutable emitter, optionType, noneIndex, [])
+  const step = steps.step
+  writeLine(
+    mutable emitter,
+    `typedef struct ${step} { narra_step s; ${optionName} value; } ${step};`,
+  )
+  writeLine(mutable emitter, `static void ${steps.release}(narra_task* h) {`)
+  writeLine(mutable emitter, `  ${step}* f = (${step}*)h;`)
+  writeLine(mutable emitter, "  narra_step_drop(h);")
+  const releaseValue = releaseCode(emitter, optionType, "f->value")
+  if (releaseValue != "") {
+    writeLine(mutable emitter, `  ${releaseValue}`)
+  }
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `static narra_task* ${steps.creation}(void) {`)
+  writeLine(mutable emitter, `  ${step}* f = narra_alloc(sizeof(${step}));`)
+  writeLine(mutable emitter, `  memset(f, 0, sizeof(${step}));`)
+  writeLine(mutable emitter, `  narra_task_init(&f->s.h, NULL, ${steps.release}, &f->value);`)
+  writeLine(mutable emitter, `  f->value = ${none.text};`)
+  writeLine(mutable emitter, "  return &f->s.h;")
+  writeLine(mutable emitter, "}")
+}
+
+function emitStreamCreation(
+  mutable emitter: Emitter,
+  inputs: Array<int>,
+  names: TaskNames,
+  steps: StepNames,
+) uses alloc {
+  // A new parked frame that owns its inputs; a large parameter is copied,
+  // since the caller's value may be gone when the stream runs.
+  const frame = names.frame
+  writeLine(mutable emitter, `  ${frame}* f = narra_alloc(sizeof(${frame}));`)
+  writeLine(mutable emitter, `  memset(f, 0, sizeof(${frame}));`)
+  writeLine(
+    mutable emitter,
+    `  narra_stream_init(&f->h, ${names.resume}, ${names.release}, ${steps.creation});`,
+  )
+  for (const input of Arrays.values(inputs)) {
+    const local = copy(readLocal(emitter, input))
+    const name = localName(local)
+    let value = name
+    if (isPointerParameter(emitter, input)) {
+      value = `*${name}`
+    }
+    writeLine(mutable emitter, `  f->${name} = ${value};`)
+    const retainText = retainCode(emitter, local.localType, `f->${name}`)
+    if (retainText != "") {
+      writeLine(mutable emitter, `  ${retainText}`)
+    }
+  }
+  writeLine(mutable emitter, "  return &f->h;")
+}
+
+function emitPause(mutable emitter: Emitter) uses alloc {
+  // narra_stream_pause may free the frame, so the state is set before it.
+  const number = Int.toString(Arrays.length(emitter.liveValues))
+  recordLive(mutable emitter)
+  writeLine(mutable emitter, `f->h.state = ${number};`)
+  writeLine(mutable emitter, "narra_stream_pause(&f->h);")
+  writeLine(mutable emitter, "return;")
+  writeLine(mutable emitter, `narra_resume_${number}:;`)
+}
+
+function emitFill(mutable emitter: Emitter, value: string) uses alloc {
+  // The first pending step takes the value and wakes its awaiters.
+  const optionName = cachedCType(emitter.checker, emitter.typeNames, emitter.streamOption)
+  writeLine(mutable emitter, "{")
+  writeLine(mutable emitter, "  narra_task* step = narra_stream_take(&f->h);")
+  writeLine(mutable emitter, `  *(${optionName}*)step->value = ${value};`)
+  writeLine(mutable emitter, "  narra_stream_give(step, true);")
+  writeLine(mutable emitter, "}")
+}
+
+export function emitStreamYield<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  value: Expr,
+  delegate: bool,
+) uses alloc {
+  if (delegate) {
+    emitStreamDelegate(walker, mutable emitter, value)
+    return
+  }
+  beginStatement(mutable emitter)
+  const valueType = copy(readNodeType(emitter, getExpressionId(value)))
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  const consumed = consume(mutable emitter, code.text, code.owned, valueType)
+  const optionType = copy(emitter.streamOption)
+  const someIndex = findOptionVariant(emitter, "Some")
+  const some = enumAllocation(mutable emitter, optionType, someIndex, [consumed])
+  emitFill(mutable emitter, some.text)
+  endStatement(mutable emitter)
+  emitPause(mutable emitter)
+}
+
+function emitStreamDelegate<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  value: Expr,
+) uses alloc {
+  // yield* asks the inner stream for one step per step of this one, and stops
+  // at the first step that gives None. The inner stream and its step are frame
+  // fields, held across the wait and the pause.
+  beginStatement(mutable emitter)
+  const innerType = copy(readNodeType(emitter, getExpressionId(value)))
+  const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+  const inner = consume(mutable emitter, code.text, code.owned, innerType)
+  const top = Arrays.length(emitter.frames) - 1
+  Arrays.push(mutable emitter.frames[top], TempVar { name: inner, tempType: innerType })
+  writeLine(mutable emitter, "while (1) {")
+  emitter.indent++
+  beginStatement(mutable emitter)
+  const stepType = Type.TAsync(copy(emitter.streamOption))
+  const step = ownedTemp(mutable emitter, stepType, `narra_stream_next(${inner})`)
+  const number = Int.toString(Arrays.length(emitter.liveValues))
+  writeLine(mutable emitter, `if (!${step}->done) {`)
+  emitter.indent++
+  recordLive(mutable emitter)
+  writeLine(mutable emitter, `narra_task_wait(&f->h, ${step});`)
+  writeLine(mutable emitter, `f->h.state = ${number};`)
+  writeLine(mutable emitter, "return;")
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `narra_resume_${number}:;`)
+  writeLine(mutable emitter, `if (!narra_step_filled(${step})) {`)
+  const releaseStep = releaseCode(emitter, stepType, step)
+  writeLine(mutable emitter, `  ${releaseStep}`)
+  writeLine(mutable emitter, "  break;")
+  writeLine(mutable emitter, "}")
+  // This stream's step gets its own reference to the inner step's value.
+  const optionType = copy(emitter.streamOption)
+  const optionName = cachedCType(emitter.checker, emitter.typeNames, optionType)
+  const passed = consume(mutable emitter, `(*(${optionName}*)${step}->value)`, false, optionType)
+  emitFill(mutable emitter, passed)
+  endStatement(mutable emitter)
+  emitPause(mutable emitter)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  endStatement(mutable emitter)
+}
+
+export function emitStreamNext<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // Tasks.next(stream): a new step, which may run the body inline.
+  noteHelper(emitter, ASYNC_MODULE)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+  const handleType = Type.TAsync(Type.TVoid)
+  return Code {
+    text: ownedTemp(mutable emitter, handleType, `narra_stream_next(${code.text})`),
+    owned: true,
+  }
+}

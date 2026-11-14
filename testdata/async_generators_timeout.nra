@@ -1,0 +1,49 @@
+// A step raced against a timer: the timer wins, the step's stream keeps
+// running, and a later race against a longer timer gets its value. A stream
+// still waiting when the program exits is cancelled there, and nothing leaks.
+import * as Async from "std/async"
+import * as Time from "std/time"
+import { sleep } from "std/async/time"
+
+async function* slow(): AsyncGenerator<string> uses (io, alloc) {
+  const slept = await sleep(Time.milliseconds(30))
+  if (slept is Err(_)) {
+    print("first sleep cancelled")
+    return
+  }
+  print("stream wakes")
+  yield "late value"
+  const again = await sleep(Time.seconds(60))
+  if (again is Err(_)) {
+    print("second sleep cancelled at exit")
+  }
+  yield "never read"
+}
+
+async function timeout(milliseconds: int): Option<string> uses io, alloc {
+  const slept = await sleep(Time.milliseconds(milliseconds))
+  if (slept is Err(_)) {
+    return Some("timer cancelled")
+  }
+  return None
+}
+
+function show(raced: Option<Option<string>>): string uses alloc {
+  if (raced is Some(Some(text))) {
+    return text
+  }
+  if (raced is Some(None)) {
+    return "timed out"
+  }
+  return "no handles"
+}
+
+export async function run(_args: Array<string>): int {
+  const stream = slow()
+  const step = Async.next(stream)
+  print(`first race: ${show(await Async.race([step, timeout(1)]))}`)
+  print(`second race: ${show(await Async.race([step, timeout(5000)]))}`)
+  // This step waits in the stream's second sleep until the exit.
+  Async.detach(Async.race([Async.next(stream), timeout(60000)]))
+  return 0
+}

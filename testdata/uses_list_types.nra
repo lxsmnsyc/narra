@@ -1,0 +1,100 @@
+// Effect lists inside type lists: a type's `uses` takes one effect, or a list in
+// parentheses, so a `,` after it ends the type.
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+
+function* counted(limit: int): Generator<int> uses (io, alloc) {
+  print("counted")
+  let items: Array<int> = []
+  for (const value of Ranges.between(0, limit)) {
+    Arrays.push(mutable items, value)
+    yield value
+  }
+}
+
+function* loud(): Generator<int> uses io {
+  print("loud")
+  yield 10
+}
+
+// A function that makes a generator: the type's list, then the function's own.
+function make(limit: int): Generator<int> uses (io, alloc) uses alloc {
+  return counted(limit)
+}
+
+function sumValues(table: Map<int, Generator<int> uses (io, alloc)>): int uses io, alloc {
+  let total = 0
+  for (const #[_key, generator] of Maps.entries(table)) {
+    for (const value of generator) {
+      total = total + value
+    }
+  }
+  return total
+}
+
+struct Pair<A, B> {
+  first: A
+  second: B
+}
+
+// A generator type with two effects as the first of two type arguments.
+function sumScaled(pair: Pair<Generator<int> uses (io, alloc), int>): int uses io, alloc {
+  let total = 0
+  for (const value of pair.first) {
+    total = total + value * pair.second
+  }
+  return total
+}
+
+function sumPair(pair: #[Generator<int> uses io, Array<int>]): int uses io {
+  const #[generator, extra] = pair
+  let total = 0
+  for (const value of generator) {
+    total = total + value
+  }
+  for (const value of extra) {
+    total = total + value
+  }
+  return total
+}
+
+function three(): int uses io {
+  print("three")
+  return 3
+}
+
+function addBoth(maker: () => int uses io, offset: int): int uses io {
+  return maker() + offset
+}
+
+function callWith(callback: (() => int uses io, int) => int uses io): int uses io {
+  return callback(three, 4)
+}
+
+function sumTwo(
+  first: Generator<int> uses io,
+  second: Generator<int> uses (io, alloc),
+): int uses io, alloc {
+  let total = 0
+  for (const value of first) {
+    total = total + value
+  }
+  for (const value of second) {
+    total = total + value
+  }
+  return total
+}
+
+export function run(_args: Array<string>): int uses io, alloc {
+  print(Int.toString(sumPair(#[loud(), [1, 2]])))
+  print(Int.toString(callWith(addBoth)))
+  print(Int.toString(sumTwo(loud(), make(3))))
+  let table: Map<int, Generator<int> uses (io, alloc)> = Map {}
+  table[1] = make(2)
+  table[2] = counted(4)
+  print(Int.toString(sumValues(table)))
+  print(Int.toString(sumScaled(Pair { first: make(3), second: 5 })))
+  return 0
+}

@@ -543,7 +543,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-There are no optional parameters, default parameters, rest parameters or overloads. Each function has one fixed list of parameters, and two functions in a module cannot share a name. Give each version its own name, or pass an `Option`:
+A parameter can have a default, as in TypeScript, but the default must be a constant: `depth: int = 0` works, `depth: int = start()` does not ([chapter 3](03-functions-and-closures.md#arguments-a-caller-may-leave-out)). There is no `name?: T`; write `name: Option<T> = None`, and the caller passes `Some(3)`. There are no rest parameters or overloads. Each function has one list of parameters, and two functions in a module cannot share a name. Give each version its own name:
 
 ```narra error
 // error: 5:1: function "describe" is declared twice

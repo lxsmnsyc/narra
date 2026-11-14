@@ -19,10 +19,12 @@ import {
   Stmt,
   Block,
   Arg,
+  Param,
   Pattern,
   MatchArm,
   FieldInit,
   LoopReference,
+  TemplatePart,
 } from "narrac/ast"
 import { Type } from "narrac/types"
 import {
@@ -37,6 +39,7 @@ import {
 } from "narrac/check"
 import { isConstFunction, checkConstFunctions } from "narrac/constfunctions"
 import { EffectState } from "narrac/effects"
+import * as TaggedTemplates from "narrac/taggedtemplates"
 import { substring } from "narrac/textops"
 import * as Int from "std/int"
 import * as Float from "std/float"
@@ -46,6 +49,7 @@ import * as Str from "std/string"
 import * as Char from "std/char"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 const STEP_LIMIT = 10000000
 const MEMORY_LIMIT = 67108864
@@ -797,6 +801,65 @@ function measureValueDepth(value: ConstValue): int uses alloc {
   return deepest
 }
 
+function evaluateDistinctCall(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  callee: Expr,
+  distinctIndex: int,
+  arguments: Array<Arg>,
+): ConstValue uses alloc {
+  // from and the unwrap function are their argument; check of a refined type tests it (D116).
+  const value = evaluateExpression(checker, mutable state, arguments[0].value)
+  if (callee is Expr.FieldExpr(_, _, _, name)) {
+    if (name == "check" && checker.distincts[distinctIndex].refined && !state.failed) {
+      const optionType = readType(checker, state, nodeId)
+      if (isRefinementMet(checker, distinctIndex, value)) {
+        return makeOption(checker, optionType, Some(value))
+      }
+      return makeOption(checker, optionType, None)
+    }
+  }
+  return value
+}
+
+function isRefinementMet(checker: Checker, distinctIndex: int, value: ConstValue): bool uses alloc {
+  // Every item has an alternative that holds. A u64 from 2^63 up is negative as an int,
+  // above every bound a refinement can hold.
+  const info = checker.distincts[distinctIndex]
+  const isWide = info.base is Some(Type.TU64)
+  for (const alternatives of Arrays.values(info.tests)) {
+    let met = false
+    for (const alternative of Arrays.values(alternatives)) {
+      if (value is ConstValue.Text(text)) {
+        met = met || text == alternative.text
+      } else if (value is ConstValue.Integer(number)) {
+        met =
+          met ||
+            isComparisonMet(number, alternative.operator, alternative.bound, isWide && number < 0)
+      }
+    }
+    if (!met) {
+      return false
+    }
+  }
+  return true
+}
+
+function isComparisonMet(number: int, operator: string, bound: int, isAbove: bool): bool {
+  if (isAbove) {
+    return operator == ">" || operator == ">=" || operator == "!="
+  }
+  return match (operator) {
+    "==" => number == bound
+    "!=" => number != bound
+    "<" => number < bound
+    "<=" => number <= bound
+    ">" => number > bound
+    _ => number >= bound
+  }
+}
+
 // Making values.
 
 function makeVariant(
@@ -1097,6 +1160,13 @@ function evaluateExpressionKind(
     Expr.CharLit(_, _, value) => ConstValue.Character(Str.charAt(value, 0))
     Expr.BoolLit(_, _, value) => ConstValue.Boolean(value)
     Expr.TemplateLit(_, pos, parts) => evaluateTemplate(checker, mutable state, pos, parts)
+    Expr.TemplateParts(nodeId, pos, parts) => evaluateTemplateParts(
+      checker,
+      mutable state,
+      nodeId,
+      pos,
+      parts,
+    )
     Expr.Ident(nodeId, pos, name) => evaluateName(checker, mutable state, nodeId, pos, name)
     Expr.FieldExpr(nodeId, pos, target, name) => evaluateField(
       checker,
@@ -1266,6 +1336,31 @@ function evaluateTemplate(
     return ConstValue.Unit
   }
   return ConstValue.Text(Str.join(texts, ""))
+}
+
+function evaluateTemplateParts(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  pos: Pos,
+  parts: Array<TemplatePart>,
+): ConstValue uses alloc {
+  // The parts of a tagged template: the source text for Template.Raw, else the decoded text.
+  if (!charge(mutable state, pos, 16 + 8 * Arrays.length(parts), "an array literal")) {
+    return ConstValue.Unit
+  }
+  const isRaw = TaggedTemplates.isRawParts(checker, readType(checker, state, nodeId))
+  let values: Array<ConstValue> = []
+  for (const part of Arrays.values(parts)) {
+    let text = part.raw
+    if (!isRaw) {
+      if (part.decoded is Ok(decoded)) {
+        text = decoded
+      }
+    }
+    Arrays.push(mutable values, ConstValue.Text(text))
+  }
+  return ConstValue.Items(values)
 }
 
 function evaluateName(
@@ -2234,7 +2329,7 @@ function findLoopPos(statement: Stmt): Option<Pos> from statement {
   return match (statement) {
     Stmt.WhileStmt(pos, _, _, _) => Some(pos)
     Stmt.CForStmt(pos, _, _, _, _, _) => Some(pos)
-    Stmt.ForStmt(_, pos, _, _, _, _, _) => Some(pos)
+    Stmt.ForStmt(_, pos, _, _, _, _, _, _) => Some(pos)
     _ => None
   }
 }
@@ -2296,7 +2391,7 @@ function executeStatementKind(
       step,
       body,
     )
-    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference) => executeFor(
+    Stmt.ForStmt(nodeId, pos, label, _, iterable, body, reference, _) => executeFor(
       checker,
       mutable state,
       nodeId,
@@ -2857,11 +2952,18 @@ function evaluateCall(
   mutable state: ConstEvaluator,
   nodeId: int,
   pos: Pos,
-  _callee: Expr,
+  callee: Expr,
   arguments: Array<Arg>,
 ): ConstValue uses alloc {
   return match (readRef(checker, state, nodeId)) {
-    Ref.Distinct(_) => evaluateExpression(checker, mutable state, arguments[0].value)
+    Ref.Distinct(distinctIndex) => evaluateDistinctCall(
+      checker,
+      mutable state,
+      nodeId,
+      callee,
+      distinctIndex,
+      arguments,
+    )
     Ref.Constructor(_, variant) => {
       const values = evaluateArguments(checker, mutable state, nodeId, arguments)
       if (state.failed) {
@@ -2901,6 +3003,46 @@ function findCallBody(
   return findBody(checker, `func|${Int.toString(funcIndex)}`)
 }
 
+function fillDefaultValues(
+  checker: Checker,
+  mutable state: ConstEvaluator,
+  nodeId: int,
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+  passed: Array<ConstValue>,
+): Array<ConstValue> uses alloc {
+  // passed holds the written arguments in parameter order; a left-out
+  // parameter takes its default, read in the call's default body (D115).
+  const written = ParamDefaults.findWrittenIndexes(parameters, arguments)
+  const callerBody = state.body
+  let values: Array<ConstValue> = []
+  let next = 0
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (written[index] >= 0) {
+      Arrays.push(mutable values, copy(passed[next]))
+      next++
+    } else if (parameters[index].default is Some(value)) {
+      const body = ParamDefaults.findCallDefaultBody(checker, callerBody, nodeId, index)
+      if (body < 0) {
+        return reportUnsupportedValues(mutable state, getExpressionPos(value))
+      }
+      state.body = body
+      const filled = evaluateExpression(checker, mutable state, value)
+      state.body = callerBody
+      Arrays.push(mutable values, filled)
+    }
+  }
+  return values
+}
+
+function reportUnsupportedValues(
+  mutable state: ConstEvaluator,
+  pos: Pos,
+): Array<ConstValue> uses alloc {
+  stopEvaluation(mutable state, pos, "E1052", "it uses a parameter default")
+  return []
+}
+
 function callFunction(
   checker: Checker,
   mutable state: ConstEvaluator,
@@ -2913,12 +3055,20 @@ function callFunction(
   if (body < 0) {
     return reportUnsupported(mutable state, pos, `a call of ${checker.functions[funcIndex].name}`)
   }
-  const ordered = orderArguments(checker, nodeId, arguments)
+  let ordered = orderArguments(checker, nodeId, arguments)
   // A `mutable` argument is moved out of its place for the call, and back after it.
   let places: Array<Place> = []
   let values = evaluateArguments(checker, mutable state, nodeId, arguments)
   if (state.failed) {
     return ConstValue.Unit
+  }
+  const parameters = checker.functions[funcIndex].declaration.parameters
+  if (ParamDefaults.leavesOutDefaults(parameters, arguments)) {
+    ordered = ParamDefaults.fillArguments(parameters, arguments)
+    values = fillDefaultValues(checker, mutable state, nodeId, parameters, arguments, values)
+    if (state.failed) {
+      return ConstValue.Unit
+    }
   }
   for (const index of Ranges.between(0, Arrays.length(ordered))) {
     if (ordered[index].isMutable) {

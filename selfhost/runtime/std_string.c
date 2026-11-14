@@ -158,21 +158,25 @@ static narra_sb* narra_sb_new(void) {
 }
 
 static void narra_sb_retain(narra_sb* b) {
-  b->rc++;
+  NARRA_RC_RETAIN(b->rc);
   NARRA_COPY_SHARED(b);
 }
 
 static void narra_sb_release(narra_sb* b) {
   NARRA_COPY_DROP(b);
-  if (--b->rc == 0) {
+  if (NARRA_RC_RELEASE(b->rc)) {
     narra_free(b->data);
     narra_free(b);
   }
 }
 
+#ifdef NARRA_THREADS
+static void narra_sb_share(narra_sb* b) { narra_rc_share(&b->rc); }
+#endif
+
 static void narra_sb_push(narra_sb** p, const char* data, int64_t n) {
   narra_sb* b = *p;
-  if (b->rc > 1) {
+  if (NARRA_RC_UNSHARE(b->rc)) {
     NARRA_COPY_WRITE(b, 3);
     narra_sb* c = narra_alloc(sizeof(narra_sb));
     c->rc = 1;
@@ -181,8 +185,7 @@ static void narra_sb_push(narra_sb** p, const char* data, int64_t n) {
     c->data = narra_alloc((size_t)c->cap);
     memcpy(c->data, b->data, (size_t)b->len);
     NARRA_COPY_WRITTEN();
-    NARRA_COPY_DROP(b);
-    b->rc--;
+    narra_sb_release(b);
     *p = b = c;
   }
   if (b->len + n > b->cap) {

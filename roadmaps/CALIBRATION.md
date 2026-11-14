@@ -111,6 +111,25 @@ Notes:
 | selfhost | event-loop | M | L | 2 | 448k tokens. Review: deadline overflow, kqueue spin, duplicate fd waits; maintainer accepted a quiescent idle rule. |
 | selfhost | async-api | M | L | 3 | 280k tokens. Review: race watcher growth; Async<void> inference; then queued. |
 | selfhost | std-async-io | L | L | 2 | 247k tokens. Review: accept errors, read buffer; maintainer made cancel pass down the await chain. |
+| selfhost | batch-13 design spikes (8) | S | S-M | 1 | 1.25M tokens in all. Regions dropped by re-measuring; await-anywhere, idle and cancel-chain amended by the maintainer earlier. |
+| selfhost | threads-process | S | S | 1 | 92k tokens. |
+| selfhost | constructor-field-defaults | S | S | 1 | 81k tokens. One match arm. |
+| selfhost | effect-var-nested-result | S | M | 2 | 207k tokens. Added the private-uses rule. |
+| selfhost | async-timing-flake | S | S | 1 | 58k tokens. Wider timer gaps; 0 of 400 under load. |
+| selfhost | field-default-alloc | S | S | 1 | 92k tokens. |
+| selfhost | async-generators | L | L | 1 | 340k tokens. Clean review. |
+| selfhost | refinement-types | L | L | 2 | 310k tokens. Review: field defaults, escaping, argument names. |
+| selfhost | tagged-templates | M | L | 2 | 373k tokens. Review: void holes gave invalid C. |
+| selfhost | parameter-defaults | M | L | 2 | 326k tokens. Review: tail self-calls with left-out defaults. |
+| selfhost | for-await | M | L | 1 | 230k tokens. Clean review. |
+| selfhost | threads | L | XL | 2 | 460k tokens. Review: share race, recursive share walk, copy check. |
+| selfhost | simd | M | L | 2 | 344k tokens. Review: `!v`, unused import. |
+| selfhost | uses-list-syntax | M | M | 2 | 242k tokens. Review: old-form hint, duplicates. |
+| selfhost | threads-check | M | L | 2 | 263k tokens. Review: Scope escape through generator frames. |
+| selfhost | simd-library | M | M | 1 | 222k tokens. Clean review. |
+| selfhost | threads-channels | M | L | 2 | 316k tokens. Sync instead of SyncSlot; review: receive with from, void thread functions. |
+| selfhost | threads-shared | M | L | 2 | 288k tokens. Review: relaxed load race in Threads.take (190/200 under TSan). |
+| selfhost | feature-review | M | M | 1 | 270k tokens. 25 proposals, 7 kept, D119. |
 | selfhost | std-design | S | M | 1 | 176k tokens. One gate for seven module APIs; split unicode and regex into two nodes each. |
 | selfhost | std-iterator | M | M | 1 | 159k tokens. Clean review; chunk/window narrowed by an effect-variable gap found on the base. |
 | selfhost | std-args | M | M | 2 | 192k tokens. Review: flags of nested commands clashed; chose a BadSpec error. |

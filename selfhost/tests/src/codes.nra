@@ -10,6 +10,10 @@
 //   - a literal code is in the table of diagnostics.nra and is not E0000
 //   - when the message is a string or template literal that matches a format
 //     of the table, the code is one of the codes with a matching format
+//   - each `CodeRow {` and `Explanation {` entry of the table is closed before
+//     the next one opens, the rows are in increasing order of code (a code
+//     with several formats has its rows side by side), and the explanations
+//     are in increasing order with no code twice
 // The sites are found by reading the source text, not by parsing it.
 import { splitString, substring } from "testrunner/textops"
 import * as Arrays from "std/array"
@@ -94,7 +98,7 @@ export function runCase(
       `the table was not found in diagnostics.nra: ${Int.toString(Arrays.length(formats))} rows`,
     )
   }
-  let problems: Array<string> = []
+  let problems = checkTableOrder(table.value)
   let sites = 0
   for (const name of Arrays.values(Files.listNames(testCase.path))) {
     if (Str.endsWith(name, ".nra")) {
@@ -114,6 +118,77 @@ export function runCase(
     return Err("no report site found")
   }
   return Ok(true)
+}
+
+function checkTableOrder(table: string): Array<string> uses alloc {
+  let problems: Array<string> = []
+  // The entry kind of the table being read, or "" outside the tables.
+  let kind = ""
+  let openLine = 0
+  let previousCode = ""
+  let currentLine = 0
+  for (const line of Arrays.values(splitString(table, "\n"))) {
+    currentLine++
+    const trimmed = Str.trim(line)
+    if (Str.startsWith(line, "const CODE_ROWS")) {
+      kind = "CodeRow"
+      previousCode = ""
+      continue
+    }
+    if (Str.startsWith(line, "const EXPLANATIONS")) {
+      kind = "Explanation"
+      previousCode = ""
+      continue
+    }
+    if (kind == "") {
+      continue
+    }
+    const where = `diagnostics.nra:${Int.toString(currentLine)}`
+    if (line == "]") {
+      if (openLine > 0) {
+        Arrays.push(
+          mutable problems,
+          `${where}: the ${kind} entry of line ${Int.toString(openLine)} is not closed`,
+        )
+      }
+      kind = ""
+      openLine = 0
+      continue
+    }
+    if (Str.startsWith(trimmed, `${kind} {`)) {
+      if (openLine > 0) {
+        Arrays.push(
+          mutable problems,
+          `${where}: a ${kind} entry opens before the one of line ${Int.toString(openLine)} is closed`,
+        )
+      }
+      openLine = currentLine
+    }
+    // The code of the open entry is checked against the one before it.
+    const code = findRowCode(line)
+    if (openLine > 0 && code != "") {
+      if (code < previousCode) {
+        Arrays.push(mutable problems, `${where}: ${code} comes after ${previousCode}`)
+      } else if (code == previousCode && kind == "Explanation") {
+        Arrays.push(mutable problems, `${where}: ${code} has a second explanation`)
+      }
+      previousCode = code
+    }
+    if (Str.endsWith(trimmed, "},")) {
+      openLine = 0
+    }
+  }
+  return problems
+}
+
+function findRowCode(line: string): string uses alloc {
+  // The code a `code: "E...."` field names, or "" for a line without one.
+  if (Str.indexOf(line, "code: \"") is Some(codeIndex)) {
+    if (codeIndex + 12 <= Str.length(line)) {
+      return substring(line, codeIndex + 7, codeIndex + 12)
+    }
+  }
+  return ""
 }
 
 function charAt(text: string, index: int): string uses alloc {

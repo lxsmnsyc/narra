@@ -1,0 +1,86 @@
+// std/thread: threads that run in a scope (SPEC.md section 8, D111).
+//
+// Thread.scope gives a Scope, Thread.start runs a function on a new thread of
+// that scope, and Thread.join waits for it and gives its result. Every thread
+// a scope started has ended when Thread.scope returns. Importing this module
+// builds the program in thread mode (D111 item 2).
+
+import * as Boxes from "std/box"
+import * as CellSlot from "std/internal/cell"
+import * as Threads from "std/internal/thread"
+
+// The thread number of the runtime and whether a join has waited for it. Only
+// the thread that started it reads or writes this box.
+struct ThreadControl {
+  id: int
+  joined: bool
+}
+
+// The threads started in a scope, newest first, so a start adds one in place
+// of copying a list.
+enum ThreadList {
+  Started(control: Box<ThreadControl>, earlier: ThreadList)
+  Empty
+}
+
+// The threads of a scope, so the scope can join those not joined yet.
+export opaque struct Scope {
+  threads: Box<ThreadList>
+}
+
+// A running or ended thread. The thread writes its result into the result box
+// once, before it ends; join reads it only after waiting for the end.
+export opaque struct Thread<T> {
+  result: Box<Option<T>>
+  control: Box<ThreadControl>
+}
+
+// Calls body with a new scope and gives its result once every thread started
+// in the scope has ended.
+export function scope<T, effect E>(body: (threadScope: Scope) => T uses E): T uses E, alloc {
+  const opened = Scope { threads: Boxes.new(ThreadList.Empty) }
+  const result = body(opened)
+  let pending = opened.threads.value
+  let walking = true
+  while (walking) {
+    match (pending) {
+      ThreadList.Started(control, earlier) => {
+        joinControl(control)
+        pending = earlier
+      }
+      ThreadList.Empty => {
+        walking = false
+      }
+    }
+  }
+  return result
+}
+
+// Runs work on a new thread of the scope, with an 8 MiB stack. A work that
+// returns nothing gives a Thread<void>, whose join returns nothing.
+export function start<T, effect E>(
+  threadScope: Scope,
+  escaping work: () => T uses E,
+): Thread<T> uses E, alloc {
+  const result: Box<Option<T>> = Boxes.new(None)
+  const id = Threads.start(() => CellSlot.store(result, Some(work())))
+  const control = Boxes.new(ThreadControl { id: id, joined: false })
+  CellSlot.store(threadScope.threads, ThreadList.Started(control, threadScope.threads.value))
+  return Thread { result: result, control: control }
+}
+
+// Waits until the thread has ended and gives its result. A second join gives
+// the same value without waiting.
+export function join<T>(thread: Thread<T>): T from thread {
+  joinControl(thread.control)
+  // A thread always writes its result before it ends; a panic ends the process.
+  // For a Thread<void> there is no value and join returns nothing.
+  return Threads.result(thread.result)
+}
+
+function joinControl(control: Box<ThreadControl>) {
+  if (!control.value.joined) {
+    Threads.join(control.value.id)
+    CellSlot.store(control, ThreadControl { id: control.value.id, joined: true })
+  }
+}

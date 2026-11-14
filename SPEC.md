@@ -81,12 +81,20 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Function types** are written like arrow functions: `(item: T) => U`.
 - **Standard functions are values** when their signature is fixed: `Int.toString`, `Str.length` and `Fs.readText` can be passed, stored and returned, and `import { toString } from "std/int"` names one directly. Its effects follow it: `Fs.readText` has `alloc, io`, so a function type that takes it lists both. A standard function whose types depend on the call (`Arrays.length`, `Maps.size`), one with a `mutable` parameter and one that takes a function (`Arrays.map`) are not values (E1013); write an arrow function, `(items) => Arrays.length(items)`.
 - **Parameters are constant.** A parameter cannot be reassigned, and its contents cannot be changed unless it is declared `mutable` (section 6). A `mutable` parameter still cannot be reassigned.
-- **A call passes every argument.** Passing fewer or more arguments than the function declares is a compile error.
+- **A call passes every argument** that has no default. Passing fewer arguments, or more than the function declares, is a compile error.
 - **Arguments are evaluated left to right**, in the order they are written. An argument that is a block expression, a `match` or a closure call can assign a `let` that an earlier argument reads; the earlier argument keeps the value it had when it was evaluated. After `show(items, { items = ["z"]; return 0 })`, `show` received the original `items`.
 - **Named arguments.** A call can name its arguments, written like struct literal fields: `move(x: 1, y: 2)`. Positional arguments come first, then named ones in any order: `move(1, z: 3, y: 2)`. A positional argument after a named one is an error. Each parameter is passed exactly once, by position or by name. `mutable` follows the colon: `fill(buffer: mutable items, value: 0)`. Names work when the callee is a declared function or a trait function. A function value, an enum constructor, and a std function built into the compiler such as `Str.slice` take positions only (D87). The arguments are evaluated in the order they are written and passed in the order of the parameters. A parameter's name is part of the function's interface: renaming it breaks the calls that use the name.
 - **No currying and no partial application.** To fix some arguments, write an arrow function.
 - **No method calls.** `xs.push(v)` is not valid. Write `Arrays.push(mutable xs, v)`. `value.field(args)` is only valid when `field` is a struct field that holds a function.
-- **No varargs and no optional parameters.** Pass an array, or a struct with defaults: `File.open(path, OpenOptions { create: true })`.
+- **Parameter defaults (D115).** A parameter of a declared function can have a default after `=`: `function render(node: Node, depth: int = 0, indent: string = "  ")`. A call may leave it out: `render(tree)`, `render(tree, 2)`, or `render(tree, indent: "\t")`, which names a later parameter to skip `depth`.
+  - Defaults are trailing: once a parameter has one, every later parameter has one (E1210).
+  - A default is a compile-time constant, by the rule of a struct field default (section 4): a literal, a unary operator on a constant, a constructor with constant arguments, or an array of constants (E1212). It cannot read another parameter, a local, a top-level constant or a function, and cannot call an `@const` function.
+  - A `mutable` parameter has no default (E1211). Arrow function parameters and function types have none (E1213), nor have trait functions and their `implement` blocks (E1214) or the functions of an `extern` block (E1215). `name?: T` is a compile error (E1216); write `name: Option<T> = None`.
+  - The compiler fills each left-out default into the call, in parameter order, after named arguments are matched, so the function is still one C function with a fixed parameter list. The default is built at each call that leaves it out. A call that leaves out an array default has the `alloc` effect; no other default has an effect. A `requires` pattern on the parameter is checked against the filled value.
+  - A default whose type uses a type parameter must type-check for every type argument, as for a generic struct field (`fallback: Option<T> = None`). A left-out argument gives no evidence for inference.
+  - A function value takes every argument. The type of `render` as a value is `(node: Node, depth: int, indent: string) => string`, with no defaults, and a call through it passes all three.
+  - A default is part of the function's interface, like a parameter name: changing it changes every call that leaves it out.
+- **No varargs.** Pass an array.
 - **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
 - **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narra query recursion MODULE` lists them.
 
@@ -172,6 +180,7 @@ for (mutable player of players) {
 ```
 
 - **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **`for await (const chunk of stream) { ... }`** reads an `AsyncGenerator<T>` in an async body, waiting for each value (section 8, Async generators).
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and `Ranges.stepped` returns `None` for a step of 0. The loop stops before the value would pass the largest or smallest `int`.
 
 <!-- context
@@ -250,6 +259,33 @@ const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" }
 
 - **Strings** use double quotes: `"text"`. They have no interpolation.
 - **Template strings** use backticks: `` `Hello ${name}` ``. Each `${...}` must hold an expression of type `string`. Template strings can span several lines. They take the same escapes as strings: `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `` \` ``, `\$` and `\u{<hex>}`. Any other `\X` is a compile error, reported at the backslash. `\${` is a literal `${`, not an interpolation.
+- **Tagged templates** (D114): `` tag`a${x}b` `` is the call `tag(["a", "b"], [x])`. The parts array always has one more item than the values; an empty part is `""`. The tag is a name or a dotted name (`tag`, `Sql.query`) on the same line as the backtick; after `)`, `]` or a literal a template is E1200, and so are type arguments on a tag (`` tag<int>`x` ``). A tag is a function or function value of two parameters, neither `mutable` (E1201): the parts, `Array<string>` with the escapes above or `Template.Raw` from `std/template` with the source text as written, and the values, `Array<T>` for one type `T`. Each hole is checked with `T` as its expected type, and a hole of another type is E1202; a generic tag takes `T` from the holes. The tag's effects count at the use site, plus `alloc` for the two arrays. Raw parts decode no escape and report none: `` \d `` is the two characters `\` and `d`, and `` \` `` and `\${` keep their backslash. A template at the start of a line, after a line that ends with a name, is E1203: a newline ends the statement, so it is not tagged as it would be in TypeScript. `Template.raw` is TypeScript's `String.raw`; it is `@const`, so `` const DIGITS = Template.raw`\d+` `` is computed while compiling (section 10).
+
+<!-- context
+const name = "ada"
+const digits = "[0-9]+"
+-->
+
+```ts
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Template from "std/template"
+
+@const
+function quoted(parts: Array<string>, values: Array<string>): string {
+  let out = Str.builder()
+  for (const index of Ranges.between(0, Arrays.length(values))) {
+    Str.append(mutable out, `${parts[index]}"${values[index]}"`)
+  }
+  Str.append(mutable out, parts[Arrays.length(values)])
+  return Str.build(out)
+}
+
+const greeting = quoted`hello ${name}!`      // hello "ada"! when name is "ada"
+const pattern = Template.raw`\d+\.${digits}` // the text \d+\. then digits
+```
+
 - **Characters** use single quotes: `'a'`, `'\n'`, `'\u{1F600}'`. A character literal has type `char`. `'abc'` is a compile error.
 - **Integers:** `42`, `0xFF`, `0o755`, `0b1010`. `_` can separate digits: `1_000_000`.
 - **Floats:** `3.14`, `1.0e-9`, `1_000.5`.
@@ -281,6 +317,7 @@ There are no macros, no operator overloading and no function overloading.
 - Compound assignment (`+=` and the others) and `x++` / `x--` are statements, not operators, and have no value (section 2, Bindings).
 - There is no length operator. Use `Arrays.length(items)`, `Str.length(s)` and `Maps.size(m)`.
 - There is no power operator. Use `Float.pow(x, y)` or `Int.pow(x, y)`.
+- The vector types of `std/simd` take `+`, `-`, `*`, `/` and the bitwise operators lane by lane (section 4, "Vector types").
 - `Int.floorDiv(a, b)` rounds toward negative infinity. It and `Int.divmod(a, b)` (the tuple `#[quotient, remainder]`, truncating like `/` and `%`) return an `Option`, `None` for a zero divisor, so they need no proof. `Int.compare(a, b)` returns an `Ordering`.
 
 ### Differences from TypeScript
@@ -302,13 +339,14 @@ Code that is valid TypeScript but means something different in Narra is a compil
 | `import X from "m"` imports a default export | Not present. Use `import * as X from "m"` |
 | `xs.push(v)`, `s.length` | Not present. Use `Arrays.push(mutable xs, v)`, `Str.length(s)` |
 | `a + b` joins strings | Not present. Use a template string (`s += t` is allowed as a statement) |
+| `` tag`a${x}` `` calls `tag(strings, ...values)`, `strings.raw` holds the source text, and any expression can be the tag | `tag(["a", ""], [x])`: the values come in one `Array<T>`, the tag picks decoded or raw parts by its first parameter type (`Array<string>` or `Template.Raw`), and the tag is a name (D114) |
 | `y = x++`, `++x`, `a[i] = b += 1` | Compound assignment and `x++` are statements without a value; `++x` is an error (E0964) |
 | `class`, `this`, `new`, `interface` | Not present. Use `struct`, `enum` and `trait` |
 | `try`, `catch`, `throw` | Not present. Use `Result` (section 5) |
 | Calling an async function without `await` starts it in the background | It starts it too, and the call gives an `Async<T>` handle. A handle left unused is a compile error (E1103): write `await f()`, keep the handle, or let it run with `Async.detach(f())` (section 8) |
 | `const o = { a }` builds an object | Not present. `{ a }` in value position is a block expression, which needs `return` (E0933). Write a struct literal: `Point { x: 1 }` |
 | `Promise<T>` | `Async<T>` (section 8). The methods are functions: `Async.then(handle, callback)`, `Async.all(handles)` |
-| `async function*` | Not present in the first version |
+| `async function*` returns an object with a `next()` method, and `for await` also takes sync iterables and arrays of promises | `async function*` returns an `AsyncGenerator<T>`, read with `for await` or `Async.next(stream)`. `for await` takes only an `AsyncGenerator<T>` (E1123), and copies of a stream share one position (section 8). |
 | A `function` declared inside a function | A compile error (E0930). Declare it at module level as a private function and pass the enclosing values as arguments |
 
 ## 3. Modules and imports
@@ -319,7 +357,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/arena`, `std/args`, `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/iterator`, `std/json`, `std/lazy` (section 10), `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/regex`, `std/result`, `std/shape`, `std/string`, `std/terminal`, `std/test`, `std/time`, `std/toml` and `std/unicode`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
+- **Standard modules.** `std/arena`, `std/args`, `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/iterator`, `std/json`, `std/lazy` (section 10), `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/regex`, `std/result`, `std/shape`, `std/simd` (section 4), `std/string`, `std/template` (section 2, Literals), `std/terminal`, `std/test`, `std/time`, `std/toml` and `std/unicode`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -330,10 +368,10 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **`std/process`** (alias `Process`) is builtin: `run(command: string, arguments: Array<string>): Result<#[int, string, string], string>` and `exit(code: int): void`. `exit` has the `io` effect and ends the process with `code` (the operating system keeps the low 8 bits). It flushes pending standard output first, then leaves at once: live values are not released, so the leak check (`NARRA_CHECK_LEAKS`) reports nothing for them, and the code after the call does not run. Like `panic`, a call to `exit` ends a path, so a function that returns a value may end with it. While `run` waits, it forwards SIGTERM, SIGINT and SIGHUP to the child (the child stays in the caller's process group, so Ctrl-C still reaches it). The caller keeps running: `run` returns and reports the child's end as exit code 128 plus the signal number, so a program that calls `Process.run` in a loop must check for it. `narrac run`, `narrac test` and `Test.panics` use the same forwarding for the processes they start, so killing narrac does not orphan the program or a test.
 - **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Std modules for tools (D118).** Seven modules: `std/iterator`, `std/arena`, `std/unicode`, `std/args`, `std/toml`, `std/regex` and `std/terminal`. Each is Narra source; only `std/terminal` has runtime C (`std/internal/terminal`). None panics on bad input.
-- **`std/iterator`** (alias `Iterators`, D118) is Narra source. Lazy operators are generator functions: `map`, `filter`, `flatMap` (its callback returns a `Generator`), `take`, `drop`, `takeWhile`, `dropWhile`, `enumerate` (yields `#[int, T]`), `zip` (yields `#[A, B]` and ends with the shorter source) and `concat`. Their callbacks are `escaping`, so a closure passed to one cannot capture a `let` (E0612). `chunk(source, size)` and `window(source, size)` return `Option<Generator<Array<T>>>`, `None` for a size below 1; the last chunk may be shorter, and a source shorter than the window yields no window. `take` and `drop` treat a negative count as 0. Eager operators run the source to its end or to the first answer, with callbacks that are not escaping: `reduce(source, combine, initial)`, `toArray`, `forEach`, `some`, `every`, `find` (an `Option`) and `count`. One effect variable covers the source and the callbacks, so `Iterators.map` over a source with `uses io` is a `Generator` with `uses io`, and a pure source and callback give a pure one. `flatMap`, `zip`, `chunk` and `window` add `alloc`. The source of `chunk` and `window` is a `Generator<T> uses alloc`: an effect variable inside the `Option` of a result is not bound at the call. An operator takes its source by value: a loop or a resume inside it works on its own copy, so after `Iterators.take(lines, 2)` a loop over `lines` starts from the first item again and redoes its work. `Co.resume(mutable lines)` moves `lines` itself.
+- **`std/iterator`** (alias `Iterators`, D118) is Narra source. Lazy operators are generator functions: `map`, `filter`, `flatMap` (its callback returns a `Generator`), `take`, `drop`, `takeWhile`, `dropWhile`, `enumerate` (yields `#[int, T]`), `zip` (yields `#[A, B]` and ends with the shorter source) and `concat`. Their callbacks are `escaping`, so a closure passed to one cannot capture a `let` (E0612). `chunk(source, size)` and `window(source, size)` return `Option<Generator<Array<T>> uses (E, alloc)>`, `None` for a size below 1; the last chunk may be shorter, and a source shorter than the window yields no window. `take` and `drop` treat a negative count as 0. Eager operators run the source to its end or to the first answer, with callbacks that are not escaping: `reduce(source, combine, initial)`, `toArray`, `forEach`, `some`, `every`, `find` (an `Option`) and `count`. One effect variable covers the source and the callbacks, so `Iterators.map` over a source with `uses io` is a `Generator` with `uses io`, and a pure source and callback give a pure one. `flatMap`, `zip`, `chunk` and `window` add `alloc`. The effect variable of `chunk` and `window` sits inside the `Option` of the result and is bound at the call too, so chunks of a source with `uses io` run `io` when they are read. An operator takes its source by value: a loop or a resume inside it works on its own copy, so after `Iterators.take(lines, 2)` a loop over `lines` starts from the first item again and redoes its work. `Co.resume(mutable lines)` moves `lines` itself.
 - **`std/arena`** (alias `Arenas`, D118) is Narra source over `Array`. `Arena<T>` and `Handle<T>` are opaque structs (section 6, Cycles), so code outside the module cannot read a handle's fields. A handle is a slot index and a generation, and derives `Equatable`, `Hashable` and `Show`, so it works as a map key. `create<T>()` makes an empty arena (the element type comes from the expected type or `Arenas.create<Node>()`). `insert(mutable arena, value)` returns a `Handle<T>`. `get(arena, handle)` returns `Option<T> from arena`. `set(mutable arena, handle, value)` and `update(mutable arena, handle, change)` return `bool`, false for a stale handle. `remove(mutable arena, handle)` returns the value as an `Option` and drops it from the slot at once. A removed slot goes on a free list, and reusing it adds 1 to its generation, so an old handle gets `None` and `false`. `contains` and `size` read the arena. `clear(mutable arena)` keeps the slots and raises every generation. `entries(arena)` is a `Generator<#[Handle<T>, T]>` in slot order. A handle from another arena is not detected: it reads whatever the same slot of this arena holds. Copying an arena copies its slots on the first write, like an array.
 - **`std/unicode`** (alias `Unicode`, D118) is Narra source, for Unicode 17.0. It has `graphemes(text): Generator<string>` (extended grapheme clusters of UAX #29, each a slice of `text`), `graphemeCount(text): int`, `toUpperCase` and `toLowerCase` (full mappings with the unconditional rules of SpecialCasing and the final sigma rule), `foldCase` (full case folding, status C and F), `displayWidth(text): int` (terminal columns per cluster: the widest code point of the cluster, where East Asian Wide and Fullwidth and emoji presentation are 2, marks, format, control and default-ignorable code points 0, others 1, and U+FE0F after an emoji makes the cluster 2; it counts escape codes as text, so styled text goes through `Terminal.stripStyles` first), `normalize(text, form): string` and `isNormalized(text, form): bool` with `enum NormalForm { NFC, NFD, NFKC, NFKD }` (UAX #15; text already in the form comes back as the same string, and Hangul syllables are computed, not tabled). Case mapping uses no locale. The tables are string constants in `std/internal/unicode` (`std/src/internal__unicode.nra`), written by `scripts/unicode/generate.nra` from the UCD files.
-- **`std/args`** (alias `Args`, D118) is Narra source. A `Command { name, summary, flags, positionals, rest, commands }` describes a command line; `rest` has no default yet (`Rest.None`, `Rest.Positionals` or `Rest.Raw`). A `Flag { name, short, value, repeated, help }` with an empty `value` takes no value; any other text names the value in the help (`--output <path>`). `Args.parse(command, arguments)` reads the arguments `run` receives (the program name first) and returns `Result<Parsed, ArgsError>`.
+- **`std/args`** (alias `Args`, D118) is Narra source. A `Command { name, summary, flags, positionals, rest, commands }` describes a command line; `rest` is `Rest.None` (the default), `Rest.Positionals` or `Rest.Raw`. A `Flag { name, short, value, repeated, help }` with an empty `value` takes no value; any other text names the value in the help (`--output <path>`). `Args.parse(command, arguments)` reads the arguments `run` receives (the program name first) and returns `Result<Parsed, ArgsError>`.
   - Syntax: `--name`, `--name=value`, `--name value`, `-x`, `-x value`, `-xvalue`, bundled `-abc`, and `--` ends the flags. A lone `-` is a positional. A long name always takes two dashes. Flags belong to the command they are declared on and may come after its positionals. Every declared positional is required. A command with subcommands takes the first positional as the subcommand name. Extra positionals are an error with `Rest.None`, are collected with `Rest.Positionals`, and with `Rest.Raw` everything after the declared positionals is kept as written.
   - Reading: `has(parsed, name)`, `value(parsed, name)` (the last one given), `values(parsed, name)`, `positional(parsed, name)`, `rest(parsed)` and `commandPath(parsed)` (`["narrac", "build"]`, starting at the root command's name).
   - Errors: `ArgsError.UnknownFlag(name, closest)`, `MissingValue(flag)`, `UnexpectedValue(flag)`, `Repeated(flag)`, `UnknownCommand(name, closest)`, `MissingCommand(path)`, `MissingPositional(name)`, `ExtraPositional(text)`, `Help(path)` and `BadSpec(reason)`. `closest` is the known name at most two edits away (names compared without dashes; a name under three bytes gets none), or `""`. `UnknownFlag` and `MissingValue` name the flag as typed (`-o` or `--output`). `-h` and `--help` on any command return `Help(path)`; the caller prints `Args.help(command, path)` and exits 0. `BadSpec` reports a spec mistake (two flags or subcommands with one name, a subcommand flag with the long name of an enclosing command's flag, a short name that is not one character, positionals beside subcommands) on every parse. `Args.formatError(error)` writes the message line, with a hint for a close name (`unknown flag --relase; did you mean --release?`).
@@ -348,7 +386,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
   - Matching is leftmost-first with captures, as RE2: the first alternative and the greedy choice win. As in JavaScript, each pass of a repeat clears the groups inside it, and a pass beyond the lower count fails when it matches empty (`(|a)+` on `aa` matches `aa`). `matches(regex, text): bool`, `find(regex, text)` and `findFrom(regex, text, start)` return `Option<Match>`; a start inside a character moves to the next one, and one outside the text finds nothing. `findAll(regex, text)` is a `Generator<Match>` (JavaScript's `matchAll`) and moves past an empty match by one character. `struct Match { start, end, text, groups, names }`: offsets are byte offsets, `groups[0]` is the whole match. `group(match, index)` and `namedGroup(match, name)` return `Option<string>`, `None` for a group that took no part in the match.
   - `replace(regex, text, replacement)` replaces the first match and `replaceAll` every match found as `findAll` finds them; the replacement is plain text, so `$1` stays `$1`. `replaceWith(regex, text, change)` replaces every match with what a non-escaping callback returns for its `Match`. `split(regex, text)` cuts as JavaScript's `split` with a regex, without adding groups: an empty match next to the last cut or at the end does not cut, and an empty text gives `[]` when the regex matches it.
   - The test function is `matches`, not `test`: `test` is a keyword. Most Annex B forms that JavaScript accepts without the `u` flag are errors (`\8`, `\a`, `[\w-z]`); a lone `]` or `}` and a `{` that does not start a repeat stay literals.
-- **`std/terminal`** (alias `Terminal`, D118) is Narra source over `std/internal/terminal`. `isTerminal(stream)`, `columns(stream): Option<int>` (`None` when the stream is not a terminal) and `useColor(stream)` (which honors `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb`) have the `io` effect; `Stream` is `Stdin`, `Stdout` or `Stderr`. Style functions (`bold`, `red`, `bgRed`, `style(text, Style)` and the rest) always add the codes and nest; `stripStyles` removes them. `Style` holds `foreground` and `background` as `Option<Color>` (default `None`, because a field default must be a constant and a variant of `Color` is not) and the flags `bold`, `dim`, `italic`, `underline`, `inverse` and `strikethrough`. `Color` has the eight names, their bright forms, `Ansi256(index: u8)` and `Rgb(red, green, blue)`; it has no `Default` variant.
+- **`std/terminal`** (alias `Terminal`, D118) is Narra source over `std/internal/terminal`. `isTerminal(stream)`, `columns(stream): Option<int>` (`None` when the stream is not a terminal) and `useColor(stream)` (which honors `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb`) have the `io` effect; `Stream` is `Stdin`, `Stdout` or `Stderr`. Style functions (`bold`, `red`, `bgRed`, `style(text, Style)` and the rest) always add the codes and nest; `stripStyles` removes them. `Style` holds `foreground` and `background` as a `Color` (default `Color.Default`, which adds no code) and the flags `bold`, `dim`, `italic`, `underline`, `inverse` and `strikethrough`. `Color` has `Default`, the eight names, their bright forms, `Ansi256(index: u8)` and `Rgb(red, green, blue)`.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
 ```ts
@@ -435,12 +473,25 @@ function last(values: FixedArray<f64, 4>): Option<f64> {
 }
 ```
 
-- **Vector types.** `std/simd` provides fixed-width vectors such as `F32x4`, `F64x2` and `I32x8`. Their operators work lane by lane and compile to the target's vector instructions.
+- **Vector types.** `std/simd` provides fixed-width vectors such as `F32x4`, `F64x2` and `I32x8` (D112). Their operators work lane by lane and compile to the target's vector instructions. "Vector types" below has the rules.
 - **Maps.** `Map<K, V>` is a hash map. `m[k]` returns `Option<V>`.
 - **Maps keep insertion order.** Iteration visits keys in the order they were first inserted. Removing a key and inserting it again moves it to the end.
 - **Float keys are not allowed.** `Map<f64, V>` and keys that contain floats are compile errors.
 - **Tuples.** `#[int, string]` is a tuple type. It holds a fixed group of at least two values. `#[1, "a"]` builds one, `const #[n, s] = t` (or `let`) destructures one, and `#[0, name]` matches one in a pattern. `pair[0]` reads one element, with that element's type. The index is a constant integer, a literal or a top-level `const`, inside the tuple's range, so the read has no runtime check and cannot panic; any other index is E1010, an index outside the range is E1011. Tuple elements are read-only: `pair[0] = 2` is E0226. The type is written like the literal, in every type position: `Array<#[int, string]>`, `#[#[int, int], string]`. A function that returns several values returns a tuple or a struct.
-- **Functions.** `(a: int, b: string) => bool`.
+- **Functions.** `(a: int, b: string) => bool`. A function type may list its effects after the result: `(path: string) => string uses io` (section 7).
+
+### Vector types
+
+- **Twenty types.** `std/simd` has ten lane types at two widths. 128 bits: `I8x16`, `U8x16`, `I16x8`, `U16x8`, `I32x4`, `U32x4`, `I64x2`, `U64x2`, `F32x4`, `F64x2`. 256 bits: `I8x32`, `U8x32`, `I16x16`, `U16x16`, `I32x8`, `U32x8`, `I64x4`, `U64x4`, `F32x8`, `F64x4`. The lanes of `I64x2` are `int`. The names are visible in a module that imports `std/simd` (`import * as Simd from "std/simd"`), whatever the alias.
+- **Every type exists on every target** and gives the same results there. A 256-bit type on a machine with 128-bit registers runs as two 128-bit operations.
+- **A vector is a plain value,** like a number: assignment copies it, and it needs no heap. It is not a contents type, so it cannot be a `mutable` parameter or the argument of `copy` (section 6). It can be an element of `Array` and `FixedArray`, a struct field, a type argument and the target of a `Ptr`. `==` and `!=` compare whole vectors and give a `bool`. Integer vectors can be map keys; float vectors cannot, like floats. `Show.show(v)` prints the lanes as it prints a `FixedArray`; a template does not take a vector, as it does not take a `FixedArray`. Vectors have no order: `<`, `<=`, `>` and `>=` are compile errors (E1250).
+- **Building one.** An array literal with an expected vector type gives every lane, `const unit: F32x4 = [1.0, 0.0, 0.0, 0.0]`; another number of lanes is E1253. `Simd.splat(value)` fills every lane. `Simd.fromFixed(values)` turns a `FixedArray<L, N>` into the vector of `N` lanes of type `L` (E1255 when no vector type has that lane type and count), and `Simd.toFixed(v)` turns it back. `Simd.splat` and `Simd.load` take their vector type from the expected type or a type argument, `Simd.splat<F32x4>(1.0)`; with neither, the call is E1254.
+- **Operators work lane by lane.** `+`, `-` and `*` on every vector type, unary `-` on signed and float ones, `/` on float vectors, and `&`, `|`, `^` and `~` on integer vectors. Compound assignment follows (`total += a * b`). Integer lanes wrap on overflow, as integers do. `%`, integer `/`, `<<` and `>>` are compile errors that name the function to use (E1250). Both operands have the same vector type: `v * 2.0` is E1251, whose message ends `make a vector of the scalar with Simd.splat(...)`.
+- **Lanes.** `v[i]` reads lane `i`. The index is proven as a `FixedArray` index is (E0994): a constant from 0 to the lane count minus 1, or a name a check proves to be in that range. A vector is a value, so `v[i] = x` is E1252; `Simd.withLane(v, i, x)` returns a copy with lane `i` replaced, with the same proof for `i`.
+- **Comparisons give masks.** `Simd.equal`, `Simd.notEqual`, `Simd.less`, `Simd.lessOrEqual`, `Simd.greater` and `Simd.greaterOrEqual` take two vectors of one type and return its mask: the signed integer vector with the same lane width and count (`F32x4` gives `I32x4`, `U8x16` gives `I8x16`), with `-1` in each lane where the comparison holds and `0` elsewhere. `Simd.select(mask, ifTrue, ifFalse)` takes each bit from `ifTrue` where the mask's bit is set and from `ifFalse` elsewhere. `Simd.any(mask)` and `Simd.all(mask)` return whether any lane, or every lane, is not 0.
+- **Loads and stores.** `Simd.load(items, start)` reads the lanes `start` onward of an `Array<L>` into a vector and returns `Option<V>`, `None` when they are not all in range. `Simd.store(mutable items, start, v)` writes the lanes and returns `true`, or writes nothing and returns `false` when they do not all fit.
+- **Other functions.** `Simd.shuffle(v, [3, 2, 1, 0])` returns a vector whose lane `k` is lane `lanes[k]` of `v`; the list gives one constant per lane, each a lane of `v` (E1260). `Simd.sum(v)` adds the lanes, the high half to the low half until one lane is left, so a float sum is the same on every target. `Simd.min(a, b)` and `Simd.max(a, b)` work per lane. `Simd.abs(v)` takes signed and float vectors; the lowest integer stays itself. `Simd.shiftLeft(v, count)` and `Simd.shiftRight(v, count)` take integer vectors and an `int` count, proven like a shift count against the lane width (E0980); a right shift is arithmetic on signed lanes and logical on unsigned ones. A function given a vector type it does not take is E1261.
+- **No effects and no panics.** No `std/simd` function has an effect, allocates or panics.
 
 ### Structs
 
@@ -689,6 +740,47 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 - **No runtime cost.** A distinct type compiles to the same C type as its base.
 - **`export opaque distinct type`** hides `from`, so only the declaring module can create values. Other modules can still call the unwrap function.
 
+#### Refinements
+
+A distinct type may restrict its values with `requires` and a list of patterns joined by `&&` (D116). The list follows the base and the trait lists and may start on the next line.
+
+```ts
+export distinct type Port = int derives Show requires >= 1 && <= 65535
+export distinct type Method = string requires "GET" | "POST"
+distinct type Bit = u8
+  requires < 8
+
+const DEFAULT_PORT = Port.from(8080)          // proven from the literal
+
+function share(total: int, port: Port): int {
+  return total / Port.toInt(port)              // 1 <= n <= 65535, so the divisor is proven
+}
+
+function parsePort(raw: int): Option<Port> {
+  if (raw >= 1 && raw <= 65535) {
+    return Some(Port.from(raw))                // proven by the check
+  }
+  return Port.check(raw)                       // tested at run time: None here
+}
+```
+
+<!-- context
+distinct type Port = int requires >= 1 && <= 65535
+---
+-->
+<!-- error: E1223 -->
+```ts
+const port = Port.from(70000)     // compile error: 70000 does not satisfy Port (<= 65535)
+```
+
+- **The patterns are `ensures` patterns** (section 13): comparisons `< c`, `<= c`, `> c`, `>= c` and `!= c` with an integer constant that fits the base, literals, and or-patterns of these. `&&` joins patterns only at the top of the list. A malformed list is E1220.
+- **The base is an integer type or `string`.** A `string` takes literal patterns only. Any other base, another distinct type included, is E1221. A pattern that does not fit the base (a comparison on a `string`, a bound that is not a constant or does not fit, a u64 bound from 2^63 up, a literal of another type, a wildcard, a name, a constructor, a struct, tuple or array pattern) is E1222.
+- **`T.from(value)` is proven at compile time**, as a call to a function with `requires`: the value must match every pattern, proven from a constant, a literal, or an integer name narrowed by a check or by the caller's `requires`. Nothing is checked at run time. An unproven `from` is E1223, and the message names the patterns that failed: `Port.from(8080)` compiles, `Port.from(raw)` compiles inside `if (raw >= 1 && raw <= 65535)`, and `Port.from(70000)` is E1223 (`70000 does not satisfy Port (<= 65535)`). A top-level `const` or a struct field default may hold a `from` call, proven the same way.
+- **`T.check(value): Option<T>` tests at run time.** It exists only on a refined type, allocates nothing, and is `None` when a pattern does not match: `if (Port.check(raw) is Some(port))`. `export opaque distinct type` hides it with `from`.
+- **Unwrapping gives the fact.** `Port.toInt(port)` has the bounds of the patterns, wherever `port` comes from (a parameter, a field, an array element). It proves divisors, shift counts, `FixedArray` indexes, `requires` arguments and `ensures` returns, and `const n = Port.toInt(port)` starts with it. The fact is the hull of the patterns, as for `ensures`: `Port` gives `1 <= n <= 65535`, `!= 0` gives a non-zero value, and a `string` refinement gives no fact. The unwrapped value is a plain base value: `Port.toInt(port) + 1` is an `int` with no fact.
+- **`derives Shape`** decodes the base, then checks the patterns. A value that fails is an `Err` with the usual path: `Json.decode<Config>(text)` gives `Err(".port: 70000 does not satisfy Port (>= 1 && <= 65535)")`, and a string value is quoted. The other derived traits use the base, as for every distinct type.
+- **No runtime cost** outside `check` and decoding: a refined type compiles to its base C type, and `from` is the base value.
+
 ### Optional values
 
 - `Option<T>` is either `Some(value)` or `None`. A plain `T` always holds a value. There is no `null` or `undefined`.
@@ -861,6 +953,7 @@ const text = Label.label(price)
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
 | `Shape` | Conversion to and from the `Value` tree of `std/shape`, for serialization | By the compiler for prelude types, by `derives` or `implement` for a struct or enum |
+| `Sendable` | Values that may cross threads (section 6) | Automatically for types without functions, `Cell`, `Async`, generators, async generators and the other types section 6 lists; never by `implement` |
 
 - A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
 - Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
@@ -1194,26 +1287,6 @@ function listPickers(): Array<Picker> uses alloc {
 }
 ```
 
-### Regions
-
-A region allocates many values from one block and frees them all at once.
-
-```ts
-import * as Region from "std/region"
-
-const summary = Region.run((region) => {
-  const tree = Parser.parse(source)        // every allocation here comes from the region
-  return Summary.of(tree)                  // the result is copied out
-})
-// the region and everything in it has been freed
-```
-
-- **`Region.run(f)`** runs `f` with a region. Every heap allocation made while `f` runs comes from the region. Values in a region have no reference count updates.
-- **Values leave a region only by copying.** The result of `f` is copied to the normal heap. A value sent to a channel, stored in a `Shared`, or returned through the result is copied when it leaves.
-- **The region is freed when `f` returns,** in one step.
-- **A region cannot escape,** with the same rules as a `Scope`.
-- Regions suit work with a clear end, such as handling one request or compiling one file.
-
 ### Mutable parameters
 
 A function changes a caller's data only through a `mutable` parameter. The keyword appears in the declaration and again at the call. A `mutable` parameter reaches the contents of the caller's value, its fields and elements, and never the caller's variable (D81).
@@ -1294,9 +1367,10 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Values across threads
 
-- A value captured by a thread function or sent through a channel is marked shared. Shared values use atomic reference counts. Unshared values use plain counts.
+- **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `AsyncGenerator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
+- A value captured by a thread function, sent through a channel or stored in a `Shared` is marked shared. Shared values use atomic reference counts. Unshared values use plain counts. Only a program that imports `std/thread` (or a module built on it) has shared values; any other program uses plain counts throughout.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
-- Every value can be sent to another thread. Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
+- Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
 
 ## 7. Effects
 
@@ -1311,7 +1385,7 @@ An effect marks something a function can do beyond computing a value. The set is
 Rules:
 
 - Exported functions declare their effects after the return type: `function f(s: string): int uses alloc { ... }`.
-- The compiler infers effects for private functions and arrow functions.
+- The compiler infers effects for private functions and arrow functions. A private function that writes a `uses` list is checked against it, as an exported one is.
 - A function's effects include the effects of everything it calls. Calling an `io` function from a function that does not declare `io` is a compile error.
 - Panics are not an effect. Any function can panic.
 - The entry function (section 15) has every effect. It may be `async` (section 8).
@@ -1319,6 +1393,7 @@ Rules:
 - **Function types carry effects** (D86): `(v: int) => int uses io`. A call through a function value has the effects of its type, and a function cannot be stored where the type lists fewer effects than it has. A function value's own type lists none, so a top-level constant that holds a function with effects writes its type: `const step: (v: int) => int uses io = loud`.
 - **Generator types carry effects** (D78), as function types do: `Generator<string> uses io` is a generator whose body does I/O when it runs. `Generator<T>` alone is pure. The effects are charged where the body runs: a `for ... of` over the generator, a `yield*` of it, and `Co.resume`. Creating a generator charges only `alloc`, for its frame.
 - A generator value may be used where a generator type with more effects is expected, not fewer: passing a `Generator<T> uses io` where `Generator<T>` is expected is a compile error.
+- **A `uses` list inside a type** (D117) takes one effect, or a comma list in parentheses: `() => int uses io`, `() => int uses (io, alloc)`, `Map<Generator<int> uses (io, alloc), int>`. A `,` after the one effect ends the type, so it can be followed by another type argument, tuple element or parameter, or by a trailing comma. A function declaration's own list, after its result type, is a bare comma list without parentheses: `function f(): int uses io, alloc`. A comma after a result type's one effect is an error (E1240): `function* lines(): Generator<string> uses io, alloc {` must be written `Generator<string> uses (io, alloc)`. An effect name in a type position is an error (E1241). Types in messages and tools are printed in the same form, and `narrac fmt` writes `uses (io)` as `uses io`.
 
 ### Effect variables
 
@@ -1330,7 +1405,7 @@ export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): 
 
 - Effect variables are declared in the type parameter list with the `effect` keyword, and appear only after `uses`.
 - **They are bound by a parameter.** An effect variable in the function's own `uses` list must also appear in a parameter's function type or generator type: `export function sum<effect E>(numbers: Generator<int> uses E): int uses E`.
-- At each call, the variable takes the effects of the function or generator passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`. A generator result type that names the variable takes them too: with `relay<effect E>(g: Generator<int> uses E): Generator<int> uses E, alloc`, `relay(lines(path))` is a `Generator<int> uses alloc, io`.
+- At each call, the variable takes the effects of the function or generator passed in. `map(names, Str.length)` has `alloc`. `map(paths, File.readText)` has `alloc, io`. A generator result type that names the variable takes them too: with `relay<effect E>(g: Generator<int> uses E): Generator<int> uses (E, alloc)`, `relay(lines(path))` is a `Generator<int> uses (alloc, io)`.
 - **A function used as a value keeps its variables** (D91). After `const apply = twice`, `apply(loud, 1)` has the effects of `loud`, as `twice(loud, 1)` does, through a top-level or a local constant.
 
 ## 8. Generators and concurrency
@@ -1342,6 +1417,7 @@ Narra has three tools. Each covers one type of concurrent work:
 | Produce values one at a time, on demand | Generators |
 | Run computations in parallel on several cores | Scoped threads and channels |
 | Wait on many I/O operations at once | Async functions on an event loop |
+| Produce values one at a time that need I/O | Async generators |
 
 A panic on any thread or task aborts the whole program.
 
@@ -1391,7 +1467,7 @@ for (const n of both()) {
 - **`yield* other`** produces every value of another generator in turn. `other` must be a `Generator<T>` with the same `T`.
 - **`return` in a generator takes no value.** It ends the generator, as falling off the end of the body does.
 - **A generator outlives the call that creates it.** It cannot take a `mutable` parameter, and its function-type parameters must be `escaping`.
-- **Effects** (section 7, D78). An exported generator writes the effects of its body on its return type: `export function* lines(path: string): Generator<string> uses io, alloc`. A private one gets them inferred into its type. A body that uses an effect its declared type omits is a compile error.
+- **Effects** (section 7, D78). An exported generator writes the effects of its body on its return type: `export function* lines(path: string): Generator<string> uses (io, alloc)`. A private one gets them inferred into its type. A body that uses an effect its declared type omits is a compile error.
 - **Calls of generator functions are not recursion.** A generator that calls itself, directly or through another generator, creates a new value, so D37 and tail loops do not apply.
 - **`Coroutine<In, Out>`** (D79) is a generator that also receives a value on each resume. It is a separate type from `Generator<T>`: declare it with `function*` and the return type `Coroutine<In, Out>`, as in `function* total(): Coroutine<int, int>`. Inside it, `const input = yield output` yields `output` and, when the coroutine is resumed, binds the value passed to `Co.resume`. The `yield` with a value is valid only in a coroutine, and only as the initializer of a `const` or `let` that names one variable and has no type annotation; a plain `yield output` statement is also valid and drops the input. The input of the first resume is dropped, as in TypeScript, because no `yield` is waiting for it. `yield*` is not valid in a coroutine, and `for ... of` over a coroutine is a compile error (a loop has no input to send). A coroutine type carries effects like a generator type: `Coroutine<string, int> uses io`.
 - **`Co.resume`** from `std/coroutine` (`import * as Co from "std/coroutine"`) runs a generator or a coroutine to its next `yield`, changing `g` in place: `Co.resume(mutable g)` for a `Generator<T>` and `Co.resume(mutable g, input)` for a `Coroutine<In, Out>`. It returns a `Step<Out>`, an enum of the same module (`import { Step } from "std/coroutine"`) with the constructors `Step.Yielded(value)`, `Step.Done` and `Step.Panicked(message)`, always qualified (D71). `Step` derives `Show` and `Equatable`. A finished generator or coroutine answers `Step.Done` to every later resume. The call charges the effects carried on the type of `g` (D78), and `alloc` for the `Step`. A shared generator is copied before it resumes (the count above 1), as in `for ... of`. `Panicked` is only reported in test builds (`narra test`): a panic inside the coroutine then ends the coroutine and `Co.resume` returns `Step.Panicked(message)` with the bare message; what the coroutine held at that moment is not freed. In other builds a panic aborts the program.
@@ -1413,10 +1489,14 @@ const total = Thread.scope((scope) => {
 ```
 
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
-- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result.
-- **A `Scope` cannot escape.** It cannot be stored, returned, or captured by a thread function. Only the function passed to `Thread.scope` can start threads in it.
-- **Thread functions capture only constant values,** like every closure that can outlive its call. They cannot be `async`.
-- **`Parallel.map(items, f)`** from `std/parallel` splits an array across threads and returns the results in order.
+- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result. A second `join` gives the same value. Each thread has an 8 MiB stack, the size of the main thread's.
+- **Effects.** `Thread.start` has the effects of `f` and `alloc`. `Thread.scope` and `Thread.join` add none: joining gives the same result every run.
+- **A `Scope` cannot escape.** It can be passed to a function, but it cannot be stored in a field, element, tuple or constructor, returned, or captured by an escaping closure, a thread function included (E1191). Only code running inside `Thread.scope` can start threads in it.
+- **Thread functions** are an arrow function written at the call or the name of a top-level function (E1193), so the compiler sees what they capture. They capture only constant values, like every closure that can outlive its call, and each capture and the result must be `Sendable` (section 6, E1190). They cannot be `async` (E1192).
+- **Tasks on a thread.** Each thread has its own event loop. A thread function may start tasks; when it returns, its thread cancels and drains what is left, as the program does at exit (Async functions below), before `join` gives the result. An `Async<T>` is not `Sendable`, so a handle never reaches another thread's loop; work moves between loops through channels and `Shared`.
+- **A panic on any thread** prints its message and ends the process with code 101.
+- **`Parallel.map(items, f)`** from `std/parallel` splits an array into one part per core, runs `f` on each element on those threads and returns the results in order. `f` follows the thread function rules.
+- `==`, `!=` and map keys on a `Thread<T>` or a `Scope` are a compile error (E1195).
 
 ### Channels
 
@@ -1435,12 +1515,14 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 }
 ```
 
-The builtin that builds channels must accept the type argument in `Channel.create<int>(16)`. Builtin functions reject type arguments today (E0326), so channels need an exception when they are built.
+`std/channel` is a source module, and `Channel.create<int>(16)` is an ordinary call with a type argument (section 4).
 
-- **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`.
-- **`Channel.send`** blocks while the channel is full. **`Channel.receive`** blocks until a value arrives.
-- **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it. `Channel.receive` returns `None` once the channel is closed and empty.
-- Blocking calls have the `io` effect.
+- **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`. `T` must be `Sendable` (E1190). A capacity below 1 is taken as 1.
+- **`Channel.send(sender, value)`** blocks while the channel is full and returns `true`. It returns `false` and drops the value once the channel is closed or every copy of the receiver is gone.
+- **`Channel.receive(receiver)`** blocks until a value arrives and returns `Some(value)`, or `None` once the channel is closed and empty. **`Channel.values(receiver)`** is a `Generator<T> uses io` over the same values. Copies of a `Receiver` share the queue, so several threads can take values from one channel; each value goes to one of them.
+- **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it.
+- Blocking calls have the `io` effect. In async code they block the thread's event loop, as other blocking calls do.
+- `==`, `!=` and map keys on a `Sender` or a `Receiver` are a compile error (E1195).
 - **A channel in a cycle stays open** (D80). A `Sender` sent through its own channel, or held in a `Shared` that the channel's values reach, keeps the channel alive: it is never freed, and dropping the other copies of the sender does not close it, so a receiver that reads until the close waits forever. When senders travel through channels, close the channel with `Channel.close(sender)` instead of relying on the last drop; the close ends the receiver's wait, and a receiver that reads the channel empty drops the sender it held and breaks the cycle. A `Sender<Reply>` sent inside a request (`Sender<#[Request, Sender<Reply>]>`) is fine: the reply channel does not hold the request channel.
 
 ### Cell
@@ -1464,7 +1546,7 @@ const reset = (): int => {
 
 - **`Cells.create(value)`** allocates the slot (`uses alloc`). **`Cells.get(cell)`** returns a copy of the value. **`Cells.set(cell, value)`** replaces it and drops the old value at the call. **`Cells.update(cell, change)`** stores `change(value)`; `change` is a function that returns the new value, because a scalar cannot be a `mutable` parameter (D81). None of the last three has an effect: a write to a `Cell` is not tracked.
 - Copying a `Cell`, capturing it, or storing it in a struct copies the handle, so every copy sees every write. `Cell` is an `opaque struct`: its field is not reachable. `==` and `!=` on a `Cell` are a compile error (E0965), and a `Cell` is not `Hashable`, so it cannot be a `Map` key; compare the values with `Cells.get`.
-- **A `Cell` cannot cross threads.** It uses plain reference counts. Use `Shared`. Threads are parked, so the compiler does not check this yet; the node that builds threads must reject a `Cell`, or a value that holds one, captured by a thread function or sent through a channel.
+- **A `Cell` cannot cross threads.** It uses plain reference counts and is not `Sendable` (section 6): a `Cell`, or a value that holds one, captured by a thread function or sent through a channel is E1190, with a hint to use `Shared`.
 - **A closure stored in the `Cell` it captures leaks** (D80); clear it with `Cells.set(cell, None)` first.
 
 ### Shared state
@@ -1477,23 +1559,25 @@ A few types have identity: copying one copies a handle to the same object. They 
 | `Shared<T>` | A value guarded by a lock |
 | `Atomic<T>` | An integer or `bool` with atomic operations |
 
+<!-- context
+import * as Shared from "std/shared"
+-->
 ```ts
 const hits = Shared.create(0)
 
-Shared.update(hits, (mutable count) => {
-  count = count + 1
-})
+Shared.update(hits, (count) => count + 1)
 
 const now = Shared.read(hits, (count) => count)
 ```
 
-- **Open (D81).** The sample above passes an `int` as a `mutable` arrow parameter, which D81 and E0028 do not allow. The node that builds `Shared` decides its form, for example a callback that returns the new value.
-- **The lock is held only during the callback.** `Shared.update` and `Shared.read` take the lock, run the callback and release it. There is no way to take the lock and forget to release it.
-- **The callback cannot be `async`,** so a task never suspends while holding a lock.
-- **`Atomic<T>`** offers `Atomic.load`, `Atomic.store`, `Atomic.add` and `Atomic.compareExchange`.
-- `==` on an identity type compares identity, not contents.
+- **`Shared<T>`** (`std/shared`) has the functions of `Cells` and `read`: `Shared.create(value)` (`uses alloc`), `Shared.get(shared)` returns a copy, `Shared.set(shared, value)`, `Shared.update(shared, change)` stores `change(value)`, and `Shared.read(shared, look)` returns `look(value)`. As for `Cells.update`, `change` returns the new value, because a scalar cannot be a `mutable` parameter (D81). `T` must be `Sendable` (E1190). Like `Cells.get`, `Shared.get` shares the value it returns (`from shared`), and `look` may return a part of its value (`from value`); both results hold their own reference, taken before the lock is released. `update` moves the value out of the `Shared` while `change` runs.
+- **The lock is held only while a call runs.** Each function takes the lock, does its work (running the callback, if any) and releases it. There is no way to take the lock and forget to release it.
+- **The callback cannot be `async`** (E1410), so a task never suspends while holding a lock.
+- **`Atomic<T>`** (`std/atomic`) holds a `bool` or an integer type up to 64 bits (E1411 for any other `T`). It offers `Atomic.create`, `Atomic.load`, `Atomic.store`, `Atomic.exchange`, `Atomic.add` (integers only, E1412 on `Atomic<bool>`; it returns the old value and wraps like `+`) and `Atomic.compareExchange(atomic, expected, replacement)`, which returns `true` when it stored. Every operation is sequentially consistent.
+- `==`, `!=` and map keys on a `Shared` or an `Atomic` are a compile error (E1195), as on a `Cell`; compare the values instead.
 - **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Async<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
 - **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narra audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
+- **A callback that reaches its own `Shared` stops the program** (D111). A call of `Shared.get`, `set`, `update` or `read` on a `Shared` whose lock its own thread holds, as in `Shared.read(cell, (v) => v + Shared.get(cell))`, ends the program with exit code 101 and a message that names the call, as a panic does, instead of waiting forever.
 
 ### Async functions
 
@@ -1548,7 +1632,7 @@ Tasks and handles:
 - **An unused `Async<T>` is a compile error** (E1103), like an unchecked `Result`: a call without `await` as a statement, an `async { ... }` alone, and `const _ = f()`. Await the handle, keep it, pass it on, or let the task run with `Async.detach(handle)`.
 - **Effects are charged where the handle is made.** A call of an async function has the function's effects plus `alloc` for the task, and `await` has none. `Async<T>` carries no effects. The type of an async arrow lists the effects of its body: `(id: int) => Async<User> uses io`.
 - **Parameters.** An async function or arrow takes no `mutable` parameter (E1104), because the task outlives the call, and a function-type parameter of an async function must be `escaping` (E1111). Its parameters are kept in the task, and a value passed to a task is shared with it: while a local holds the handle, a write to the passed place is a shared write (E0978, section 6), and `copy(...)` at the argument is the fix. The value an async function or arrow returns follows the `from` rules of a plain function or arrow (section 6): a returned parameter needs `from` after the result type, and `await f(x)` of a function with `from x`, called by name or through a function value, shares `x` as a plain call does. The compiler does not yet follow `from` through a stored handle (`const h = f(x)`, then `await h`), so a write to that value copies without an error, and the debug copy check reports it.
-- `for (mutable item of items)` is a compile error in an async body (E1105). `async function*` is not present (E1107).
+- `for (mutable item of items)` is a compile error in an async body (E1105). `async function*` declares an async generator (below).
 
 The functions of `std/async` (`import * as Async from "std/async"`):
 
@@ -1577,13 +1661,50 @@ The loop:
 - **A task stays on the thread that runs its loop.** An `Async<T>` or a `Cell` cannot be sent to another thread. Pass work between the loops of several threads with channels.
 - The loop waits with `kqueue` on macOS and `epoll` on Linux.
 
+### Async generators
+
+An async generator produces values one at a time and may wait between them (D110). The syntax is TypeScript's `async function*` and `for await`.
+
+```ts
+import * as Bytes from "std/bytes"
+import * as Net from "std/async/net"
+import { Connection } from "std/async/net"
+
+async function* sizes(connection: Connection): AsyncGenerator<int> uses (io, alloc) {
+  for await (const chunk of Net.chunks(connection, 4096)) {
+    if (chunk is Err(_)) {
+      return
+    }
+    yield Bytes.length(chunk.value)
+  }
+}
+
+async function total(connection: Connection): int uses io, alloc {
+  let sum = 0
+  for await (const size of sizes(connection)) {
+    sum += size
+  }
+  return sum
+}
+```
+
+- **`async function* f(...): AsyncGenerator<T>`** declares an async generator. The result must be written `AsyncGenerator<T>` (E1112); a `function*` that is not async cannot declare it (E1113). `AsyncGenerator` takes one type argument (E1114), needs no import, and a type named `AsyncGenerator` that the module declares hides it. As for a generator, an exported one writes its effects on the result (`AsyncGenerator<T> uses io`), a private one has them inferred, it takes no `mutable` parameter (E1104), and its function-type parameters must be `escaping` (E1111). There is no arrow and no block form.
+- **The call runs nothing.** It makes the stream and stores the arguments, as a `function*` call does, and charges `alloc`. The body runs only while a reader waits for a value, so a stream nobody reads does no work.
+- **The body** is both an async body and a generator body. `await` stands in any expression, as in an async function. `yield value` is a statement, as in a `function*`, and `yield await f()` works. `return` takes no value (E0292). `const input = yield value` is E1115: there is no async coroutine. `yield* other` passes on every value of another `AsyncGenerator<T>` with the same `T`; any other operand, a `Generator<T>` included, is E1116.
+- **`Async.next(stream): Async<Option<T>>`** (`std/async`) asks for the next value. The handle gives `Some(value)` at the next `yield` and `None` once the body has ended, and then for every later call. It is an ordinary handle: `await` it, race it against a `sleep` for a timeout, or keep it to read one value ahead. The call charges the effects of the stream's type and `alloc`. Requests are served in the order they were made, and the body runs until its next `yield` inline in the call when nothing makes it wait.
+- **`for await (const x of stream)`** awaits `Async.next` until it gives `None`, binding each value. It is allowed in an async function, an async arrow, an `async { ... }` block and an async generator, and elsewhere it is E1122. The source must be an `AsyncGenerator<T>` (E1123): loop over a `Generator<T>` with `for ... of`, and over an `Array<Async<T>>` with `for ... of` and an `await` on each handle. `for ... of` over an `AsyncGenerator<T>` is E1124. `for await (mutable x of stream)` is E1105, and the head takes `const`, not `let` (E0030). Labels, `break`, `continue` and destructuring heads work as in `for ... of`, and `ensures` on the generator gives the binding the same facts.
+- **A stream is shared, not copied.** Copies of an `AsyncGenerator<T>` share one body and one position, as copies of an `Async<T>` share one task, so two loops over one stream each get some of its values. `==`, `!=` and map keys on one are E1106. A value passed to a stream is shared with it as with a task: while a local holds the stream, a write to the passed place is E0978.
+- **Stopping early.** `break`, `return` or a labeled `break` out of a `for await` drops the loop's reference to the stream, as dropping a copy read with `Async.next` does. When it was the last one, the body is dropped where it waits at its `yield`, and what it holds there is released; a `Connection` closes when its last copy goes. Nothing else of the body runs.
+- **Cancel.** A cancel of a task that waits on a value of a stream, or of the `Async.next` handle itself, passes to the stream when it is the only request waiting on it: the wait inside the body gives `Err(AsyncError.Cancelled)`, as do its later suspending calls, and later requests give `None` once the body ends. A request nobody awaits still runs the body to its next `yield`; that value is lost when the handle is dropped.
+- **`Net.chunks(connection, maxBytes): AsyncGenerator<Result<bytes, AsyncError>>`** in `std/async/net` yields `Ok(chunk)` for each read that is not empty, ends at the end of the stream, and on an error yields one `Err` and ends. A `maxBytes` of zero or less ends the stream at once.
+
 ## 9. Unsafe code and C interop
 
 - **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression; assign to a `let` declared before it. Code inside `unsafe` may crash; it is the stated exception to D92.
 - **The `unsafe` effect.** A function that holds an `unsafe` block has the `unsafe` effect: an exported one writes `uses unsafe` (E0800), a private one is inferred, and every caller needs an `unsafe` block of its own. A function value whose type lists `uses unsafe` is called the same way.
 - **Generators and traits.** Running a generator runs its body, so a `for` loop or `yield*` over a generator whose body has the `unsafe` effect needs an `unsafe` block (E0996). A call through a trait has the effects the trait function declares, so an implementation may use `unsafe` only when its trait function declares `uses unsafe` (E0800); otherwise it wraps the unsafe code with `@trusted`, the one attribute allowed on an implement block member.
 - **`@trusted`** on a function states that its `unsafe` blocks were checked by hand. It stops the effect there: the function does not have `unsafe`, so callers need no block and an exported one does not declare it. `@trusted` on a function with no `unsafe` block, or on one that writes `uses unsafe`, is E0997.
-- **`Ptr<T>`** is a raw pointer, a plain value with no reference count, compiled to the C pointer `T*`. The type is visible in a module that imports `std/ptr` (`import * as Ptr from "std/ptr"`), and it is written `Ptr<T>` whatever the alias: with `import * as P from "std/ptr"` the functions are `P.read` and the type is still `Ptr<int>`; `P.Ptr<int>` is an error. `T` is a number type, `bool`, `char`, another `Ptr`, a `FixedArray` of such values, or a struct whose fields are all such values (tuples count as structs, and a field may be a `FixedArray`). A `FixedArray` of anything else, such as `FixedArray<string, 2>`, is E0998 with a message that names the element. Strings, `bytes`, arrays, maps, boxes, enums, function values, generators, opaque structs and type parameters are E0998, because a pointer to them would bypass reference counting.
+- **`Ptr<T>`** is a raw pointer, a plain value with no reference count, compiled to the C pointer `T*`. The type is visible in a module that imports `std/ptr` (`import * as Ptr from "std/ptr"`), and it is written `Ptr<T>` whatever the alias: with `import * as P from "std/ptr"` the functions are `P.read` and the type is still `Ptr<int>`; `P.Ptr<int>` is an error. `T` is a number type, `bool`, `char`, another `Ptr`, a vector type of `std/simd`, a `FixedArray` of such values, or a struct whose fields are all such values (tuples count as structs, and a field may be a `FixedArray`). A `FixedArray` of anything else, such as `FixedArray<string, 2>`, is E0998 with a message that names the element. Strings, `bytes`, arrays, maps, boxes, enums, function values, generators, opaque structs and type parameters are E0998, because a pointer to them would bypass reference counting.
 - **Pointer values are ordinary data.** A `Ptr` can be stored in a struct, an array or a tuple, copied, passed to and returned from any function, `@trusted` or not, and held across calls. Copying one copies the address. A `Ptr` is not `Equatable`, `Hashable` or printable: `==` and `!=` on it are compile errors, it cannot be a `Map` key, and a struct that holds one cannot derive those traits. Test for null with `Ptr.isNull`.
 - **std/ptr.** `Ptr.alloc(count: int): Ptr<T>` allocates `count` zeroed elements (`uses alloc`); `Ptr.free(pointer)` frees what `Ptr.alloc` returned and does nothing for a null pointer; `Ptr.read(pointer): T` and `Ptr.write(pointer, value: T)` read and write one element; `Ptr.offset(pointer, count: int): Ptr<T>` moves by `count` elements. `Ptr.cast(pointer: Ptr<T>): Ptr<U>` reinterprets the address as a pointer to another element type, as a C cast does, with no check (`const bytes: Ptr<u8> = Ptr.cast(words)`); `Ptr.element(pointer: Ptr<FixedArray<T, N>>, index: int): Ptr<T>` is the address of one item of a FixedArray. `Ptr.element` proves its index like a FixedArray read does (E0994 for a constant outside 0 to N - 1 or an unproven index), and a pointer to anything else is E0998. These seven have the `unsafe` effect. `Ptr.null(): Ptr<T>` and `Ptr.isNull(pointer): bool` touch no memory and are safe. `Ptr.alloc`, `Ptr.null` and `Ptr.cast` take the result's element type from the expected type (`const items: Ptr<int> = Ptr.alloc(4)`). There is no `Ptr<void>`, since `void` is not a type that can be written; `Ptr<u8>` stands for C's `void*`. Nothing is checked at run time: a read past the allocation, a use after `Ptr.free` or a double free is undefined behavior, and so is reading or writing through a `Ptr.cast` pointer whose element type does not match the stored data, except through `u8` and `i8`, because programs are built with strict aliasing. Memory from `Ptr.alloc` counts toward the debug leak check (section 13) until it is freed.
 
@@ -1678,14 +1799,14 @@ export enum Color {
   - The expression may have the `alloc` effect and no other (E1034), because the first force can happen anywhere. `Lazies.force(table)` has the effects of the expression, so a caller of it lists `alloc` when the expression allocates.
   - A lazy value that forces itself, directly or through the functions it calls and the lazy values it forces, is an error (E1035). A function named as a value counts as called.
   - A lazy value that no code forces is not built and has no code in the program. A panic in the expression happens at the first force.
-  - Forcing is not thread safe yet: the ready flag is the once guard of one thread, as for other constants that are not scalars (D61). Threads must add the lock.
+  - Forcing is thread safe. In a program with threads the first force builds the value under a lock, as for other constants that are not scalars (D61, D111).
 - Modules have no initialization code. Program startup runs nothing before the entry function.
 
 ## 11. Code generation
 
-- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler, arenas and regions.
-- **Vector types** from `std/simd` compile to C compiler vector extensions.
-- **Debug builds** use a fast C compiler such as TCC with checks on.
+- **Output is C.** One `.c` file per module, plus a small runtime: allocator, reference counting, panic handler and arenas.
+- **Vector types** from `std/simd` compile to C compiler vector extensions (D112). Each type the program uses is a typedef such as `typedef float narra_f32x4 __attribute__((vector_size(16), aligned(8)))`. The alignment is 8 because heap blocks start at 8-byte boundaries; loads are unaligned, which costs nothing on x86-64 and arm64. Integer `+`, `-` and `*` go through the unsigned vector type, so they wrap. The build passes no `-march` flag: x86-64 code uses SSE2 and arm64 code NEON. A C compiler without vector extensions (TCC) cannot build a program that imports `std/simd`.
+- **Debug builds** use the same C compiler with checks on (AddressSanitizer, the leak check and the copy check).
 - **Release builds** use Clang or GCC with `-O2`.
 - **No fused multiply-add.** The C starts with `#pragma STDC FP_CONTRACT OFF`, so `a * b + c` on floats rounds twice at every optimization level, as the compiler computes it for an `@const` function (D105). Without it, clang contracts the expression on arm64, which changes the last bit of some results.
 - **Generators and async functions** compile to a struct and a resume function. The struct holds their live variables and a state number. The resume function switches on that number.
@@ -1702,20 +1823,11 @@ export enum Color {
 - **Trait constraints** compile to a hidden parameter that points to the implementation table.
 - **Constant parameters pass by pointer.** A parameter larger than two machine words is passed as a pointer to the caller's value. Parameters are constant and access is exclusive (section 6), so this changes nothing a program can observe.
 - **Reads do not copy.** `items[i].field` and `s.inner.field` read through a pointer. The element is not copied and its reference count is not touched.
-- **Generic code uses layout tables.** A generic function that is not specialized receives one hidden table per type parameter. The table holds the type's size, its alignment, and functions to copy, drop and move a value. Values are stored and passed in their normal form, never boxed.
-- **Containers store raw values.** `Array<T>` stores elements directly, using the size from the layout table. `Array<int>` holds raw integers in both generic and specialized code.
-- **Specialization.**
-  - Debug builds compile each generic function once, with layout tables, for fast builds.
-  - Release builds compile a separate copy for each type a generic function is used with inside the same package.
-  - Calls across packages use layout tables unless the function is marked `@specialize` or `@inline`.
-  - `generics = "compact"` in the `[build]` table of `narra.toml` uses layout tables everywhere, for smaller binaries.
-- **`@specialize`** on a function always emits a copy per concrete type, in every build.
+- **Generic code is monomorphized.** Every build, debug and release, compiles one copy of a generic function for each set of type arguments the program uses, across packages too (D119). Values are stored and passed in their normal form, never boxed, and `Array<int>` holds raw integers.
 
 ## 12. Build model
 
 - The compiler reads a module's `import` declarations before anything else and builds the module graph from them.
-- Each module produces an interface file (`.nrai`) with its exported signatures. A module type-checks against its dependencies' interface files only.
-- When a module changes but its interface file stays the same, modules that import it are not re-checked or recompiled.
 - Modules with no dependency between them compile in parallel.
 - Builds are deterministic. The same inputs produce byte-identical C and binaries.
 - Compile-time evaluation is limited to top-level `const` declarations, `@const` functions and build conditions. A constant that calls an `@const` function is computed inside the compiler, by an evaluator over the checked program, within the limits of section 10; `narrac check`, `build`, `emit` and the language service all compute it, since a failed computation is a compile error. A result depends only on the source and the target: maps keep insertion order, integers wrap the same way, and floats round the same in the compiler and the program (section 11).
@@ -1962,8 +2074,6 @@ entry = "app/cli.run"
 [link]
 search = ["/opt/homebrew/lib"]
 
-[build]
-generics = "compact"    # optional: layout tables everywhere, for smaller binaries
 ```
 
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.

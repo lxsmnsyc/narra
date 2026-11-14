@@ -148,6 +148,8 @@ import {
   LoopReference,
   SourceFacts,
   DotUse,
+  TemplatePart,
+  TemplatePartError,
   createEmptyFacts,
 } from "narrac/ast"
 import {
@@ -433,6 +435,7 @@ function finishFacts(parser: Parser, source: string): SourceFacts from parser us
     shorthandIds: parser.facts.shorthandIds,
     callEnds: parser.facts.callEnds,
     templateTokenEnds: parser.facts.templateTokenEnds,
+    taggedCalls: parser.facts.taggedCalls,
     referenced: referenced,
     resultEnds: parser.facts.resultEnds,
     fromNames: parser.facts.fromNames,
@@ -1538,6 +1541,7 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
     expect(mutable parser, SYMBOL_EQUALS)
     const base = parseType(mutable parser)
     const traitLists = parseTraitLists(mutable parser)
+    const refinement = parseRefinement(mutable parser)
     endTypeDecl(mutable parser)
     return Some(
       Decl.Distinct(DistinctDecl {
@@ -1548,6 +1552,7 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
         base: base,
         implementations: traitLists.implementations,
         derived: traitLists.derived,
+        refinement: refinement,
       }),
     )
   }
@@ -1555,6 +1560,85 @@ function parseOpaqueOrDistinct(mutable parser: Parser, exported: bool): Option<D
     failFound(mutable parser, "E0045", `expected \`struct\` or \`distinct type\` after \`opaque\``)
   }
   return None
+}
+
+function parseRefinement(mutable parser: Parser): Array<Pattern> {
+  // `requires a && b` after the trait lists of a distinct type, on its line or the next (D116).
+  let items: Array<Pattern> = []
+  let offset = 0
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset++
+  }
+  if (!isRequiresWord(peekToken(parser, offset))) {
+    return items
+  }
+  skipNewlines(mutable parser)
+  const requiresIndex = parser.index
+  let previous = advance(mutable parser)
+  while (isOk(parser)) {
+    // The line may break after `&&` only before a comparison or a literal.
+    const token = currentToken(parser)
+    const isLaterLine = token.line > previous.endLine && !isRefinementStart(token)
+    if (
+      token.kind == TokenKind.TokNewline ||
+        token.kind == TokenKind.TokEof ||
+        isAt(parser, SYMBOL_AND) ||
+        isLaterLine
+    ) {
+      failAt(
+        mutable parser,
+        getPos(token),
+        "E1220",
+        `a distinct type's \`requires\` needs a pattern here, found ${describeToken(token)}`,
+      )
+      break
+    }
+    parser.contractPattern = true
+    Arrays.push(mutable items, parsePattern(mutable parser))
+    parser.contractPattern = false
+    if (!isAt(parser, SYMBOL_AND)) {
+      break
+    }
+    previous = advance(mutable parser)
+  }
+  // The list is a node of its own, so a comment beside `requires` stays there.
+  if (parser.collector.enabled && Arrays.length(items) > 0) {
+    noteKey(mutable parser, `n${Int.toString(getPatternId(items[0]))}`, requiresIndex)
+  }
+  offset = 0
+  while (peekToken(parser, offset).kind == TokenKind.TokNewline) {
+    offset++
+  }
+  if (isOk(parser) && isRequiresWord(peekToken(parser, offset))) {
+    skipNewlines(mutable parser)
+    failHere(
+      mutable parser,
+      "E1220",
+      "a distinct type takes one `requires` list; join its patterns with `&&`",
+    )
+  }
+  if (
+    isOk(parser) &&
+      (isAt(parser, SYMBOL_KEYWORD_IMPLEMENTS) || isAt(parser, SYMBOL_KEYWORD_DERIVES))
+  ) {
+    failHere(
+      mutable parser,
+      "E1220",
+      "`implements` and `derives` come before `requires` on a distinct type",
+    )
+  }
+  return items
+}
+
+function isRefinementStart(token: Token): bool {
+  return isComparisonToken(token) ||
+    token.kind == TokenKind.TokInt ||
+    token.kind == TokenKind.TokString ||
+    (token.kind == TokenKind.TokPunct && token.text == "-")
+}
+
+function isRequiresWord(token: Token): bool {
+  return token.kind == TokenKind.TokIdent && token.text == "requires"
 }
 
 function parseType(mutable parser: Parser): TypeExpr {
@@ -1649,10 +1733,10 @@ function parseTypeBody(mutable parser: Parser): TypeExpr {
     }
     expect(mutable parser, SYMBOL_GREATER)
   }
-  if (name == "Generator" || name == "Coroutine") {
+  if (name == "Generator" || name == "Coroutine" || name == "AsyncGenerator") {
     // A generator type carries the effects its body has when it runs:
     // `Generator<string> uses io`.
-    const effects = parseUsesList(mutable parser)
+    const effects = parseTypeUses(mutable parser)
     if (Arrays.length(effects) > 0) {
       return TypeExpr { ...named, arguments: arguments, effects: effects }
     }
@@ -1863,7 +1947,7 @@ function parseFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
 }
 
 function parseAsyncFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
-  // `async function name(...)`; `async function*` is not present (D109).
+  // `async function name(...)`, or `async function* name(...)`, an async generator (D110).
   const asyncToken = advance(mutable parser)
   if (!isAt(parser, SYMBOL_KEYWORD_FUNCTION)) {
     const found = describeToken(currentToken(parser))
@@ -1874,15 +1958,6 @@ function parseAsyncFuncDecl(mutable parser: Parser, exported: bool): FuncDecl {
       `async must be followed by function, an arrow function or a block, found ${found}`,
     )
     return parseFuncDecl(mutable parser, exported)
-  }
-  const star = peekToken(parser, 1)
-  if (star.kind == TokenKind.TokPunct && star.text == "*") {
-    failAt(
-      mutable parser,
-      getPos(star),
-      "E1107",
-      "there is no async function*; an async function returns one value through Async<T>",
-    )
   }
   const declaration = parseFuncDecl(mutable parser, exported)
   return FuncDecl { ...declaration, isAsync: true }
@@ -1960,8 +2035,21 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     }
     const paramNameToken = expectIdent(mutable parser)
     const paramName = paramNameToken.text
+    if (isAt(parser, SYMBOL_QUESTION)) {
+      reportOptionalParameter(mutable parser, paramName, false)
+      break
+    }
+    // `f: () => int uses io, alloc,`: the type's list ended at its one effect.
+    if (!isAt(parser, SYMBOL_COLON) && paramStart > 0) {
+      reportTypeUsesComma(mutable parser, paramStart - 1)
+    }
     expect(mutable parser, SYMBOL_COLON)
     const paramType = parseType(mutable parser)
+    // `depth: int = 0`: the checker holds the value to the constant rule (D115).
+    let defaultValue: Option<Expr> = None
+    if (accept(mutable parser, SYMBOL_EQUALS)) {
+      defaultValue = Some(parseExpr(mutable parser))
+    }
     const paramId = newId(mutable parser)
     parser.facts.namePositions[paramId] = getPos(paramNameToken)
     Arrays.push(mutable parameters, Param {
@@ -1971,6 +2059,7 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
       isMutable: isMutable,
       type: Some(paramType),
       escaping: escaping,
+      default: defaultValue,
     })
     if (parser.collector.enabled) {
       noteKey(mutable parser, getIdKey(paramId), paramStart)
@@ -1983,6 +2072,11 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
   let result: Option<TypeExpr> = None
   if (accept(mutable parser, SYMBOL_COLON)) {
     result = Some(parseResultType(mutable parser))
+    // `Generator<string> uses io, alloc {`: the type's list ended at its one effect.
+    if (isAt(parser, SYMBOL_COMMA)) {
+      const commaIndex = parser.index
+      reportTypeUsesComma(mutable parser, commaIndex)
+    }
   }
   const effects = parseUsesList(mutable parser)
   return FuncDecl {
@@ -1999,6 +2093,53 @@ function parseFuncHeader(mutable parser: Parser, exported: bool): FuncDecl {
     constantParameters: typeParameters.constants,
     body: None,
   }
+}
+
+function reportOptionalParameter(mutable parser: Parser, name: string, isArrow: bool) {
+  // `name?: T` becomes `name: Option<T> = None`; the fix keeps the written type.
+  const question = getPos(advance(mutable parser))
+  expect(mutable parser, SYMBOL_COLON)
+  const typeStart = parser.index
+  const typePos = getPos(currentToken(parser))
+  parseType(mutable parser)
+  if (!isOk(parser)) {
+    return
+  }
+  let typeText = ""
+  for (const index of Ranges.between(typeStart, parser.index)) {
+    typeText = `${typeText}${parser.tokens[index].text}`
+    if (parser.tokens[index].text == ",") {
+      typeText = `${typeText} `
+    }
+  }
+  // An arrow function parameter takes no default, so it becomes `name: Option<T>`.
+  if (isArrow) {
+    failAt(
+      mutable parser,
+      question,
+      "E1216",
+      `an arrow function parameter cannot be optional; write ${quoteGo(`${name}: Option<${typeText}>`)}`,
+    )
+    return
+  }
+  const written = `${name}: Option<${typeText}> = None`
+  // With a default written after the type, `name?: T = value`, no edit fits, so there is no fix.
+  let fixes: Array<Fix> = []
+  if (!isAt(parser, SYMBOL_EQUALS)) {
+    const edits = [
+      createEdit(question, moveColumn(question, 1), ""),
+      insertAt(typePos, "Option<"),
+      insertAt(getEndPos(parser), "> = None"),
+    ]
+    fixes = [createFix(`write ${written}`, edits)]
+  }
+  failAtFix(
+    mutable parser,
+    question,
+    "E1216",
+    fixes,
+    `optional parameters are written with a default; write ${quoteGo(written)}`,
+  )
 }
 
 function parseFieldList(mutable parser: Parser): Array<FieldDecl> {
@@ -2284,6 +2425,9 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
     }
     Arrays.push(mutable names, name)
     Arrays.push(mutable arguments, parseType(mutable parser))
+    if (isAt(parser, SYMBOL_EQUALS)) {
+      failHere(mutable parser, "E1213", "a function type cannot have parameter defaults")
+    }
     if (!accept(mutable parser, SYMBOL_COMMA)) {
       break
     }
@@ -2291,7 +2435,7 @@ function parseFuncType(mutable parser: Parser): TypeExpr {
   expect(mutable parser, SYMBOL_RIGHT_PAREN)
   expect(mutable parser, SYMBOL_ARROW)
   const result = parseResultType(mutable parser)
-  const effects = parseUsesList(mutable parser)
+  const effects = parseTypeUses(mutable parser)
   return TypeExpr {
     pos: pos,
     name: "",
@@ -2321,19 +2465,80 @@ function parseResultType(mutable parser: Parser): TypeExpr {
 }
 
 function parseUsesList(mutable parser: Parser): Array<string> {
+  // A declaration's own list is a bare comma list: `uses io, alloc`.
   let names: Array<string> = []
   if (accept(mutable parser, SYMBOL_KEYWORD_USES)) {
     while (isOk(parser)) {
-      Arrays.push(mutable names, expectIdent(mutable parser).text)
-      if (isAt(parser, SYMBOL_COMMA) && isParamAfterComma(parser)) {
-        break
-      }
+      const effect = expectIdent(mutable parser)
+      reportRepeatedEffect(mutable parser, names, effect)
+      Arrays.push(mutable names, effect.text)
       if (!accept(mutable parser, SYMBOL_COMMA)) {
         break
       }
     }
   }
   return names
+}
+
+function parseTypeUses(mutable parser: Parser): Array<string> {
+  // A type's list is one effect or a list in parentheses, so a `,` after it ends the type.
+  let names: Array<string> = []
+  if (!accept(mutable parser, SYMBOL_KEYWORD_USES)) {
+    return names
+  }
+  if (!accept(mutable parser, SYMBOL_LEFT_PAREN)) {
+    Arrays.push(mutable names, expectIdent(mutable parser).text)
+    return names
+  }
+  while (isOk(parser)) {
+    const effect = expectIdent(mutable parser)
+    reportRepeatedEffect(mutable parser, names, effect)
+    Arrays.push(mutable names, effect.text)
+    // A trailing comma may come before the `)`.
+    if (!accept(mutable parser, SYMBOL_COMMA) || isAt(parser, SYMBOL_RIGHT_PAREN)) {
+      break
+    }
+  }
+  expect(mutable parser, SYMBOL_RIGHT_PAREN)
+  return names
+}
+
+function reportRepeatedEffect(mutable parser: Parser, names: Array<string>, effect: Token) {
+  // Each effect is named once in a list, so a repeated one is a typo.
+  for (const name of Arrays.values(names)) {
+    if (name == effect.text) {
+      failAt(
+        mutable parser,
+        getPos(effect),
+        "E1242",
+        `\`${effect.text}\` is listed twice in this \`uses\` list`,
+      )
+    }
+  }
+}
+
+function reportTypeUsesComma(mutable parser: Parser, commaIndex: int) {
+  // Only a `,` right after `uses name` reads as a list the type cannot hold.
+  if (commaIndex < 2 || commaIndex + 1 >= Arrays.length(parser.tokens)) {
+    return
+  }
+  const comma = parser.tokens[commaIndex]
+  const effect = parser.tokens[commaIndex - 1]
+  const next = parser.tokens[commaIndex + 1]
+  if (
+    comma.symbol != SYMBOL_COMMA ||
+      effect.kind != TokenKind.TokIdent ||
+      parser.tokens[commaIndex - 2].symbol != SYMBOL_KEYWORD_USES ||
+      next.kind != TokenKind.TokIdent
+  ) {
+    return
+  }
+  failAt(
+    mutable parser,
+    getPos(comma),
+    "E1240",
+    `a type's \`uses\` list takes one effect, or several in parentheses: \`uses (${effect.text}, ${next.text})\``,
+  )
 }
 
 function acceptEscaping(mutable parser: Parser): bool {
@@ -2348,23 +2553,6 @@ function acceptEscaping(mutable parser: Parser): bool {
     return true
   }
   return false
-}
-
-function isParamAfterComma(parser: Parser): bool {
-  // A `,` followed by `name:`, `mutable name` or `escaping name` ends a `uses` list written inside a parameter list.
-  if (parser.index + 2 >= Arrays.length(parser.tokens)) {
-    return false
-  }
-  const nextToken = parser.tokens[parser.index + 1]
-  if (
-    nextToken.kind != TokenKind.TokIdent &&
-      !(nextToken.kind == TokenKind.TokKeyword && nextToken.text == "mutable")
-  ) {
-    return false
-  }
-  const afterNext = parser.tokens[parser.index + 2]
-  return afterNext.kind == TokenKind.TokIdent ||
-    (afterNext.kind == TokenKind.TokPunct && afterNext.text == ":")
 }
 
 // ---- Statements
@@ -2450,10 +2638,18 @@ function parseArrow(mutable parser: Parser): Expr {
     const paramPos = getPos(currentToken(parser))
     const paramStart = parser.index
     const paramName = expectIdent(mutable parser).text
+    if (isAt(parser, SYMBOL_QUESTION)) {
+      reportOptionalParameter(mutable parser, paramName, true)
+      return createDummyExpr()
+    }
     // Parameter types may be left out.
     let paramType: Option<TypeExpr> = None
     if (accept(mutable parser, SYMBOL_COLON)) {
       paramType = Some(parseType(mutable parser))
+    }
+    if (isAt(parser, SYMBOL_EQUALS)) {
+      failHere(mutable parser, "E1213", "an arrow function parameter cannot have a default")
+      return createDummyExpr()
     }
     const paramId = newId(mutable parser)
     Arrays.push(mutable parameters, Param {
@@ -2533,7 +2729,11 @@ function isMarkedEntries(parser: Parser): bool {
     marker.text == "mutable"
 }
 
-function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt from pos uses alloc {
+function parseReferenceFor(
+  mutable parser: Parser,
+  pos: Pos,
+  awaitPos: Option<Pos>,
+): Stmt from pos uses alloc {
   // The head is not desugared into a declaration, which would copy the element.
   let indexName = ""
   let indexPos = pos
@@ -2565,7 +2765,28 @@ function parseReferenceFor(mutable parser: Parser, pos: Pos): Stmt from pos uses
   const forId = newId(mutable parser)
   parser.facts.namePositions[forId] = getPos(nameToken)
   const reference = LoopReference { indexId: indexId, indexName: indexName }
-  return Stmt.ForStmt(forId, pos, "", nameToken.text, iterable, body, Some(reference))
+  return Stmt.ForStmt(
+    forId,
+    pos,
+    "",
+    nameToken.text,
+    iterable,
+    body,
+    Some(reference),
+    copy(awaitPos),
+  )
+}
+
+function parseForAwait(mutable parser: Parser): Option<Pos> uses alloc {
+  // `for await`: the keyword gets a trivia node of its own, so a comment on
+  // either side of it stays there.
+  if (!isAt(parser, SYMBOL_KEYWORD_AWAIT)) {
+    return None
+  }
+  const awaitIndex = parser.index
+  const awaitPos = getPos(advance(mutable parser))
+  noteKey(mutable parser, getPosKey("k", awaitPos), awaitIndex)
+  return Some(awaitPos)
 }
 
 function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
@@ -2588,8 +2809,17 @@ function parseLabeledStmt(mutable parser: Parser): Stmt uses alloc {
   if (loop is Stmt.CForStmt(_, _, init, condition, step, body)) {
     return Stmt.CForStmt(labelPos, labelToken.text, init, condition, step, body)
   }
-  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference)) {
-    return Stmt.ForStmt(nodeId, labelPos, labelToken.text, name, iterable, body, reference)
+  if (loop is Stmt.ForStmt(nodeId, _, _, name, iterable, body, reference, awaitPos)) {
+    return Stmt.ForStmt(
+      nodeId,
+      labelPos,
+      labelToken.text,
+      name,
+      iterable,
+      body,
+      reference,
+      awaitPos,
+    )
   }
   return loop
 }
@@ -2837,9 +3067,16 @@ function parseStmtBody(mutable parser: Parser): Stmt {
   }
   if (isAt(parser, SYMBOL_KEYWORD_FOR)) {
     advance(mutable parser)
+    const awaitPos = parseForAwait(mutable parser)
     expect(mutable parser, SYMBOL_LEFT_PAREN)
     if (isAt(parser, SYMBOL_KEYWORD_MUTABLE) || isMarkedEntries(parser)) {
-      return parseReferenceFor(mutable parser, pos)
+      return parseReferenceFor(mutable parser, pos, awaitPos)
+    }
+    if (awaitPos is Some(written)) {
+      if (!isAt(parser, SYMBOL_KEYWORD_CONST)) {
+        failHere(mutable parser, "E0030", "write `for await (const item of stream)`")
+        return Stmt.BreakStmt(written, "")
+      }
     }
     if (isAt(parser, SYMBOL_SEMICOLON)) {
       return parseCStyleFor(mutable parser, pos, None)
@@ -2910,7 +3147,7 @@ function parseStmtBody(mutable parser: Parser): Stmt {
     }
     const forId = newId(mutable parser)
     parser.facts.namePositions[forId] = headPos
-    return Stmt.ForStmt(forId, pos, "", name, iterable, body, None)
+    return Stmt.ForStmt(forId, pos, "", name, iterable, body, None, awaitPos)
   }
   if (isAt(parser, SYMBOL_KEYWORD_YIELD)) {
     advance(mutable parser)
@@ -3269,6 +3506,14 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
       const name = parseMemberName(mutable parser)
       expression = Expr.FieldExpr(newId(mutable parser), getPos(name), expression, name.text)
       noteExpr(mutable parser, startIndex, expression)
+    } else if (isAt(parser, SYMBOL_LESS) && isTaggedTypeArgsAhead(parser, expression)) {
+      failAt(
+        mutable parser,
+        getPos(token),
+        "E1200",
+        "a tag takes no type arguments; the tag's parameters give its type",
+      )
+      return createDummyExpr()
     } else if (isAt(parser, SYMBOL_LESS) && isCallTypeArgsAhead(parser, expression)) {
       // `f<int>(x)`: type arguments of a call.
       const typeArguments = parseLiteralTypeArgs(mutable parser)
@@ -3290,6 +3535,20 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
       const index = parseExpr(mutable parser)
       expect(mutable parser, SYMBOL_RIGHT_BRACKET)
       expression = Expr.IndexExpr(newId(mutable parser), getPos(token), expression, index)
+      noteExpr(mutable parser, startIndex, expression)
+    } else if (token.kind == TokenKind.TokTemplate && isTemplateOnSameLine(parser)) {
+      // `tag`...``: only a name or a dotted name is a tag (D114).
+      if (!isTagName(parser, expression)) {
+        failAt(
+          mutable parser,
+          getPos(token),
+          "E1200",
+          "a template after an expression is a tagged template, and only a name or a dotted name can be its tag",
+        )
+        return createDummyExpr()
+      }
+      advance(mutable parser)
+      expression = parseTaggedTemplate(mutable parser, expression, token)
       noteExpr(mutable parser, startIndex, expression)
     } else if (isAt(parser, SYMBOL_LESS) || isAt(parser, SYMBOL_LEFT_BRACE)) {
       // `Name { field: value }` is a struct literal, and
@@ -3319,6 +3578,39 @@ function parsePostfix(mutable parser: Parser, first: Expr, startIndex: int): Exp
     }
   }
   return expression
+}
+
+function isTemplateOnSameLine(parser: Parser): bool {
+  if (parser.index == 0) {
+    return false
+  }
+  const previous = parser.tokens[parser.index - 1]
+  return previous.kind != TokenKind.TokNewline && previous.endLine == currentToken(parser).line
+}
+
+function isTemplateAfterNameLine(parser: Parser): bool {
+  // TypeScript reads `tag` and a template on the next line as one tagged template.
+  if (parser.index < 2) {
+    return false
+  }
+  return parser.tokens[parser.index - 1].kind == TokenKind.TokNewline &&
+    parser.tokens[parser.index - 2].kind == TokenKind.TokIdent
+}
+
+function isTagName(parser: Parser, expression: Expr): bool {
+  // A name or a dotted name, written right before the template.
+  if (parser.tokens[parser.index - 1].kind != TokenKind.TokIdent) {
+    return false
+  }
+  return isNameChain(expression)
+}
+
+function isNameChain(expression: Expr): bool {
+  return match (expression) {
+    Expr.Ident(_, _, _) => true
+    Expr.FieldExpr(_, _, target, _) => isNameChain(target)
+    _ => false
+  }
 }
 
 function parseCallArguments(mutable parser: Parser): Array<Arg> {
@@ -3352,12 +3644,32 @@ function parseCallArguments(mutable parser: Parser): Array<Arg> {
 }
 
 function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
+  const after = findTypeArgsEnd(parser, callee)
+  if (after < 0) {
+    return false
+  }
+  const token = peekToken(parser, after)
+  return token.kind == TokenKind.TokPunct && token.text == "("
+}
+
+function isTaggedTypeArgsAhead(parser: Parser, callee: Expr): bool {
+  // `tag<int>`...``: a tag takes no type arguments (D114).
+  const after = findTypeArgsEnd(parser, callee)
+  if (after < 0) {
+    return false
+  }
+  const token = peekToken(parser, after)
+  return token.kind == TokenKind.TokTemplate && token.line == peekToken(parser, after - 1).endLine
+}
+
+function findTypeArgsEnd(parser: Parser, callee: Expr): int {
+  // The offset of the token after a balanced `<...>` of type arguments, or -1.
   if (callee is Expr.FieldExpr(_, _, target, _)) {
     if (!(target is Expr.Ident(_, _, _))) {
-      return false
+      return -1
     }
   } else if (!(callee is Expr.Ident(_, _, _))) {
-    return false
+    return -1
   }
   // A name not followed by `.` must be a type: a type parameter in scope, a primitive type name, or a capitalized name that is not SCREAMING_CASE. So `a < b > (c)` and `x < MAX, MIN > (y)` stay comparisons.
   let depth = 0
@@ -3367,19 +3679,19 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
     const token = peekToken(parser, offset)
     if (token.kind == TokenKind.TokIdent) {
       if (depth == 0) {
-        return false
+        return -1
       }
       const next = peekToken(parser, offset + 1)
       const isQualifier = next.kind == TokenKind.TokPunct && next.text == "."
       if (!isTypeNameAhead(parser, token.text) && !isQualifier) {
-        return false
+        return -1
       }
     } else if (isConstantArgumentToken(parser, offset)) {
       if (depth == 0) {
-        return false
+        return -1
       }
     } else if (token.kind != TokenKind.TokPunct) {
-      return false
+      return -1
     } else if (token.text == "<") {
       depth++
     } else if (token.text == ">" || token.text == ">>") {
@@ -3389,18 +3701,17 @@ function isCallTypeArgsAhead(parser: Parser, callee: Expr): bool {
         depth -= 2
       }
       if (depth < 0) {
-        return false
+        return -1
       }
       if (depth == 0) {
-        const after = peekToken(parser, offset + 1)
-        return after.kind == TokenKind.TokPunct && after.text == "("
+        return offset + 1
       }
     } else if (token.text != "," && token.text != "." && token.text != "#[" && token.text != "]") {
-      return false
+      return -1
     }
     offset++
   }
-  return false
+  return -1
 }
 
 function isConstantArgumentToken(parser: Parser, offset: int): bool {
@@ -3581,6 +3892,7 @@ function getExpressionPos(expression: Expr): Pos {
       | Expr.CharLit(_, pos, _)
       | Expr.BoolLit(_, pos, _)
       | Expr.TemplateLit(_, pos, _)
+      | Expr.TemplateParts(_, pos, _)
       | Expr.Ident(_, pos, _)
       | Expr.FieldExpr(_, pos, _, _)
       | Expr.IsExpr(_, pos, _, _)
@@ -3765,6 +4077,15 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
     return Expr.CharLit(newId(mutable parser), pos, token.text)
   }
   if (token.kind == TokenKind.TokTemplate) {
+    if (isTemplateAfterNameLine(parser)) {
+      failAt(
+        mutable parser,
+        pos,
+        "E1203",
+        "a template at the start of a line is not tagged by the name that ends the line before; join the lines to tag it",
+      )
+      return createDummyExpr()
+    }
     advance(mutable parser)
     return parseTemplate(mutable parser, token)
   }
@@ -3958,15 +4279,69 @@ function advancePosition(raw: Array<char>, fromIndex: int, toIndex: int, start: 
   return Pos { line: line, column: column }
 }
 
+// The text parts and the `${}` expressions of a template, in source order;
+// there is always one more part than expressions. An untagged template takes
+// the id of each part's StringLit when the part ends, -1 for an empty part.
+struct TemplatePieces {
+  parts: Array<TemplatePart>
+  holes: Array<Expr>
+  literalIds: Array<int>
+}
+
 function parseTemplate(mutable parser: Parser, token: Token): Expr {
-  // Each expression is lexed and parsed on its own, with its tokens placed where they are written.
+  // Empty parts are dropped; each other part is a StringLit at the template's position.
   const pos = getPos(token)
   const end = Pos { line: token.endLine, column: token.endColumn }
+  const pieces = splitTemplate(mutable parser, token, false)
+  if (!isOk(parser)) {
+    return createDummyExpr()
+  }
+  let parts: Array<Expr> = []
+  for (const index of Ranges.upTo(Arrays.length(pieces.parts))) {
+    if (pieces.parts[index].decoded is Ok(text)) {
+      const literalId = pieces.literalIds[index]
+      if (literalId >= 0) {
+        Arrays.push(mutable parts, Expr.StringLit(literalId, pos, text, end))
+      }
+    }
+    if (index < Arrays.length(pieces.holes)) {
+      Arrays.push(mutable parts, pieces.holes[index])
+    }
+  }
+  return Expr.TemplateLit(newId(mutable parser), pos, parts)
+}
+
+function parseTaggedTemplate(mutable parser: Parser, tag: Expr, token: Token): Expr from tag {
+  // `tag`a${x}b`` is the call `tag(["a", "b"], [x])` (D114). Escape errors stay in the parts.
+  const pos = getPos(token)
+  const pieces = splitTemplate(mutable parser, token, true)
+  if (!isOk(parser)) {
+    return createDummyExpr()
+  }
+  const partsExpression = Expr.TemplateParts(newId(mutable parser), pos, pieces.parts)
+  const valuesExpression = Expr.ArrayLit(newId(mutable parser), pos, pieces.holes, false)
+  const callId = newId(mutable parser)
+  parser.facts.callEnds[callId] = Pos { line: token.endLine, column: token.endColumn }
+  parser.facts.taggedCalls[callId] = true
+  return Expr.CallExpr(callId, pos, tag, [], [
+    Arg { pos: pos, name: None, isMutable: false, value: partsExpression },
+    Arg { pos: pos, name: None, isMutable: false, value: valuesExpression },
+  ])
+}
+
+function splitTemplate(mutable parser: Parser, token: Token, tagged: bool): TemplatePieces {
+  // Each expression is lexed and parsed on its own, with its tokens placed where they are written.
+  // An untagged template fails at its first bad escape; a tagged one keeps the error in its part.
+  const pos = getPos(token)
   const raw = Str.chars(token.text)
   const count = Arrays.length(raw)
-  let parts: Array<Expr> = []
+  let parts: Array<TemplatePart> = []
+  let holes: Array<Expr> = []
+  let literalIds: Array<int> = []
   let text = Str.builder()
-  let pending = 0 // characters in text
+  let partError: Option<TemplatePartError> = None
+  let partStart = 0
+  let partPos = Pos { line: token.line, column: token.column + 1 }
   let index = 0
   // The source position of raw[scanned]; raw starts after the backtick.
   let scanned = 0
@@ -3981,11 +4356,22 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const escaped = decodeEscape(raw, index, cursor.line, cursor.column)
       if (escaped is Err(error)) {
         const errorPos = Pos { line: error.line, column: error.column }
-        failAt(mutable parser, errorPos, error.code, error.message)
-        return createDummyExpr()
+        if (!tagged) {
+          failAt(mutable parser, errorPos, error.code, error.message)
+          return TemplatePieces { parts: [], holes: [], literalIds: [] }
+        }
+        if (partError is None) {
+          partError = Some(TemplatePartError {
+            code: error.code,
+            message: error.message,
+            pos: errorPos,
+          })
+        }
+        // The backslash keeps the next character in the part.
+        index = index + 2
+        continue
       }
       Str.append(mutable text, escaped.value.text)
-      pending++
       index = escaped.value.end
       continue
     }
@@ -3993,13 +4379,16 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const closeIndex = findInterpolationEnd(raw, index + 2)
       if (closeIndex < 0) {
         failAt(mutable parser, pos, "E0040", "unterminated ${ in template string")
-        return createDummyExpr()
+        return TemplatePieces { parts: [], holes: [], literalIds: [] }
       }
-      if (pending > 0) {
-        Arrays.push(mutable parts, Expr.StringLit(newId(mutable parser), pos, Str.build(text), end))
-        text = Str.builder()
-        pending = 0
-      }
+      const partText = Str.build(text)
+      Arrays.push(mutable literalIds, takeLiteralId(mutable parser, tagged, partText))
+      Arrays.push(
+        mutable parts,
+        createTemplatePart(raw, partStart, index, partText, partError, partPos),
+      )
+      text = Str.builder()
+      partError = None
       let source = Str.builder()
       for (const sourceIndex of Ranges.between(index + 2, closeIndex - 1)) {
         Str.appendChar(mutable source, raw[sourceIndex])
@@ -4010,7 +4399,7 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
       const lexed = lexFrom(Str.build(source), cursor.line, cursor.column)
       if (lexed is Err(error)) {
         failAt(mutable parser, pos, "E0041", `in template string: ${formatLexError(error)}`)
-        return createDummyExpr()
+        return TemplatePieces { parts: [], holes: [], literalIds: [] }
       }
       let innerParser = Parser {
         tokens: copy(lexed.value),
@@ -4046,22 +4435,59 @@ function parseTemplate(mutable parser: Parser, token: Token): Expr {
         const #[callId, callEnd] = entry
         parser.facts.callEnds[callId] = callEnd
       }
+      for (const entry of Maps.entries(innerParser.facts.taggedCalls)) {
+        const #[taggedId, isTagged] = entry
+        parser.facts.taggedCalls[taggedId] = isTagged
+      }
       if (innerParser.failed is Some(diagnostic)) {
         failAt(mutable parser, diagnostic.pos, diagnostic.code, diagnostic.message)
-        return createDummyExpr()
+        return TemplatePieces { parts: [], holes: [], literalIds: [] }
       }
-      Arrays.push(mutable parts, expression)
+      Arrays.push(mutable holes, expression)
       index = closeIndex
+      // The next part starts after the `}`.
+      cursor = advancePosition(raw, scanned, index, cursor)
+      scanned = index
+      partStart = index
+      partPos = cursor
       continue
     }
     Str.appendChar(mutable text, character)
-    pending++
     index++
   }
-  if (pending > 0) {
-    Arrays.push(mutable parts, Expr.StringLit(newId(mutable parser), pos, Str.build(text), end))
+  const lastText = Str.build(text)
+  Arrays.push(mutable literalIds, takeLiteralId(mutable parser, tagged, lastText))
+  Arrays.push(
+    mutable parts,
+    createTemplatePart(raw, partStart, count, lastText, partError, partPos),
+  )
+  return TemplatePieces { parts: parts, holes: holes, literalIds: literalIds }
+}
+
+function takeLiteralId(mutable parser: Parser, tagged: bool, text: string): int {
+  if (tagged || Str.length(text) == 0) {
+    return -1
   }
-  return Expr.TemplateLit(newId(mutable parser), pos, parts)
+  return newId(mutable parser)
+}
+
+function createTemplatePart(
+  raw: Array<char>,
+  start: int,
+  end: int,
+  text: string,
+  failure: Option<TemplatePartError>,
+  pos: Pos,
+): TemplatePart {
+  let source = Str.builder()
+  for (const rawIndex of Ranges.between(start, end)) {
+    Str.appendChar(mutable source, raw[rawIndex])
+  }
+  let decoded: Result<string, TemplatePartError> = Ok(text)
+  if (failure is Some(error)) {
+    decoded = Err(copy(error))
+  }
+  return TemplatePart { raw: Str.build(source), decoded: decoded, pos: copy(pos) }
 }
 
 function parseMatch(mutable parser: Parser): Expr {

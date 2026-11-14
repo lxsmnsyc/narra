@@ -49,6 +49,9 @@ export enum Type derives Equatable {
   TStringBuilder
   // A socket of std/internal/asyncio, visible only in modules that import it.
   THandle
+  // A lock of std/internal/thread with two condition variables and two end
+  // counts, visible only in modules that import it (D111 item 4).
+  TSync
   TStruct(index: int) // Checker.structs
   TEnum(index: int) // Checker.enums
   TDistinct(index: int) // Checker.distincts
@@ -76,6 +79,9 @@ export enum Type derives Equatable {
   // Async<value>: the handle of a task (D109). Copies share the task; it carries
   // no effects, since its body has started already.
   TAsync(value: Type)
+  // AsyncGenerator<element> uses effects (D110): a stream whose copies share
+  // one task frame. effects, binder and origin are those of TGenerator.
+  TAsyncGenerator(element: Type, effects: Array<string>, binder: int, origin: int)
   // A namespace import such as `Int` used as a value (body checker only).
   TModule(path: string)
   // The value of a constant type parameter (`const N: int`) in an instance: the 3 of
@@ -87,6 +93,8 @@ export enum Type derives Equatable {
   // Dynamic<Trait>: a value of any type that implements the trait at
   // Checker.traits[traitIndex], called through a table of functions.
   TDynamic(traitIndex: int)
+  // A vector of std/simd (D112): count lanes of the number type lane, 16 or 32 bytes.
+  TVector(lane: Type, count: int)
 }
 
 // A struct field or variant field. `pos` is the field's declaration, or the
@@ -137,6 +145,28 @@ export struct DistinctInfo {
   module: string
   opaque: bool
   base: Option<Type>
+  // The `requires` list (D116), filled by checkModuleRefinements when every item fits
+  // the base: tests holds each item's alternatives, described each item as written,
+  // and hull what an unwrapped integer value is known to be.
+  refined: bool = false
+  tests: Array<Array<RefinementTest>> = []
+  described: Array<string> = []
+  hull: Option<RefinementHull> = None
+}
+
+// One alternative of a refinement item: an integer comparison with bound, or for a
+// string base the literal text the value equals (operator "==").
+export struct RefinementTest {
+  operator: string
+  bound: int
+  text: string
+}
+
+// The bounds of an unwrapped refined integer, as operands.nra keeps a Fact.
+export struct RefinementHull {
+  low: int
+  high: int
+  nonzero: bool
 }
 
 // `type Name<T> = Body`. The body is resolved on each use with the type
@@ -207,6 +237,34 @@ export function findFixedLength(type: Type): int {
   return -1
 }
 
+export function findIndexedLength(type: Type): int {
+  // The length a proven index is checked against: a FixedArray's, or a vector's lane count.
+  if (type is Type.TVector(_, count)) {
+    return count
+  }
+  return findFixedLength(type)
+}
+
+export function findLaneSize(lane: Type): int {
+  // The bytes of one lane of a vector type.
+  return match (lane) {
+    Type.TI8 | Type.TU8 => 1
+    Type.TI16 | Type.TU16 => 2
+    Type.TI32 | Type.TU32 | Type.TF32 => 4
+    _ => 8
+  }
+}
+
+export function formatVectorName(lane: Type, count: int): string uses alloc {
+  // F32x4, I64x2, U8x16: the lane kind, its bits and the lane count.
+  const kind = match (lane) {
+    Type.TF32 | Type.TF64 => "F"
+    Type.TU8 | Type.TU16 | Type.TU32 | Type.TU64 => "U"
+    _ => "I"
+  }
+  return `${kind}${Int.toString(findLaneSize(lane) * 8)}x${Int.toString(count)}`
+}
+
 export function typeKey(type: Type): string uses alloc {
   // Go keys by C name (typeID); this key has no hash and is unique because struct, enum, distinct and parameter types are indexes.
   return buildKey(type, false)
@@ -218,7 +276,7 @@ export function plainTypeKey(type: Type): string uses alloc {
 }
 
 function buildKey(type: Type, plain: bool): string uses alloc {
-  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, Y, K, X,
+  // Each variant has a head no other variant uses (S, E, D, P, A, B, M, F, G, Y, K, X, V,
   // the primitive names, Range, module), so the keys of two variants never meet.
   return match (type) {
     Type.TInt => "int"
@@ -238,6 +296,7 @@ function buildKey(type: Type, plain: bool): string uses alloc {
     Type.TVoid => "void"
     Type.TStringBuilder => "StringBuilder"
     Type.THandle => "Handle"
+    Type.TSync => "Sync"
     Type.TStruct(index) => `S${Int.toString(index)}`
     Type.TEnum(index) => `E${Int.toString(index)}`
     Type.TDistinct(index) => `D${Int.toString(index)}`
@@ -263,10 +322,17 @@ function buildKey(type: Type, plain: bool): string uses alloc {
       input,
     ) => `G(${buildKey(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)};${buildKey(input, plain)})`
     Type.TAsync(value) => `Y(${buildKey(value, plain)})`
+    Type.TAsyncGenerator(
+      element,
+      effects,
+      binder,
+      origin,
+    ) => `W(${buildKey(element, plain)};${Str.join(effects, ",")};${Int.toString(binder)};${Int.toString(origin)})`
     Type.TModule(path) => `module ${path}`
     Type.TConst(value) => `K${Int.toString(value)}`
     Type.TFixedArray(element, length) => `X(${buildKey(element, plain)},${buildKey(length, plain)})`
     Type.TDynamic(traitIndex) => `Q${Int.toString(traitIndex)}`
+    Type.TVector(lane, count) => `V(${buildKey(lane, plain)},${Int.toString(count)})`
   }
 }
 

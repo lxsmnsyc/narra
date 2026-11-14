@@ -1,0 +1,85 @@
+// Vectors as plain values inside arrays, structs, FixedArrays, generics and maps.
+import * as Simd from "std/simd"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Maps from "std/map"
+import * as Ptr from "std/ptr"
+
+struct Particle derives Show, Equatable {
+  name: string
+  position: F64x2
+}
+
+function first<T>(items: Array<T>): Option<T> from items {
+  if (Arrays.length(items) > 0) {
+    return Some(items[0])
+  }
+  return None
+}
+
+function total(items: Array<F32x8>): F32x8 {
+  let sum: F32x8 = Simd.splat(0.0)
+  for (const item of Arrays.values(items)) {
+    sum += item
+  }
+  return sum
+}
+
+@trusted
+function throughPointer(value: I16x8): I16x8 uses alloc {
+  // A Ptr may point at a vector, since it holds no counted value.
+  let result: I16x8 = Simd.splat(0)
+  unsafe {
+    const slot: Ptr<I16x8> = Ptr.alloc(2)
+    Ptr.write(Ptr.offset(slot, 1), value + value)
+    result = Ptr.read(Ptr.offset(slot, 1))
+    Ptr.free(slot)
+  }
+  return result
+}
+
+export function run(_args: Array<string>): int {
+  // Array elements sit at 8-byte boundaries; the typedefs allow it.
+  let items: Array<F32x8> = []
+  for (let i = 0; i < 100; i++) {
+    const step: F32x8 = Simd.splat(0.5)
+    Arrays.push(mutable items, step)
+  }
+  Arrays.push(mutable items, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+  print(Show.show(total(items)))
+  print(Show.show(items[100][7]))
+
+  // A struct field holds the vector inline.
+  const particle = Particle { name: "p", position: [1.0, 2.0] }
+  const moved = Particle { name: "p", position: particle.position + particle.position }
+  print(Show.show(moved))
+  print(Show.show(particle))
+  print(Show.show(particle == moved))
+  print(Show.show(particle == Particle { name: "p", position: [1.0, 2.0] }))
+
+  // A FixedArray of vectors.
+  let grid: FixedArray<I64x2, 3> = [[1, 2], [3, 4], [5, 6]]
+  grid[1] = grid[0] + grid[2]
+  print(Show.show(grid))
+
+  // A generic function over vectors gives an Option of a vector.
+  print(Show.show(first(items)))
+  const none: Array<U16x16> = []
+  print(Show.show(first(none)))
+
+  // Integer vectors hash, so they are map keys.
+  let names: Map<I32x4, string> = Map {}
+  const key: I32x4 = [1, 2, 3, 4]
+  names[key] = "first"
+  names[[5, 6, 7, 8]] = "second"
+  names[key] = "again"
+  print(Int.toString(Maps.size(names)))
+  if (names[key] is Some(found)) {
+    print(found)
+  }
+  const missing: I32x4 = [0, 0, 0, 0]
+  print(Show.show(names[missing]))
+
+  print(Show.show(throughPointer([1, 2, 3, 4, 5, 6, 7, -32768])))
+  return 0
+}

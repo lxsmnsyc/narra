@@ -9,7 +9,7 @@
 // function; an instance names its generic function), Ref.Builtin,
 // Ref.Constructor, Ref.Implementation, Ref.TraitFunction or Ref.Distinct.
 import { filledArray, substring } from "narrac/textops"
-import { Pos, Expr, Arg, Decl, Param, TypeExpr } from "narrac/ast"
+import { Pos, Expr, Arg, Decl, Param, TypeExpr, isTaggedArguments } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
 import { Fix, STD_ALIAS_PATHS, createFix, createEdit, insertAt, moveColumn } from "narrac/fixes"
 import { Type } from "narrac/types"
@@ -35,7 +35,7 @@ import {
 import { substitute, resolveTypeArguments } from "narrac/resolve"
 import { describeUnknownParameter, noteInstanceCall } from "narrac/constgenerics"
 import { unify } from "narrac/generics"
-import { checkVoidBindings } from "narrac/asyncvoid"
+import { checkVoidBindings, bindThreadVoid } from "narrac/asyncvoid"
 import { shapeFunctionName, isShapeToValueName, HIDDEN_UNWRAP } from "narrac/deriveshape"
 import { findImplementation, setImplementationRef } from "narrac/implementations"
 import { checkTargetUse } from "narrac/buildconditions"
@@ -71,12 +71,16 @@ import { checkConstructor } from "narrac/ctors"
 import { addFuncInstance } from "narrac/instances"
 import { checkCopyCall } from "narrac/stdcopy"
 import { recordContractCall } from "narrac/contracts"
+import { proveRefinedFrom, findCheckType } from "narrac/refinements"
 import { isDynamicName, checkDynamicOf, checkDynamicCall } from "narrac/dynamic"
+import * as TaggedTemplates from "narrac/taggedtemplates"
 import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
+import * as ThreadCheck from "narrac/threadcheck"
 
 export function checkCall<W: Walker>(
   mutable checker: Checker,
@@ -87,6 +91,14 @@ export function checkCall<W: Walker>(
   arguments: Array<Arg>,
   want: Option<Type>,
 ): Type from checker uses alloc {
+  // A tagged template checks its tag first (D114).
+  if (isTaggedArguments(arguments)) {
+    if (
+      TaggedTemplates.checkTag(mutable checker, walker, callee, arguments, want) is Some(failedType)
+    ) {
+      return copy(failedType)
+    }
+  }
   return match (callee) {
     Expr.Ident(_, calleePos, name) => checkNamedCall(
       mutable checker,
@@ -193,6 +205,8 @@ function checkFunctionCall<W: Walker>(
     }
     return info.result
   }
+  // A left-out parameter with a default is checked apart and filled in (D115).
+  const passedParameters = ParamDefaults.findPassedParameters(parameters, arguments)
   if (isGeneric) {
     const genericResult = checkGenericCall(
       mutable checker,
@@ -201,22 +215,47 @@ function checkFunctionCall<W: Walker>(
       pos,
       funcIndex,
       ordered,
+      passedParameters,
       want,
     )
-    recordContractCall(mutable checker, funcIndex, ordered)
+    ParamDefaults.checkFilledDefaults(mutable checker, walker, nodeId, funcIndex, arguments)
+    recordFilledContractCall(mutable checker, funcIndex, parameters, arguments, ordered)
+    if (checker.threads) {
+      ThreadCheck.checkThreadCall(mutable checker, funcIndex, ordered, pos, genericResult)
+    }
     return genericResult
   }
   setRef(mutable checker, nodeId, Ref.Function(funcIndex))
   let wants: Array<Option<Type>> = []
-  for (const param of Arrays.values(parameters)) {
+  for (const param of Arrays.values(passedParameters)) {
     Arrays.push(mutable wants, Some(checker.paramTypes[param.id]))
   }
   const savedCallee = checker.calleeIndex
   checker.calleeIndex = funcIndex
-  checkArguments(mutable checker, walker, pos, ordered, parameters, wants)
+  checkArguments(mutable checker, walker, pos, ordered, passedParameters, wants)
   checker.calleeIndex = savedCallee
-  recordContractCall(mutable checker, funcIndex, ordered)
+  ParamDefaults.checkFilledDefaults(mutable checker, walker, nodeId, funcIndex, arguments)
+  recordFilledContractCall(mutable checker, funcIndex, parameters, arguments, ordered)
   return checker.functions[funcIndex].result
+}
+
+function recordFilledContractCall(
+  mutable checker: Checker,
+  funcIndex: int,
+  parameters: Array<Param>,
+  arguments: Array<Arg>,
+  ordered: Array<Arg>,
+) uses alloc {
+  // Only a call that leaves out a default needs its arguments filled in.
+  if (ParamDefaults.leavesOutDefaults(parameters, arguments)) {
+    recordContractCall(
+      mutable checker,
+      funcIndex,
+      ParamDefaults.fillArguments(parameters, arguments),
+    )
+    return
+  }
+  recordContractCall(mutable checker, funcIndex, ordered)
 }
 
 function matchNamedArguments(
@@ -227,7 +266,9 @@ function matchNamedArguments(
   arguments: Array<Arg>,
   parameters: Array<Param>,
 ): Option<Array<Arg>> from arguments uses alloc {
-  if (!hasNamedArgument(arguments)) {
+  const hasNamed = hasNamedArgument(arguments)
+  const withDefaults = ParamDefaults.hasDefaults(parameters)
+  if (!hasNamed && !withDefaults) {
     return Some(arguments)
   }
   // The order is recorded for the passes after the checker when it differs from the written order. The result is None after an error.
@@ -270,6 +311,20 @@ function matchNamedArguments(
     }
   }
   // A parameter passed twice already explains a count that is too high.
+  const required = ParamDefaults.countRequired(parameters)
+  if (
+    !failed &&
+      withDefaults &&
+      (argumentCount > parameterCount || (!hasNamed && argumentCount < required))
+  ) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0316",
+      `this call passes ${Int.toString(argumentCount)} arguments, the function takes ${Int.toString(required)} to ${Int.toString(parameterCount)}`,
+    )
+    return None
+  }
   if (!failed && argumentCount > parameterCount) {
     reportError(
       mutable checker,
@@ -289,7 +344,7 @@ function matchNamedArguments(
     return None
   }
   for (const parameter of Ranges.between(0, parameterCount)) {
-    if (passed[parameter] < 0) {
+    if (passed[parameter] < 0 && parameters[parameter].default is None) {
       reportError(
         mutable checker,
         pos,
@@ -303,19 +358,25 @@ function matchNamedArguments(
     return None
   }
 
-  // A call written in parameter order needs no recorded order.
+  // A call written in parameter order needs no recorded order. A left-out
+  // parameter with a default has no entry: the order lists the written arguments.
   let reordered = false
   let ordered: Array<Arg> = []
+  let order: Array<int> = []
   for (const parameter of Ranges.between(0, parameterCount)) {
-    if (passed[parameter] != parameter) {
+    if (passed[parameter] < 0) {
+      continue
+    }
+    if (passed[parameter] != Arrays.length(order)) {
       reordered = true
     }
+    Arrays.push(mutable order, passed[parameter])
     Arrays.push(mutable ordered, arguments[passed[parameter]])
   }
   if (!reordered) {
     return Some(arguments)
   }
-  checker.argumentOrders[nodeId] = passed
+  checker.argumentOrders[nodeId] = order
   return Some(ordered)
 }
 
@@ -745,6 +806,12 @@ function shapeMismatch(
       }
       return true
     }
+    Type.TAsyncGenerator(patternElement, _, _, _) => {
+      if (actual is Type.TAsyncGenerator(actualElement, _, _, _)) {
+        return shapeMismatch(checker, patternElement, actualElement, parameters)
+      }
+      return true
+    }
     Type.TAsync(patternValue) => {
       if (actual is Type.TAsync(actualValue)) {
         return shapeMismatch(checker, patternValue, actualValue, parameters)
@@ -825,12 +892,14 @@ function checkGenericCall<W: Walker>(
   pos: Pos,
   funcIndex: int,
   arguments: Array<Arg>,
+  passedParameters: Array<Param>,
   want: Option<Type>,
 ): Type from checker uses alloc {
   // Inside a generic body the call can stay open; each instance resolves it again.
+  // passedParameters are the parameters the arguments are written for.
   const info = copy(checker.functions[funcIndex])
   const typeParameters = copy(info.typeParameters)
-  const parameters = copy(info.declaration.parameters)
+  const parameters = copy(passedParameters)
   let bindings: Map<int, Type> = Map {}
   if (checker.callTypeArguments[nodeId] is Some(written)) {
     if (Arrays.length(written) > 0) {
@@ -876,6 +945,13 @@ function checkGenericCall<W: Walker>(
     if (index < Arrays.length(parameters)) {
       const argType = getArgumentType(checker, arguments[index])
       unify(checker, checker.paramTypes[parameters[index].id], argType, mutable bindings)
+      bindThreadVoid(
+        checker,
+        info.module,
+        checker.paramTypes[parameters[index].id],
+        argType,
+        mutable bindings,
+      )
     }
   }
 
@@ -919,7 +995,7 @@ function checkGenericCall<W: Walker>(
   }
   // A parameter inferred as void from an Async<void> must not stand for a value.
   let signature = [copy(info.result)]
-  for (const parameter of Arrays.values(parameters)) {
+  for (const parameter of Arrays.values(info.declaration.parameters)) {
     Arrays.push(mutable signature, copy(checker.paramTypes[parameter.id]))
   }
   if (
@@ -1290,24 +1366,29 @@ function checkDistinctCall<W: Walker>(
   }
   const unwrap = findUnwrapName(checker, distinctIndex)
 
-  // Only from and the unwrap function exist; from is private to the module
-  // of an opaque type.
+  // Only from, the unwrap function and, with a `requires` list, check exist; from
+  // and check are private to the module of an opaque type.
   const isFrom = name == "from"
-  if (isFrom) {
+  const isCheck = name == "check" && info.refined
+  if (isFrom || isCheck) {
     if (info.opaque && info.module != checker.scopes[checker.current].path) {
       reportError(
         mutable checker,
         calleePos,
         "E0321",
-        `${info.name}.from is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`,
+        `${info.name}.${name} is not available outside module ${quoteGo(info.module)}: ${info.name} is an opaque distinct type`,
       )
     }
   } else if (name != unwrap && !(name == HIDDEN_UNWRAP && isInShapeToValue(checker))) {
+    let functions = `from and ${unwrap}`
+    if (info.refined) {
+      functions = `from, check and ${unwrap}`
+    }
     reportError(
       mutable checker,
       calleePos,
       "E0322",
-      `${info.name} has no function ${quoteGo(name)}; a distinct type has from and ${unwrap}`,
+      `${info.name} has no function ${quoteGo(name)}; a distinct type has ${functions}`,
     )
     checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
@@ -1326,9 +1407,13 @@ function checkDistinctCall<W: Walker>(
   // from wraps a base value; the unwrap function unwraps a distinct one.
   const value = arguments[0].value
   const valuePos = getExpressionPos(value)
-  if (isFrom) {
+  if (isFrom || isCheck) {
     const valueType = checkExpression(mutable checker, walker, value, Some(base))
     expectType(mutable checker, valuePos, Some(base), valueType)
+    if (isCheck) {
+      return copy(findCheckType(mutable checker, distinctIndex))
+    }
+    proveRefinedFrom(mutable checker, distinctIndex, value)
     return distinctType
   }
   const valueType = checkExpression(mutable checker, walker, value, Some(distinctType))

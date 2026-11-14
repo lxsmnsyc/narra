@@ -1,0 +1,94 @@
+// The checks of `for await (const x of stream)` (D110 items 2 and 6).
+// checkFor in stmts.nra calls checkForAwaitPlace and findStreamElement for a
+// loop with `await`, and reportPlainStreamLoop for a `for ... of` over a
+// stream. The rest of the loop (binding, destructuring, labels, borrows) is
+// the `for ... of` path. The emitter is emitforawait.nra.
+import { Pos, Expr } from "narrac/ast"
+import { Type } from "narrac/types"
+import { Checker, reportError, typeString, getExpressionPos, noteAsyncUse } from "narrac/check"
+import { makePreludeEnum } from "narrac/stdcheckhelp"
+
+export function checkForAwaitPlace(mutable checker: Checker, pos: Pos) uses alloc {
+  // The message names where the loop stands, as for an `await`.
+  noteAsyncUse(mutable checker)
+  if (checker.asyncBody) {
+    return
+  }
+  let place = "outside an async body"
+  if (checker.generator) {
+    place = "in a function* body that is not async"
+  } else if (checker.bodies[checker.body].arrowDepth > 0) {
+    place = "in an arrow function that is not async"
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E1122",
+    `for await is allowed only in an async function, an async arrow, an async block or an async generator, not ${place}`,
+  )
+}
+
+export function findStreamElement(
+  mutable checker: Checker,
+  iterable: Expr,
+  iterableType: Type,
+): Type from iterableType uses alloc {
+  // The element of the AsyncGenerator<T>. The emitter reads each step as an
+  // Option<T>, so that instance must exist.
+  if (iterableType is Type.TAsyncGenerator(element, _, _, _)) {
+    makePreludeEnum(mutable checker, "Option", [element])
+    return element
+  }
+  if (iterableType == Type.TVoid) {
+    return Type.TVoid
+  }
+  const pos = getExpressionPos(iterable)
+  const text = typeString(checker, iterableType)
+  if (iterableType is Type.TGenerator(_, _, _, _, _)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1123",
+      `for await reads an AsyncGenerator<T>, found ${text}; read a Generator<T> with \`for (const x of g)\`, which works in an async body`,
+    )
+  } else if (iterableType is Type.TArray(Type.TAsync(_))) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1123",
+      `for await reads an AsyncGenerator<T>, found ${text}; loop with \`for (const handle of handles)\` and \`await handle\` in the body`,
+    )
+  } else {
+    reportError(
+      mutable checker,
+      pos,
+      "E1123",
+      `for await reads an AsyncGenerator<T>, found ${text}`,
+    )
+  }
+  return Type.TVoid
+}
+
+export function reportPlainStreamLoop(
+  mutable checker: Checker,
+  iterable: Expr,
+  iterableType: Type,
+) uses alloc {
+  const text = typeString(checker, iterableType)
+  reportError(
+    mutable checker,
+    getExpressionPos(iterable),
+    "E1124",
+    `for ... of cannot read ${text}, whose values may wait; write \`for await (const x of stream)\` in an async body`,
+  )
+}
+
+export function reportMutableStreamLoop(mutable checker: Checker, pos: Pos) uses alloc {
+  // The loop is then checked as `for await (const ...)`.
+  reportError(
+    mutable checker,
+    pos,
+    "E1105",
+    "`for await (mutable ...)` is not allowed: a stream's values are not elements to change in place; write `for await (const x of stream)`",
+  )
+}

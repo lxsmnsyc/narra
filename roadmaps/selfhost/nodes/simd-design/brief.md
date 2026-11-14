@@ -1,7 +1,7 @@
 ---
 id: simd-design
 title: "Design: SIMD vector types"
-status: todo
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 142467
 owns:
   - roadmaps/selfhost/nodes/simd/**
   - roadmaps/selfhost/nodes/simd-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D112, diag E1250-E1269]
+reserves: [decision D112]
 provides: []
 depends_on: []
 ---

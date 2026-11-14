@@ -1,7 +1,7 @@
 ---
 id: feature-review
 title: "Feature review: what to remove, what to adopt"
-status: todo
+status: done
 priority: should
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 270006
 owns:
   - roadmaps/selfhost/debate/feature-review/**
   - roadmaps/selfhost/nodes/feature-review/**

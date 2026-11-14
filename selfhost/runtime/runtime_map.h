@@ -25,12 +25,12 @@ static @M@* @M@_new(int64_t n) {
   return @M@_alloc(cap);
 }
 static void @M@_retain(@M@* m) {
-  m->rc++;
+  NARRA_RC_RETAIN(m->rc);
   NARRA_COPY_SHARED(m);
 }
 static void @M@_release(@M@* m) {
   NARRA_COPY_DROP(m);
-  if (--m->rc == 0) {
+  if (NARRA_RC_RELEASE(m->rc)) {
     for (int64_t i = 0; i < m->used; i++) {
       if (m->alive[i]) { @REL_KEY_I@ @REL_VAL_I@ }
     }
@@ -56,7 +56,7 @@ static int64_t @M@_lookup(@M@* m, @K@ k) {
 }
 // Returns a map the caller owns alone, copying it when it is shared.
 static @M@* @M@_unique(@M@* m) {
-  if (m->rc == 1) return m;
+  if (!NARRA_RC_UNSHARE(m->rc)) return m;
   NARRA_COPY_WRITE(m, 2);
   @M@* c = @M@_alloc(m->cap);
   memcpy(c->keys, m->keys, sizeof(@K@) * (size_t)m->used);
@@ -69,8 +69,7 @@ static @M@* @M@_unique(@M@* m) {
     if (c->alive[i]) { @RET_KEY_C@ @RET_VAL_C@ }
   }
   NARRA_COPY_WRITTEN();
-  NARRA_COPY_DROP(m);
-  m->rc--;
+  @M@_release(m);
   return c;
 }
 // Moves the live entries to the front of arrays of capacity cap.

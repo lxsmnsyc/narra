@@ -1,0 +1,52 @@
+// Dropping the last copy of a stream parked at a yield frees its frame and
+// what the body holds there: an array, a string and a task handle are
+// released, and the leak check passes. So do a stream that never started and
+// one that has ended.
+import * as Async from "std/async"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+async function later(value: int): int {
+  await Async.idle()
+  return value
+}
+
+async function* holder(label: string): AsyncGenerator<string> uses alloc {
+  let items: Array<string> = []
+  Arrays.push(mutable items, `${label} item`)
+  const task = later(Arrays.length(items))
+  yield `${label} holds ${Int.toString(Arrays.length(items))}`
+  Arrays.push(mutable items, "never")
+  yield `${label} got ${Int.toString(await task)}`
+}
+
+async function readOne(label: string): string uses alloc {
+  const stream = holder(label)
+  const first = await Async.next(stream)
+  if (first is Some(value)) {
+    return value
+  }
+  return "None"
+}
+
+async function readAll(label: string): int uses alloc {
+  const stream = holder(label)
+  let count = 0
+  while (true) {
+    const next = await Async.next(stream)
+    if (next is None) {
+      return count
+    }
+    count += 1
+  }
+  return count
+}
+
+export async function run(_args: Array<string>): int {
+  print(await readOne("parked"))
+  const _unread = holder("unread")
+  print(`ended after ${Int.toString(await readAll("ended"))} values`)
+  await Async.idle()
+  print("done")
+  return 0
+}

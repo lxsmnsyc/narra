@@ -1,0 +1,335 @@
+// The vector types of std/simd (D112): twenty fixed types, ten lane types at 16
+// and 32 bytes. A vector is a plain value with no reference count, written
+// `TVector(lane, count)`. The names are visible in a module that imports
+// std/simd, as Ptr is with std/ptr. The std/simd calls are checked in
+// stdsimd.nra and emitted in emitsimd.nra.
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Pos, TypeExpr } from "narrac/ast"
+import { Type, findLaneSize, formatVectorName, isUnsignedInteger } from "narrac/types"
+import { Checker, internComposite, reportError, typeString } from "narrac/check"
+
+export const SIMD_MODULE = "std/simd"
+
+const LANE_TYPES = [
+  Type.TI8,
+  Type.TU8,
+  Type.TI16,
+  Type.TU16,
+  Type.TI32,
+  Type.TU32,
+  Type.TInt,
+  Type.TU64,
+  Type.TF32,
+  Type.TF64,
+]
+
+// The lane counts of the 128-bit types, in the order of LANE_TYPES; 256 bits doubles them.
+const LANE_COUNTS = [16, 16, 8, 8, 4, 4, 2, 2, 4, 2]
+
+export function listVectorTypes(): Array<Type> uses alloc {
+  // Every lane type at every width, 128-bit types first.
+  let types: Array<Type> = []
+  for (const factor of Arrays.values([1, 2])) {
+    for (const i of Ranges.upTo(Arrays.length(LANE_TYPES))) {
+      Arrays.push(mutable types, Type.TVector(LANE_TYPES[i], LANE_COUNTS[i] * factor))
+    }
+  }
+  return types
+}
+
+export function findVectorType(name: string): Option<Type> uses alloc {
+  for (const vector of Arrays.values(listVectorTypes())) {
+    if (vector is Type.TVector(lane, count)) {
+      if (formatVectorName(lane, count) == name) {
+        return Some(vector)
+      }
+    }
+  }
+  return None
+}
+
+export function findVectorFor(lane: Type, count: int): Option<Type> uses alloc {
+  // The vector type with count lanes of lane, if the table has one.
+  for (const vector of Arrays.values(listVectorTypes())) {
+    if (vector == Type.TVector(lane, count)) {
+      return Some(vector)
+    }
+  }
+  return None
+}
+
+export function isVectorName(name: string): bool {
+  // A quick test before the lookups: F32x4 to U8x32 are 4 to 6 bytes and start with F, I or U.
+  const length = Str.length(name)
+  if (length < 4 || length > 6) {
+    return false
+  }
+  const first = Str.byteAt(name, 0)
+  return (first == 70 || first == 73 || first == 85) && Str.contains(name, "x")
+}
+
+export function importsSimd(checker: Checker): bool uses alloc {
+  // The vector names are types only in a module that imports std/simd.
+  const scope = checker.scopes[checker.current]
+  for (const moduleEntry of Maps.entries(scope.modules)) {
+    const #[_, path] = moduleEntry
+    if (path == SIMD_MODULE) {
+      return true
+    }
+  }
+  for (const importEntry of Maps.entries(scope.imported)) {
+    const #[_, index] = importEntry
+    if (checker.registry.functions[index].module == SIMD_MODULE) {
+      return true
+    }
+  }
+  return false
+}
+
+function markSimdAliasUsed(mutable checker: Checker) uses alloc {
+  // A vector type name uses the std/simd import, so its alias is not E0946.
+  const scope = checker.current
+  for (const moduleEntry of Maps.entries(copy(checker.scopes[scope].modules))) {
+    const #[alias, path] = moduleEntry
+    if (path == SIMD_MODULE && checker.scopes[scope].facts.referenced[alias] is None) {
+      checker.scopes[scope].facts.referenced[alias] = true
+    }
+  }
+}
+
+export function resolveVectorType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+): Option<Type> uses alloc {
+  // A vector name in a module that imports std/simd; the caller has ruled out user types.
+  if (!importsSimd(checker)) {
+    return None
+  }
+  const found = findVectorType(typeExpr.name)
+  if (found is Some(vector)) {
+    if (Arrays.length(typeExpr.arguments) > 0) {
+      reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
+    }
+    markSimdAliasUsed(mutable checker)
+    return Some(internComposite(mutable checker, vector))
+  }
+  return None
+}
+
+export function isVector(type: Type): bool {
+  return type is Type.TVector(_, _)
+}
+
+export function isFloatVector(type: Type): bool {
+  if (type is Type.TVector(lane, _)) {
+    return lane == Type.TF32 || lane == Type.TF64
+  }
+  return false
+}
+
+export function isIntegerVector(type: Type): bool {
+  return isVector(type) && !isFloatVector(type)
+}
+
+export function isUnsignedVector(type: Type): bool {
+  if (type is Type.TVector(lane, _)) {
+    return isUnsignedInteger(lane)
+  }
+  return false
+}
+
+export function findUnsignedTwin(vector: Type): Type from vector uses alloc {
+  // The unsigned vector of the same shape, through which signed lanes wrap.
+  if (vector is Type.TVector(lane, count)) {
+    const unsigned = match (lane) {
+      Type.TI8 => Type.TU8
+      Type.TI16 => Type.TU16
+      Type.TI32 => Type.TU32
+      Type.TInt => Type.TU64
+      _ => lane
+    }
+    return Type.TVector(unsigned, count)
+  }
+  return vector
+}
+
+export function findMaskType(vector: Type): Type from vector uses alloc {
+  // The signed integer vector of the same lane width and count: lanes of -1 or 0.
+  if (vector is Type.TVector(lane, count)) {
+    const signed = match (lane) {
+      Type.TU8 => Type.TI8
+      Type.TU16 => Type.TI16
+      Type.TU32 | Type.TF32 => Type.TI32
+      Type.TU64 | Type.TF64 => Type.TInt
+      _ => lane
+    }
+    return Type.TVector(signed, count)
+  }
+  return vector
+}
+
+export function formatVectorId(lane: Type, count: int): string uses alloc {
+  // The C name of a vector type without the narra_ prefix: f32x4, i64x2, u8x16.
+  const kind = match (lane) {
+    Type.TF32 | Type.TF64 => "f"
+    Type.TU8 | Type.TU16 | Type.TU32 | Type.TU64 => "u"
+    _ => "i"
+  }
+  return `${kind}${Int.toString(findLaneSize(lane) * 8)}x${Int.toString(count)}`
+}
+
+const COMPARISON_OPERATORS = ["<", "<=", ">", ">="]
+const COMPARISON_FUNCTIONS = [
+  "Simd.less",
+  "Simd.lessOrEqual",
+  "Simd.greater",
+  "Simd.greaterOrEqual",
+]
+
+export function checkVectorOperator(
+  mutable checker: Checker,
+  pos: Pos,
+  operator: string,
+  leftType: Type,
+  rightType: Type,
+): Type uses alloc {
+  // Operators work lane by lane on two vectors of one type (D112).
+  const leftText = typeString(checker, leftType)
+  const rightText = typeString(checker, rightType)
+  const comparison = findComparison(operator)
+  if (leftType != rightType) {
+    if (leftType == Type.TVoid || rightType == Type.TVoid) {
+      // The unknown side was reported where it is written.
+    } else if (isVector(leftType) && isVector(rightType)) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1251",
+        `${operator} needs two vectors of the same type, found ${leftText} and ${rightText}`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        pos,
+        "E1251",
+        `${operator} needs two vectors of the same type, found ${leftText} and ${rightText}; make a vector of the scalar with Simd.splat(...)`,
+      )
+    }
+    if (operator == "==" || operator == "!=" || comparison >= 0) {
+      return Type.TBool
+    }
+    if (isVector(leftType)) {
+      return copy(leftType)
+    }
+    return copy(rightType)
+  }
+  if (operator == "==" || operator == "!=") {
+    return Type.TBool
+  }
+  if (comparison >= 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1250",
+      `${operator} is not defined on ${leftText}; compare the lanes with ${COMPARISON_FUNCTIONS[comparison]}`,
+    )
+    return Type.TBool
+  }
+  if (operator == "/" && isFloatVector(leftType)) {
+    return copy(leftType)
+  }
+  if (operator == "/" || operator == "%") {
+    reportError(
+      mutable checker,
+      pos,
+      "E1250",
+      `${operator} is not defined on ${leftText}: no SIMD instruction divides integer lanes; read the lanes with v[i] and divide them one at a time`,
+    )
+  } else if (operator == "<<" || operator == ">>") {
+    let shift = "Simd.shiftLeft"
+    if (operator == ">>") {
+      shift = "Simd.shiftRight"
+    }
+    reportError(
+      mutable checker,
+      pos,
+      "E1250",
+      `${operator} is not defined on ${leftText}; shift the lanes with ${shift}`,
+    )
+  } else if (operator == "&" || operator == "|" || operator == "^") {
+    if (isFloatVector(leftType)) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1250",
+        `${operator} is not defined on ${leftText}, whose lanes are floats; it takes integer vectors`,
+      )
+    }
+  } else if (operator != "+" && operator != "-" && operator != "*") {
+    reportError(mutable checker, pos, "E0219", `unknown operator ${operator}`)
+  }
+  return copy(leftType)
+}
+
+function findComparison(operator: string): int {
+  for (const i of Ranges.upTo(Arrays.length(COMPARISON_OPERATORS))) {
+    if (COMPARISON_OPERATORS[i] == operator) {
+      return i
+    }
+  }
+  return -1
+}
+
+export function checkVectorUnary(
+  mutable checker: Checker,
+  pos: Pos,
+  operator: string,
+  operandType: Type,
+) uses alloc {
+  // Unary - takes signed and float vectors, ~ integer vectors.
+  const text = typeString(checker, operandType)
+  if (operator == "-" && isUnsignedVector(operandType)) {
+    reportError(mutable checker, pos, "E0296", `- cannot negate ${text}, which is unsigned`)
+  } else if (operator == "~" && isFloatVector(operandType)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1250",
+      `~ is not defined on ${text}, whose lanes are floats; it takes integer vectors`,
+    )
+  }
+}
+
+export function reportLaneCount(
+  mutable checker: Checker,
+  pos: Pos,
+  vector: Type,
+  count: int,
+) uses alloc {
+  // A literal gives every lane.
+  if (vector is Type.TVector(_, lanes)) {
+    if (lanes != count) {
+      const text = typeString(checker, vector)
+      reportError(
+        mutable checker,
+        pos,
+        "E1253",
+        `${text} needs ${Int.toString(lanes)} lanes, found ${Int.toString(count)}`,
+      )
+    }
+  }
+}
+
+export function reportLaneWrite(mutable checker: Checker, pos: Pos, vector: Type) uses alloc {
+  const text = typeString(checker, vector)
+  reportError(
+    mutable checker,
+    pos,
+    "E1252",
+    `a lane of ${text} cannot be assigned, since a vector is a value; write \`v = Simd.withLane(v, i, x)\``,
+  )
+}

@@ -5,6 +5,9 @@
 #include <time.h>
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 
 typedef struct narra_test_case {
   const char* name;
@@ -57,60 +60,99 @@ static const char* narra_test_opt(const char* a) {
   return a[1] == '-' ? a + 2 : a + 1;
 }
 
-// While a child runs, SIGTERM, SIGINT and SIGHUP are passed on to it, so
-// killing this process does not orphan the child. The signals are blocked from
-// before the fork until the child pid is stored.
-static volatile sig_atomic_t narra_runner_child = 0;
+// While a call runs, SIGTERM, SIGINT and SIGHUP are passed on to its child, so
+// killing this process does not orphan the child. Several threads may call at
+// once: a count of active calls (under a mutex) installs the handlers for the
+// first call and restores them after the last, and each call owns a slot in a
+// fixed array of child pids that the handler walks with plain atomic loads.
+// A slot holds -1 from the claim until the pid is stored; a signal that
+// arrives in between is remembered in the pending array and sent on attach.
+#define narra_runner_SLOTS 64
+static pthread_mutex_t narra_runner_lock = PTHREAD_MUTEX_INITIALIZER;
+static int narra_runner_active = 0;
+static struct sigaction narra_runner_saved[3];
+static _Atomic int narra_runner_pids[narra_runner_SLOTS];
+static _Atomic int narra_runner_pending[narra_runner_SLOTS];
 static volatile sig_atomic_t narra_runner_caught = 0;
 static const int narra_runner_signals[3] = {SIGTERM, SIGINT, SIGHUP};
 
 typedef struct narra_runner_guard {
   sigset_t mask;
-  struct sigaction actions[3];
+  int slot;
 } narra_runner_guard;
 
 static void narra_runner_forward(int signal_number) {
   narra_runner_caught = signal_number;
-  pid_t child = (pid_t)narra_runner_child;
-  if (child > 0) kill(child, signal_number);
+  for (int i = 0; i < narra_runner_SLOTS; i++) {
+    if (atomic_load(&narra_runner_pids[i]) == 0) continue;
+    atomic_store(&narra_runner_pending[i], signal_number);
+    int child = atomic_load(&narra_runner_pids[i]);
+    if (child > 0) kill((pid_t)child, signal_number);
+  }
 }
 
 static void narra_runner_begin(narra_runner_guard* guard) {
   sigset_t set;
   sigemptyset(&set);
   for (int i = 0; i < 3; i++) sigaddset(&set, narra_runner_signals[i]);
-  sigprocmask(SIG_BLOCK, &set, &guard->mask);
-  struct sigaction action;
-  memset(&action, 0, sizeof action);
-  action.sa_handler = narra_runner_forward;
-  sigemptyset(&action.sa_mask);
-  for (int i = 0; i < 3; i++) {
-    // A signal that was ignored on entry (a background job, nohup) stays ignored.
-    sigaction(narra_runner_signals[i], NULL, &guard->actions[i]);
-    if (guard->actions[i].sa_handler != SIG_IGN) sigaction(narra_runner_signals[i], &action, NULL);
+  pthread_sigmask(SIG_BLOCK, &set, &guard->mask);
+  // Claim a slot; wait for one when all are taken.
+  guard->slot = -1;
+  while (guard->slot < 0) {
+    for (int i = 0; i < narra_runner_SLOTS; i++) {
+      int expected = 0;
+      if (atomic_compare_exchange_strong(&narra_runner_pids[i], &expected, -1)) {
+        atomic_store(&narra_runner_pending[i], 0);
+        guard->slot = i;
+        break;
+      }
+    }
+    if (guard->slot < 0) sched_yield();
   }
+  pthread_mutex_lock(&narra_runner_lock);
+  if (narra_runner_active++ == 0) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = narra_runner_forward;
+    sigemptyset(&action.sa_mask);
+    for (int i = 0; i < 3; i++) {
+      // A signal that was ignored on entry (a background job, nohup) stays ignored.
+      sigaction(narra_runner_signals[i], NULL, &narra_runner_saved[i]);
+      if (narra_runner_saved[i].sa_handler != SIG_IGN) sigaction(narra_runner_signals[i], &action, NULL);
+    }
+  }
+  pthread_mutex_unlock(&narra_runner_lock);
 }
 
+// The child takes no lock: the saved handlers do not change while a call is active.
 static void narra_runner_restore_child(narra_runner_guard* guard) {
-  for (int i = 0; i < 3; i++) sigaction(narra_runner_signals[i], &guard->actions[i], NULL);
-  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+  for (int i = 0; i < 3; i++) sigaction(narra_runner_signals[i], &narra_runner_saved[i], NULL);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
 }
 
 static void narra_runner_attach(narra_runner_guard* guard, pid_t pid) {
-  narra_runner_child = (sig_atomic_t)pid;
-  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+  atomic_store(&narra_runner_pids[guard->slot], (int)pid);
+  int missed = atomic_load(&narra_runner_pending[guard->slot]);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
+  if (missed) kill(pid, missed);
 }
 
+// Frees the slot with the signals still blocked, restores the old handlers
+// after the last call, then restores the old mask, so no signal reaches a
+// reaped pid.
 static void narra_runner_detach(narra_runner_guard* guard) {
   sigset_t set;
   sigemptyset(&set);
   for (int i = 0; i < 3; i++) sigaddset(&set, narra_runner_signals[i]);
-  sigprocmask(SIG_BLOCK, &set, NULL);
-  narra_runner_child = 0;
-  for (int i = 0; i < 3; i++) sigaction(narra_runner_signals[i], &guard->actions[i], NULL);
-  sigprocmask(SIG_SETMASK, &guard->mask, NULL);
+  pthread_sigmask(SIG_BLOCK, &set, NULL);
+  atomic_store(&narra_runner_pids[guard->slot], 0);
+  pthread_mutex_lock(&narra_runner_lock);
+  if (--narra_runner_active == 0) {
+    for (int i = 0; i < 3; i++) sigaction(narra_runner_signals[i], &narra_runner_saved[i], NULL);
+  }
+  pthread_mutex_unlock(&narra_runner_lock);
+  pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
 }
-
 // narra_test_run returns the exit code of the run.
 static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
   const char* filter = NULL;

@@ -7,6 +7,7 @@
 // qualifiedType resolves `Alias.Name` through the module scopes
 // (selfhost-check-imports, scopes.nra).
 import { importsPointers, resolvePointerType } from "narrac/unsafecode"
+import { isVectorName, resolveVectorType } from "narrac/simdtypes"
 import { splitString } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -42,6 +43,7 @@ import {
 } from "narrac/check"
 import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/generics"
 import { sourceScope, exported } from "narrac/scopes"
+import { checkAtomicType } from "narrac/threadcheck"
 import {
   rejectConstantType,
   resolveConstantArgument,
@@ -88,7 +90,8 @@ export function resolveSignature(
     if (funcDecl.isAsync && report) {
       checkAsyncParameter(mutable checker, funcDecl, param)
     }
-    if (!funcDecl.generator || !report) {
+    // An async generator's parameters follow the async rules (D110 item 3).
+    if (!funcDecl.generator || funcDecl.isAsync || !report) {
       continue
     }
     let isFunc = false
@@ -169,6 +172,9 @@ function resolveGeneratorResult(
   funcIndex: int,
   report: bool,
 ): Type from checker uses alloc {
+  if (funcDecl.isAsync && funcDecl.generator) {
+    return resolveStreamResult(mutable checker, funcDecl, funcIndex, report)
+  }
   if (funcDecl.isAsync) {
     // An async function declares the value of its task; a call gives Async<T>.
     const value = resolveOpt(mutable checker, funcDecl.result)
@@ -185,6 +191,22 @@ function resolveGeneratorResult(
     valid =
       resultType.name == "Generator" && Arrays.length(resultType.arguments) == 1 ||
         resultType.name == "Coroutine" && Arrays.length(resultType.arguments) == 2
+  }
+  let writtenName = ""
+  if (funcDecl.result is Some(streamResult)) {
+    writtenName = streamResult.name
+  }
+  if (!valid && report) {
+    // AsyncGenerator<T> needs an async body (D110 item 3).
+    if (writtenName == "AsyncGenerator" && !userType(checker, "AsyncGenerator")) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1113",
+        `generator ${funcDecl.name} cannot return AsyncGenerator<T>, which needs an async body; declare it as \`async function* ${funcDecl.name}\``,
+      )
+      return Type.TVoid
+    }
   }
   if (!valid) {
     if (report) {
@@ -213,6 +235,73 @@ function resolveGeneratorResult(
     return resolved
   }
   return Type.TVoid
+}
+
+function resolveStreamResult(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+  report: bool,
+): Type from checker uses alloc {
+  // An async function* declares AsyncGenerator<T> (D110 item 3). A private one
+  // gets a result type whose effects the effect pass infers, as a function* does.
+  noteAsyncUse(mutable checker)
+  let pos = funcDecl.pos
+  let written = ""
+  if (funcDecl.result is Some(resultType)) {
+    pos = resultType.pos
+    written = resultType.name
+  }
+  if (written != "AsyncGenerator" || userType(checker, "AsyncGenerator")) {
+    if (!report) {
+      return Type.TVoid
+    }
+    if (written == "Generator" && !userType(checker, "Generator")) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1112",
+        `async generator ${funcDecl.name} must declare its return type as AsyncGenerator<T>, not Generator<T>; write AsyncGenerator<T>`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        pos,
+        "E1112",
+        `async generator ${funcDecl.name} must declare its return type as AsyncGenerator<T>`,
+      )
+    }
+    return Type.TVoid
+  }
+  // The parser reads a `uses` list after AsyncGenerator<T> into the type.
+  const resolved = resolveOpt(mutable checker, funcDecl.result)
+  if (resolved is Type.TAsyncGenerator(element, _effects, _binder, _)) {
+    if (!funcDecl.exported) {
+      return Type.TAsyncGenerator(element, [], -1, funcIndex)
+    }
+    return resolved
+  }
+  return Type.TVoid
+}
+
+function resolveStreamType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
+  // AsyncGenerator<T> uses E, a builtin name like Generator (D110 item 1).
+  if (Arrays.length(typeExpr.arguments) != 1) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1114",
+      "AsyncGenerator takes one type argument, the type of the values it yields",
+    )
+    return Type.TVoid
+  }
+  const element = resolveType(mutable checker, typeExpr.arguments[0])
+  noteAsyncUse(mutable checker)
+  const sorted = sortEffects(typeExpr.effects)
+  return copy(Type.TAsyncGenerator(element, sorted, findEffectBinder(checker, sorted), -1))
 }
 
 export function funcResult(
@@ -554,6 +643,9 @@ export function resolveType(
   if (typeExpr.typeofName != "") {
     return resolveTypeof(mutable checker, typeExpr)
   }
+  if (reportEffectArgument(mutable checker, typeExpr.arguments)) {
+    return Type.TVoid
+  }
   if (typeExpr.isFunc) {
     // A parameter whose type is void (T bound by an Async<void>) takes no argument.
     let parameters: Array<Type> = []
@@ -602,6 +694,11 @@ export function resolveType(
     const pointee = resolveType(mutable checker, typeExpr.arguments[0])
     return resolvePointerType(mutable checker, typeExpr.pos, pointee)
   }
+  if (isVectorName(typeExpr.name) && !userType(checker, typeExpr.name)) {
+    if (resolveVectorType(mutable checker, typeExpr) is Some(vector)) {
+      return vector
+    }
+  }
   if (typeExpr.name == "Box" && !userType(checker, "Box")) {
     if (argCount != 1) {
       reportError(mutable checker, typeExpr.pos, "E0110", "Box takes one type argument")
@@ -630,6 +727,9 @@ export function resolveType(
     }
     const element = resolveType(mutable checker, typeExpr.arguments[0])
     return makeGenerator(checker, element, Type.TVoid, typeExpr.effects)
+  }
+  if (typeExpr.name == "AsyncGenerator" && !userType(checker, "AsyncGenerator")) {
+    return resolveStreamType(mutable checker, typeExpr)
   }
   if (typeExpr.name == "Async" && !userType(checker, "Async")) {
     if (argCount != 1) {
@@ -734,6 +834,7 @@ export function resolveType(
     const parameters = copy(checker.generics[generic].parameters)
     const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
     noteTypeBounds(mutable checker, typeExpr.pos, generic, arguments)
+    checkAtomicType(mutable checker, typeExpr.pos, generic, arguments)
     return instantiate(mutable checker, generic, arguments)
   }
   const named = copy(lookupType(checker, typeExpr.name))
@@ -756,8 +857,78 @@ export function resolveType(
   if (named is Some(namedType)) {
     return namedType
   }
-  reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
+  reportUnknownType(mutable checker, typeExpr)
   return Type.TVoid
+}
+
+export function reportUnknownType(mutable checker: Checker, typeExpr: TypeExpr) uses alloc {
+  if (isEffectName(checker, typeExpr)) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1241",
+      `\`${typeExpr.name}\` is an effect, not a type`,
+    )
+    return
+  }
+  reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
+}
+
+function reportEffectArgument(
+  mutable checker: Checker,
+  arguments: Array<TypeExpr>,
+): bool uses alloc {
+  // `Map<Generator<int> uses io, alloc>`: the `,` ended the generator's list, so the
+  // effect after it stands where a type belongs.
+  for (const index of Ranges.between(1, Arrays.length(arguments))) {
+    const argument = arguments[index]
+    if (isEffectName(checker, argument)) {
+      const before = findTrailingEffects(arguments[index - 1])
+      if (Arrays.length(before) > 0) {
+        let effects = copy(before)
+        Arrays.push(mutable effects, argument.name)
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E1241",
+          `\`${argument.name}\` is an effect, not a type; a type takes several effects in parentheses: write \`uses (${Str.join(effects, ", ")})\``,
+        )
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function findTrailingEffects(typeExpr: TypeExpr): Array<string> from typeExpr {
+  // The `uses` list a type ends with: its own, or that of a function type's result.
+  if (Arrays.length(typeExpr.effects) > 0) {
+    return typeExpr.effects
+  }
+  if (typeExpr.isFunc) {
+    if (typeExpr.result is Some(resultType)) {
+      return findTrailingEffects(resultType.value)
+    }
+  }
+  return []
+}
+
+function isEffectName(checker: Checker, typeExpr: TypeExpr): bool {
+  // `io`, `alloc`, `unsafe` or an effect variable of the function being checked, written alone.
+  if (
+    typeExpr.isFunc ||
+      typeExpr.isTuple ||
+      typeExpr.typeofName != "" ||
+      Arrays.length(typeExpr.arguments) > 0 ||
+      lookupType(checker, typeExpr.name) is Some(_)
+  ) {
+    return false
+  }
+  const name = typeExpr.name
+  if (name == "io" || name == "alloc" || name == "unsafe") {
+    return true
+  }
+  return findEffectBinder(checker, [name]) >= 0
 }
 
 export function resolveTypeArguments(
@@ -833,6 +1004,7 @@ function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from 
       const parameters = copy(checker.generics[generic].parameters)
       const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
       noteTypeBounds(mutable checker, typeExpr.pos, generic, arguments)
+      checkAtomicType(mutable checker, typeExpr.pos, generic, arguments)
       return instantiate(mutable checker, generic, arguments)
     }
   }
@@ -1356,6 +1528,13 @@ export function substitute(
       const newElement = substitute(mutable checker, element, bindings)
       const newInput = substitute(mutable checker, input, bindings)
       return copy(Type.TGenerator(newElement, effects, binder, origin, newInput))
+    }
+    Type.TAsyncGenerator(element, effects, binder, origin) => {
+      if (!containsTypeParameter(checker, element)) {
+        return copy(type)
+      }
+      const newElement = substitute(mutable checker, element, bindings)
+      return copy(Type.TAsyncGenerator(newElement, effects, binder, origin))
     }
     Type.TMap(key, value) => {
       const newKey = substitute(mutable checker, key, bindings)

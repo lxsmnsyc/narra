@@ -1,0 +1,47 @@
+// yield* passes on every value of another async generator, one per step of
+// the outer stream, and `yield await f()` yields the value of a task.
+import * as Async from "std/async"
+import * as Time from "std/time"
+import { sleep } from "std/async/time"
+
+async function* inner(label: string): AsyncGenerator<string> uses (io, alloc) {
+  yield `${label} 1`
+  const slept = await sleep(Time.milliseconds(1))
+  if (slept is Err(_)) {
+    return
+  }
+  yield `${label} 2`
+}
+
+async function word(text: string): string uses io, alloc {
+  const slept = await sleep(Time.milliseconds(1))
+  if (slept is Err(_)) {
+    return "cancelled"
+  }
+  return text
+}
+
+async function* outer(): AsyncGenerator<string> uses (io, alloc) {
+  yield "start"
+  yield* inner("inner")
+  yield await word("awaited")
+  const again = inner("again")
+  yield* again
+  // The inner stream has ended, so a second yield* gives nothing.
+  yield* again
+  yield "end"
+}
+
+export async function run(_args: Array<string>): int {
+  const stream = outer()
+  while (true) {
+    const next = await Async.next(stream)
+    if (next is Some(value)) {
+      print(value)
+    } else {
+      print("None")
+      break
+    }
+  }
+  return 0
+}

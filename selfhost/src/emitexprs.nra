@@ -56,6 +56,8 @@ import {
   noteReference,
   useHelper,
   findDeclaredLocal,
+  declareUnset,
+  retainCode,
 } from "narrac/emitstate"
 import * as Decls from "narrac/emitdecls"
 import * as Maps from "narrac/emitmaps"
@@ -77,10 +79,13 @@ import * as Match from "narrac/emitmatch"
 import * as Std from "narrac/emitstd"
 import * as Options from "narrac/emitoptions"
 import * as Fixed from "narrac/emitfixed"
+import * as Simd from "narrac/emitsimd"
 import { emitCopyCall } from "narrac/stdcopy"
+import * as TaggedTemplates from "narrac/taggedtemplates"
 import * as StdHelp from "narrac/stdemithelp"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as ParamDefaults from "narrac/paramdefaults"
 
 const NODE = "selfhost-emit-bodies"
 
@@ -114,6 +119,11 @@ export function emitExpression<W: EmitWalker>(
     Expr.CharLit(_, _, value) => plain(`${Int.toString(Char.code(Str.charAt(value, 0)))}U`)
     Expr.BoolLit(_, _, value) => plain(boolText(value))
     Expr.TemplateLit(_, _, parts) => emitTemplate(walker, mutable emitter, parts)
+    Expr.TemplateParts(nodeId, _, parts) => TaggedTemplates.emitTemplateParts(
+      mutable emitter,
+      nodeId,
+      parts,
+    )
     Expr.Ident(nodeId, _, _) => emitIdent(walker, mutable emitter, expression, nodeId)
     Expr.FieldExpr(nodeId, _, target, name) => emitFieldRead(
       walker,
@@ -411,6 +421,9 @@ function emitIndexRead<W: EmitWalker>(
   if (targetType is Type.TFixedArray(_, _)) {
     return Fixed.emitFixedRead(walker, mutable emitter, target, index)
   }
+  if (targetType is Type.TVector(_, _)) {
+    return Simd.emitLaneRead(walker, mutable emitter, target, index)
+  }
   if (targetType is Type.TArray(element)) {
     const targetCode = EmitWalker.emitExpression(walker, mutable emitter, target)
     const indexCode = EmitWalker.emitExpression(walker, mutable emitter, index)
@@ -446,6 +459,10 @@ function emitUnary<W: EmitWalker>(
   operand: Expr,
 ): Code uses alloc {
   const value = EmitWalker.emitExpression(walker, mutable emitter, operand).text
+  const vectorType = copy(readNodeType(emitter, nodeId))
+  if (vectorType is Type.TVector(_, _)) {
+    return Simd.emitVectorUnary(emitter, operator, vectorType, value)
+  }
   if (operator == "-") {
     const operandType = copy(readNodeType(emitter, nodeId))
     if (operandType == Type.TInt) {
@@ -512,7 +529,8 @@ function isPrimitive(type: Type): bool {
       | Type.TFixedArray(_, _)
       | Type.TBox(_)
       | Type.TMap(_, _)
-      | Type.TFunc(_, _, _, _, _) => false
+      | Type.TFunc(_, _, _, _, _)
+      | Type.TVector(_, _) => false
     _ => true
   }
 }
@@ -576,6 +594,9 @@ export function emitArithmetic(
   leftText: string,
   rightText: string,
 ): Code uses alloc {
+  if (operandType is Type.TVector(_, _)) {
+    return Simd.emitVectorArithmetic(emitter, operator, operandType, leftText, rightText)
+  }
   if (isInteger(operandType)) {
     // A sized integer has its own functions, named with the type.
     let suffix = ""
@@ -621,7 +642,13 @@ function emitCall<W: EmitWalker>(
   const ordered = orderArguments(emitter.checker, nodeId, arguments)
   const ref = readNodeRef(emitter, nodeId)
   return match (ref) {
-    Ref.Distinct(_) => EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+    Ref.Distinct(distinctIndex) => emitDistinctCall(
+      walker,
+      mutable emitter,
+      expression,
+      distinctIndex,
+      arguments,
+    )
     Ref.Constructor(enumIndex, variant) => emitConstructorCall(
       walker,
       mutable emitter,
@@ -645,11 +672,12 @@ function emitCall<W: EmitWalker>(
       ProgramFunc.ImplFunc(block, index),
       ordered,
     )
-    Ref.Function(funcIndex) => emitPlainOrInstanceCall(
+    Ref.Function(funcIndex) => emitDefaultsCall(
       walker,
       mutable emitter,
       nodeId,
       funcIndex,
+      arguments,
       ordered,
     )
     Ref.Unresolved => Dynamic.emitDynamicCall(walker, mutable emitter, expression, ordered)
@@ -812,6 +840,169 @@ function emitConstructorCall<W: EmitWalker>(
   const allocated = Decls.enumAllocation(mutable emitter, enumType, variant, parts)
   const name = ownedTemp(mutable emitter, enumType, allocated.text)
   return Code { text: name, owned: true }
+}
+
+function emitDistinctCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  expression: Expr,
+  distinctIndex: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // from and the unwrap function are their argument; check of a refined type tests it (D116).
+  if (expression is Expr.CallExpr(nodeId, _, Expr.FieldExpr(_, _, _, name), _, _)) {
+    if (name == "check" && emitter.checker.distincts[distinctIndex].refined) {
+      return emitRefinedCheck(walker, mutable emitter, nodeId, distinctIndex, arguments[0].value)
+    }
+  }
+  return EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+}
+
+function emitRefinedCheck<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  distinctIndex: int,
+  argument: Expr,
+): Code uses alloc {
+  const info = copy(emitter.checker.distincts[distinctIndex])
+  let base = Type.TInt
+  if (info.base is Some(declared)) {
+    base = declared
+  }
+  const optionType = copy(readNodeType(emitter, nodeId))
+  // An owned argument is a temporary the statement already releases; Some takes its own reference.
+  const code = EmitWalker.emitExpression(walker, mutable emitter, argument)
+  const value = temp(mutable emitter, base, code.text)
+  // Each item is one test, and its alternatives are joined by `||`.
+  let items: Array<string> = []
+  for (const alternatives of Arrays.values(info.tests)) {
+    let parts: Array<string> = []
+    for (const alternative of Arrays.values(alternatives)) {
+      if (base == Type.TStr) {
+        const text = literal(mutable emitter, alternative.text)
+        Arrays.push(mutable parts, `lstr_eq(${value}, ${text})`)
+      } else {
+        Arrays.push(
+          mutable parts,
+          `${value} ${alternative.operator} ${integerValueCode(alternative.bound)}`,
+        )
+      }
+    }
+    Arrays.push(mutable items, `(${Str.join(parts, " || ")})`)
+  }
+  emitter.tempCount++
+  const optionName = cachedCType(emitter.checker, emitter.typeNames, optionType)
+  const resultName = `t${Int.toString(emitter.tempCount)}`
+  const result = declareUnset(mutable emitter, optionName, resultName)
+  const somePosition = findOptionVariant(emitter, optionType, "Some")
+  const nonePosition = findOptionVariant(emitter, optionType, "None")
+  writeLine(mutable emitter, `if (${Str.join(items, " && ")}) {`)
+  emitter.indent++
+  const retainText = retainCode(emitter, base, value)
+  if (retainText != "") {
+    writeLine(mutable emitter, retainText)
+  }
+  const some = Decls.enumAllocation(mutable emitter, optionType, somePosition, [value])
+  writeLine(mutable emitter, `${result} = ${some.text};`)
+  emitter.indent--
+  writeLine(mutable emitter, "} else {")
+  emitter.indent++
+  const none = Decls.enumAllocation(mutable emitter, optionType, nonePosition, [])
+  writeLine(mutable emitter, `${result} = ${none.text};`)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  // The statement releases the Option at its end.
+  return Code { text: ownedTemp(mutable emitter, optionType, result), owned: true }
+}
+
+function findOptionVariant(emitter: Emitter, optionType: Type, name: string): int {
+  if (underlyingType(emitter, optionType) is Type.TEnum(enumIndex)) {
+    const variants = emitter.checker.enums[enumIndex].variants
+    for (const index of Ranges.between(0, Arrays.length(variants))) {
+      if (variants[index].name == name) {
+        return index
+      }
+    }
+  }
+  return 0
+}
+
+function integerValueCode(value: int): string uses alloc {
+  if (value == -9223372036854775807 - 1) {
+    return "INT64_MIN"
+  }
+  return `INT64_C(${Int.toString(value)})`
+}
+
+function emitDefaultsCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  funcIndex: int,
+  written: Array<Arg>,
+  ordered: Array<Arg>,
+): Code uses alloc {
+  // A call that writes every parameter fills no default, so it skips the copy.
+  if (
+    Arrays.length(written) >=
+      Arrays.length(emitter.checker.functions[funcIndex].declaration.parameters)
+  ) {
+    return emitPlainOrInstanceCall(walker, mutable emitter, nodeId, funcIndex, ordered)
+  }
+  // A left-out parameter takes its default (D115), emitted from the call's
+  // default body and held for the argument list, which emits it in its place.
+  const parameters = copy(emitter.checker.functions[funcIndex].declaration.parameters)
+  const filled = ParamDefaults.findFilledParameters(parameters, written)
+  if (Arrays.length(filled) == 0) {
+    return emitPlainOrInstanceCall(walker, mutable emitter, nodeId, funcIndex, ordered)
+  }
+  // A call nested in an argument can fill the same default, so the outer entry is put back after.
+  let outerEntries: Array<Option<Code>> = []
+  for (const index of Arrays.values(filled)) {
+    if (parameters[index].default is Some(value)) {
+      const valueId = getExpressionId(value)
+      const outer = copy(emitter.heldArguments[valueId])
+      if (outer is Some(entry)) {
+        if (entry.text != "") {
+          emitter.heldPending--
+        }
+      }
+      Arrays.push(mutable outerEntries, outer)
+      emitter.heldArguments[valueId] = plain("")
+      const body = ParamDefaults.findCallDefaultBody(emitter.checker, emitter.body, nodeId, index)
+      if (body < 0) {
+        return unsupportedCode(mutable emitter, "parameter default body")
+      }
+      const callerBody = switchBody(mutable emitter, body)
+      const code = EmitWalker.emitExpression(walker, mutable emitter, value)
+      emitter.body = callerBody
+      emitter.heldArguments[valueId] = code
+      emitter.heldPending++
+    }
+  }
+  const arguments = ParamDefaults.fillArguments(parameters, written)
+  const result = emitPlainOrInstanceCall(walker, mutable emitter, nodeId, funcIndex, arguments)
+  let position = 0
+  for (const index of Arrays.values(filled)) {
+    if (parameters[index].default is Some(value)) {
+      const valueId = getExpressionId(value)
+      if (emitter.heldArguments[valueId] is Some(left)) {
+        if (left.text != "") {
+          emitter.heldPending--
+        }
+      }
+      emitter.heldArguments[valueId] = plain("")
+      if (outerEntries[position] is Some(outer)) {
+        emitter.heldArguments[valueId] = outer
+        if (outer.text != "") {
+          emitter.heldPending++
+        }
+      }
+      position++
+    }
+  }
+  return result
 }
 
 function emitPlainOrInstanceCall<W: EmitWalker>(
@@ -1168,6 +1359,9 @@ function emitArrayLiteral<W: EmitWalker>(
   const arrayType = copy(readNodeType(emitter, nodeId))
   if (arrayType is Type.TFixedArray(_, _)) {
     return Fixed.emitFixedLiteral(walker, mutable emitter, nodeId, elements)
+  }
+  if (arrayType is Type.TVector(_, _)) {
+    return Simd.emitVectorLiteral(walker, mutable emitter, nodeId, elements)
   }
   if (arrayType is Type.TArray(element)) {
     const arrayStruct = containerStruct(emitter, arrayType)

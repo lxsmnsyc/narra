@@ -1,0 +1,124 @@
+// `for await (const x of stream)` in C (D110 items 2 and 4). The loop holds
+// its own reference to the stream (not a copy: copies share one frame) in a
+// frame field. Each turn asks for a step with narra_stream_next, awaits it as
+// emitAwait does, stops at the first step that holds None, and binds x to the
+// value of the Some. The step is released before the body runs; the stream is
+// released when the loop statement ends, and by the usual unwind on `break`,
+// `return` and a labeled exit. The checks are in forawait.nra.
+import * as Int from "std/int"
+import { Expr, Block, Pos } from "narrac/ast"
+import { Type } from "narrac/types"
+import { getExpressionId } from "narrac/check"
+import { cachedCType } from "narrac/cnames"
+import {
+  Emitter,
+  EmitWalker,
+  TempVar,
+  writeLine,
+  ownedTemp,
+  consume,
+  beginStatement,
+  endStatement,
+  pushScope,
+  popScope,
+  addLocal,
+  enterLoop,
+  leaveLoop,
+  emitContinueLabel,
+  emitBreakLabel,
+  readNodeType,
+  localRef,
+  releaseCode,
+  declareLocalVariable,
+  findDeclaredLocal,
+  noteHelper,
+  buildVariantFieldPath,
+} from "narrac/emitstate"
+import { recordLive } from "narrac/emitgenerators"
+import { findStreamOption } from "narrac/emitasyncgenerators"
+import * as Arrays from "std/array"
+
+const ASYNC_MODULE = "std/internal/async"
+
+export function emitForAwait<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  iterable: Expr,
+  body: Block,
+) uses alloc {
+  // nodeId is the for statement's, which declares x.
+  noteHelper(emitter, ASYNC_MODULE)
+  const streamType = copy(readNodeType(emitter, getExpressionId(iterable)))
+  let element = Type.TVoid
+  if (streamType is Type.TAsyncGenerator(streamElement, _, _, _)) {
+    element = copy(streamElement)
+  }
+  const optionType = findStreamOption(emitter.checker, element)
+  const optionName = cachedCType(emitter.checker, emitter.typeNames, optionType)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, iterable)
+  const stream = consume(mutable emitter, code.text, code.owned, streamType)
+  const top = Arrays.length(emitter.frames) - 1
+  Arrays.push(mutable emitter.frames[top], TempVar { name: stream, tempType: streamType })
+  writeLine(mutable emitter, "while (1) {")
+  emitter.indent++
+
+  // The step is a temporary of its own statement, held across the wait.
+  beginStatement(mutable emitter)
+  const stepType = Type.TAsync(copy(optionType))
+  const step = ownedTemp(mutable emitter, stepType, `narra_stream_next(${stream})`)
+  const number = Int.toString(Arrays.length(emitter.liveValues))
+  writeLine(mutable emitter, `if (!${step}->done) {`)
+  emitter.indent++
+  recordLive(mutable emitter)
+  writeLine(mutable emitter, `narra_task_wait(&f->h, ${step});`)
+  writeLine(mutable emitter, `f->h.state = ${number};`)
+  writeLine(mutable emitter, "return;")
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  writeLine(mutable emitter, `narra_resume_${number}:;`)
+  writeLine(mutable emitter, `if (!narra_step_filled(${step})) {`)
+  const releaseStep = releaseCode(emitter, stepType, step)
+  writeLine(mutable emitter, `  ${releaseStep}`)
+  writeLine(mutable emitter, "  break;")
+  writeLine(mutable emitter, "}")
+
+  // x takes its own reference to the value, and the step goes at the end of
+  // its statement.
+  const localIndex = findDeclaredLocal(emitter, nodeId)
+  const declaration = declareLocalVariable(mutable emitter, localIndex)
+  if (!emitter.inFrame) {
+    writeLine(mutable emitter, `${declaration};`)
+  }
+  const variable = localRef(emitter, localIndex)
+  let payload = `(*(${optionName}*)${step}->value)`
+  if (optionType is Type.TEnum(enumIndex)) {
+    for (const variant of Arrays.values(emitter.checker.enums[enumIndex].variants)) {
+      if (variant.name == "Some") {
+        payload = buildVariantFieldPath(
+          emitter,
+          enumIndex,
+          variant.name,
+          variant.fields[0].name,
+          payload,
+        )
+      }
+    }
+  }
+  const value = consume(mutable emitter, payload, false, element)
+  writeLine(mutable emitter, `${variable} = ${value};`)
+  endStatement(mutable emitter)
+
+  enterLoop(mutable emitter, label, pos)
+  pushScope(mutable emitter, true)
+  addLocal(mutable emitter, localIndex)
+  EmitWalker.emitBlockInScope(walker, mutable emitter, body)
+  popScope(mutable emitter)
+  emitContinueLabel(mutable emitter)
+  const info = leaveLoop(mutable emitter)
+  emitter.indent--
+  writeLine(mutable emitter, "}")
+  emitBreakLabel(mutable emitter, info)
+}

@@ -1,0 +1,43 @@
+// A request carries the Sender of its reply channel, as SPEC section 8 says: a
+// server thread answers each request on the channel the request names. The
+// reply channel does not hold the request channel, so nothing leaks.
+import * as Channel from "std/channel"
+import * as Thread from "std/thread"
+import { Sender, Receiver } from "std/channel"
+import * as Int from "std/int"
+
+struct Reply {
+  square: int
+}
+
+struct Request {
+  number: int
+  replyTo: Sender<Reply>
+}
+
+function serve(requests: Receiver<Request>): int uses io, alloc {
+  let served = 0
+  for (const request of Channel.values(requests)) {
+    Channel.send(request.replyTo, Reply { square: request.number * request.number })
+    served++
+  }
+  return served
+}
+
+export function run(_args: Array<string>): int {
+  const #[requestSender, requestReceiver] = Channel.create<Request>(2)
+  const served = Thread.scope((scope) => {
+    const server = Thread.start(scope, () => serve(requestReceiver))
+    for (let number = 1; number <= 5; number++) {
+      const #[replySender, replyReceiver] = Channel.create<Reply>(1)
+      Channel.send(requestSender, Request { number: number, replyTo: replySender })
+      if (Channel.receive(replyReceiver) is Some(reply)) {
+        print(`${Int.toString(number)} squared is ${Int.toString(reply.square)}`)
+      }
+    }
+    Channel.close(requestSender)
+    return Thread.join(server)
+  })
+  print(`served ${Int.toString(served)}`)
+  return 0
+}

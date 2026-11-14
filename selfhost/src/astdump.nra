@@ -1,6 +1,11 @@
 // Prints the syntax tree in the dump format defined at the top of
 // compiler/internal/narra/astdump.go. Keep the two in step: selfhost-front diffs
 // this output against `narra parse`.
+//
+// A tagged template (D114) is a `call` node with the `tagged` flag. Its first
+// argument is a `template-parts` node with one `part line:column raw="..."`
+// line per text part, the source text between the delimiters, so an empty
+// part prints `raw=""`; its second argument is the array of the `${}` values.
 import { repeatString, splitString } from "narrac/textops"
 import * as Int from "std/int"
 import * as Str from "std/string"
@@ -18,6 +23,7 @@ import {
   Stmt,
   Expr,
   Pattern,
+  isTaggedArguments,
 } from "narrac/ast"
 import * as Arrays from "std/array"
 
@@ -192,6 +198,7 @@ function dumpParameters(
       `${formatStringAttr("name", parameter.name)}${formatFlag("mutable", parameter.isMutable)}${formatFlag("escaping", parameter.escaping)}`,
     )
     dumpTypeSlot(mutable builder, depth + 2, "type", parameter.type)
+    dumpExprSlot(mutable builder, depth + 2, "default", parameter.default)
   }
 }
 
@@ -417,6 +424,12 @@ function dumpDecl(mutable builder: StringBuilder, depth: int, declaration: Decl)
       dumpTypeSlot(mutable builder, depth + 1, "base", Some(distinctDecl.base))
       dumpTypesSlot(mutable builder, depth + 1, "implements", "", distinctDecl.implementations)
       dumpTypesSlot(mutable builder, depth + 1, "derives", "", distinctDecl.derived)
+      if (Arrays.length(distinctDecl.refinement) > 0) {
+        writeSlot(mutable builder, depth + 1, "refinement", "")
+        for (const pattern of Arrays.values(distinctDecl.refinement)) {
+          dumpPattern(mutable builder, depth + 2, pattern)
+        }
+      }
     }
     Decl.Alias(aliasDecl) => {
       writeNode(
@@ -530,9 +543,9 @@ function dumpStmt(mutable builder: StringBuilder, depth: int, statement: Stmt) u
       }
       dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
     }
-    Stmt.ForStmt(_, pos, label, name, iterable, body, reference) => {
+    Stmt.ForStmt(_, pos, label, name, iterable, body, reference, awaitPos) => {
       // The `mutable` marker adds ` mutable`, and the entries form its
-      // index name.
+      // index name. `for await` adds ` await`.
       let referenceAttr = ""
       if (reference is Some(marker)) {
         referenceAttr = " mutable"
@@ -545,7 +558,7 @@ function dumpStmt(mutable builder: StringBuilder, depth: int, statement: Stmt) u
         depth,
         "for",
         pos,
-        `${formatStringAttr("name", name)}${referenceAttr}${formatLabelAttr(label)}`,
+        `${formatStringAttr("name", name)}${referenceAttr}${formatFlag("await", awaitPos is Some(_))}${formatLabelAttr(label)}`,
       )
       dumpExprSlot(mutable builder, depth + 1, "iter", Some(iterable))
       dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
@@ -606,6 +619,16 @@ function dumpExpr(mutable builder: StringBuilder, depth: int, expression: Expr) 
         dumpExpr(mutable builder, depth + 1, part)
       }
     }
+    Expr.TemplateParts(_, pos, parts) => {
+      writeNode(mutable builder, depth, "template-parts", pos, "")
+      for (const part of Arrays.values(parts)) {
+        writeLine(
+          mutable builder,
+          depth + 1,
+          `part ${formatPos(part.pos)}${formatStringAttr("raw", part.raw)}`,
+        )
+      }
+    }
     Expr.Ident(_, pos, name) => {
       writeNode(mutable builder, depth, "ident", pos, formatStringAttr("name", name))
     }
@@ -634,7 +657,13 @@ function dumpExpr(mutable builder: StringBuilder, depth: int, expression: Expr) 
       }
     }
     Expr.CallExpr(_, pos, callee, typeArguments, arguments) => {
-      writeNode(mutable builder, depth, "call", pos, "")
+      writeNode(
+        mutable builder,
+        depth,
+        "call",
+        pos,
+        formatFlag("tagged", isTaggedArguments(arguments)),
+      )
       dumpExprSlot(mutable builder, depth + 1, "callee", Some(callee))
       dumpTypesSlot(mutable builder, depth + 1, "typeargs", "", typeArguments)
       if (Arrays.length(arguments) > 0) {

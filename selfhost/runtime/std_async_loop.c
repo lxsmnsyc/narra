@@ -65,7 +65,15 @@ typedef struct narra_loop {
 
 static _Thread_local narra_loop narra_async_loop;
 
+#ifdef NARRA_THREADS
+static void narra_async_exit(void);
+#endif
+
 static void narra_loop_add(narra_task* task) {
+#ifdef NARRA_THREADS
+  // A thread that started a task runs the loop's exit before it ends.
+  __atomic_store_n(&narra_loop_exit_hook, narra_async_exit, __ATOMIC_RELEASE);
+#endif
   narra_task* current = narra_async_loop.current;
   task->cancelled = narra_async_loop.exiting;
   task->started_cancelled = current != NULL && current->cancelled;
@@ -423,6 +431,17 @@ static void narra_loop_cancel_wait(narra_task* task) {
   narra_task* waiter = task;
   narra_task* awaited = task->awaited;
   while (awaited && !awaited->done && !waiter->keeps_inputs) {
+    if (waiter->is_step) {
+      // A pending step passes the cancel to its stream when it is the
+      // stream's only pending step (D110 item 4).
+      narra_stream* stream = (narra_stream*)awaited;
+      narra_step* step = (narra_step*)waiter;
+      bool only = stream->s.first_step == step && step->next_step == NULL;
+      if (!only || !narra_task_mark_cancelled(awaited)) return;
+      waiter = awaited;
+      awaited = awaited->awaited;
+      continue;
+    }
     if (awaited->release == narra_task_release_nothing) {
       narra_loop_cancel_idle(awaited);
       return;
@@ -432,8 +451,9 @@ static void narra_loop_cancel_wait(narra_task* task) {
       return;
     }
     if (!awaited->forwards_cancel) {
-      // A bare task (a race winner) has no wait of its own to end.
-      if (awaited->resume == NULL) return;
+      // A bare task (a race winner) has no wait of its own to end; a step
+      // passes the cancel on to its stream.
+      if (awaited->resume == NULL && !awaited->is_step) return;
       bool alone = awaited->waiters == waiter && waiter->next_waiter == NULL;
       if (!alone || awaited->callbacks != NULL || awaited->observers != 0) return;
       if (!narra_task_mark_cancelled(awaited)) return;

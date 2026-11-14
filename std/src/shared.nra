@@ -1,0 +1,82 @@
+// std/shared: Shared<T>, a value guarded by a lock (SPEC.md section 8, D111 item 4).
+//
+// The functions are those of std/cell plus read. Each call takes the lock,
+// does its work and releases it, so no call can leave the lock held. Copies of
+// a Shared are handles to one value. Every value stored is marked shared
+// first, so copies taken on any thread change its count atomically. A call
+// that reaches a Shared whose lock its own thread holds, from a callback of
+// update or read, stops the program with exit code 101 instead of hanging.
+// Importing this module builds the program in thread mode (D111 item 2).
+
+import * as Boxes from "std/box"
+import * as CellSlot from "std/internal/cell"
+import * as Threads from "std/internal/thread"
+
+// The slot holds Some(value), except inside update while change runs.
+export opaque struct Shared<T> {
+  sync: Sync
+  slot: Box<Option<T>>
+}
+
+// A new Shared holding value. T must be Sendable (E1190).
+export function create<T>(value: T): Shared<T> uses alloc {
+  Threads.share(value)
+  return Shared { sync: Threads.syncChecked(), slot: Boxes.new(Some(value)) }
+}
+
+// Takes the lock, or stops the program with message when this thread holds it already.
+function enter<T>(shared: Shared<T>, message: string) {
+  if (Threads.enter(shared.sync)) {
+    panic(message)
+  }
+}
+
+// The messages of a re-entered Shared, written out so no call allocates.
+const GET_AGAIN = "Shared.get: this thread already holds the lock of this Shared; a callback of Shared.update or Shared.read reached the same Shared"
+const SET_AGAIN = "Shared.set: this thread already holds the lock of this Shared; a callback of Shared.update or Shared.read reached the same Shared"
+const UPDATE_AGAIN = "Shared.update: this thread already holds the lock of this Shared; a callback of Shared.update or Shared.read reached the same Shared"
+const READ_AGAIN = "Shared.read: this thread already holds the lock of this Shared; a callback of Shared.update or Shared.read reached the same Shared"
+
+// A copy of the value: one more reference, taken with the lock held, so a
+// set on another thread cannot free it. Like Cells.get, it shares the value
+// the Shared holds.
+export function get<T>(shared: Shared<T>): T from shared {
+  enter(shared, GET_AGAIN)
+  const value = Threads.peek(shared.slot)
+  Threads.unlock(shared.sync)
+  return value
+}
+
+// Replaces the value; the old one is dropped with the lock held.
+export function set<T>(shared: Shared<T>, value: T) {
+  Threads.share(value)
+  enter(shared, SET_AGAIN)
+  CellSlot.store(shared.slot, Some(value))
+  Threads.unlock(shared.sync)
+}
+
+// Stores change(value). The value moves out of the slot while change runs,
+// so the Shared holds no reference to it then; a value only the Shared held
+// is plain again, not shared.
+export function update<T, effect E>(shared: Shared<T>, change: (value: T) => T uses E) uses E {
+  enter(shared, UPDATE_AGAIN)
+  const current = Threads.take(shared.slot)
+  if (current is Some(value)) {
+    const next = change(value)
+    Threads.share(next)
+    CellSlot.store(shared.slot, Some(next))
+  }
+  Threads.unlock(shared.sync)
+}
+
+// Gives look(value), with the lock held while look runs. The result may be a
+// part of the value; it holds its own reference, taken before the lock is released.
+export function read<T, U, effect E>(
+  shared: Shared<T>,
+  look: (value: T) => U from value uses E,
+): U from shared uses E {
+  enter(shared, READ_AGAIN)
+  const result = look(Threads.result(shared.slot))
+  Threads.unlock(shared.sync)
+  return result
+}

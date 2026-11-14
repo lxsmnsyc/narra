@@ -127,6 +127,35 @@ export function run(args: Array<string>): int {
 
 A condition compares one integer parameter with a constant: `==`, `!=`, `<`, `<=`, `>` or `>=`, and several of them joined by `&&` or written on more `requires` lines. A function with `requires` cannot be passed around as a value, because a call through the value could not be checked.
 
+### Arguments a caller may leave out
+
+A parameter can have a default, written after `=`. A call that leaves the argument out gets the default:
+
+```narra
+import * as Int from "std/int"
+
+function price(cents: int, quantity: int = 1, discount: int = 0): int {
+  return cents * quantity - discount
+}
+
+export function run(args: Array<string>): int {
+  print(Int.toString(price(250)))
+  print(Int.toString(price(250, 4)))
+  print(Int.toString(price(250, discount: 50)))
+  return 0
+}
+```
+
+```text
+250
+1000
+200
+```
+
+The parameters with a default come last. To skip one in the middle, name the later argument, as `discount: 50` does above. A default is a constant: a number, a string, `true` or `false`, `None`, `[]`, or a constructor such as `Some(1)` with constant arguments. It cannot call a function or read another parameter, so a call does nothing that its text does not show. A `mutable` parameter has no default, and neither has an arrow function's parameter.
+
+A function passed as a value takes every argument. `const total = price` has the type `(cents: int, quantity: int, discount: int) => int`, and a call through `total` passes all three.
+
 ## A function that calls itself
 
 The shop gives change in coins of 50, 25, 10 and 5 cents. In how many different ways can it pay out 100 cents?

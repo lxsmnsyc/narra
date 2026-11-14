@@ -1,7 +1,7 @@
 ---
 id: uses-list-design
 title: "Design: effect lists inside type lists"
-status: todo
+status: done
 priority: must
 type: spike
 story: batch-13
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: true
 added: 2026-11-13
-spent:
+spent: 110308
 owns:
   - roadmaps/selfhost/nodes/uses-list-syntax/**
   - roadmaps/selfhost/nodes/uses-list-design/**
@@ -28,7 +28,7 @@ shared:
   - DECISIONS.md
   - SPEC.md
   - selfhost/src/diagnostics.nra
-reserves: [decision D117, diag E1240-E1249]
+reserves: [decision D117]
 provides: []
 depends_on: []
 ---

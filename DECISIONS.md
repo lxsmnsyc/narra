@@ -1444,7 +1444,7 @@ Amended 2026-11-13 (maintainer): cancel passes down the await chain.
 
 ## D110. Async generators: `async function*`, `AsyncGenerator<T>`, `Async.next` and `for await`
 
-Approved by the maintainer, 2026-11-13, with every recommendation of the spike (spike async-generators-design, 2026-11-13). Answers the D95 "Async exit" bullet. Builds on D109 and D19, amends D31.
+Approved by the maintainer, 2026-11-13, with every recommendation of the spike (spike async-generators-design, 2026-11-13). Built by nodes async-generators, 2026-11-13, and for-await, 2026-11-14. Answers the D95 "Async exit" bullet. Builds on D109 and D19, amends D31.
 
 1. **Type and protocol.** `async function* lines(connection: Connection): AsyncGenerator<string> uses io, alloc` declares an async generator. `AsyncGenerator<T>` is a builtin type name like `Generator` and `Async` (no import; a module type of that name hides it), with one type argument and the effects of the body on the type, as D78 gives `Generator<T>`. One step by hand is `Async.next(stream): Async<Option<T>>` in `std/async`: `Some(value)` for each yield, `None` once the body has ended. `for await` (item 2) is built on the same step.
    - **Reason for a handle per step.** The body awaits, so a step cannot give its value at once. A step that is an ordinary `Async<Option<T>>` works with everything D109 has: `await`, `Async.race` against a `sleep` for a timeout, `Async.then`, `Async.peek`, the unused-handle rule (E1103) and the cancel walk.
@@ -1485,7 +1485,7 @@ Approved by the maintainer, 2026-11-13, with every recommendation of the spike (
 - **Rejected: no async generators** (the current E1107). HTTP bodies and line protocols would be callbacks, or an `Async<Array<T>>` that holds the whole body in memory.
 ## D111. How threads are built: Sendable, tagged counts in a thread mode, per-thread heaps, codes E1190-E1199 and E1400-E1419
 
-Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Spike threads-design, 2026-11-13. It settles how the build nodes make SPEC section 8 "Threads", "Channels" and "Shared state" work on today's runtime, and it amends SPEC section 6 "Values across threads". Measurements are in `roadmaps/selfhost/nodes/threads-design/log.md`.
+Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Built by nodes threads-process, 2026-11-13, and threads, threads-check, threads-channels and threads-shared, 2026-11-14. Spike threads-design, 2026-11-13. It settles how the build nodes make SPEC section 8 "Threads", "Channels" and "Shared state" work on today's runtime, and it amends SPEC section 6 "Values across threads". Measurements are in `roadmaps/selfhost/nodes/threads-design/log.md`.
 
 1. **Which values cross a thread: an automatic trait `Sendable`.** The compiler implements `Sendable` for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the socket handles of `std/async/net` (the builtin `Handle`). It is built like the automatic `Equatable` and `Hashable` (SPEC section 4): structs, enums, tuples, distinct types and the generic containers (`Array`, `Map`, `FixedArray`, `Box`, `Option`, `Result`) are `Sendable` when their parts are. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`; their own type argument must be.
    - **Where the checker asks for it:** each capture of a thread function, the result type of a thread function, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create`. A failure is E1190; the message names the type and the part that is not `Sendable` (for example `Cell<int>` in field `counter`), and the hint for a `Cell` names `Shared`.
@@ -1540,6 +1540,7 @@ Status: Approved by the maintainer, 2026-11-13, with every recommendation of the
 
 Built: `Shared` and `Atomic` (node threads-shared, 2026-11-14). Amendments from the build:
 
+- **`AsyncGenerator<T>` is not `Sendable`.** Item 1 does not list it. An async generator keeps a frame that waits on its own thread's loop, like an `Async<T>`, so the checker rejects it with E1190 and SPEC section 6 lists it.
 - **A `Shared` re-entered on its own thread stops the program.** The lock of a `Shared` is an error-checking mutex. A call that reaches a `Shared` whose lock its own thread holds, from a callback of `Shared.update` or `Shared.read` (`Shared.read(cell, (v) => v + Shared.get(cell))`), stops the program with exit code 101 and a message that names the call: `Shared.get: this thread already holds the lock of this Shared; ...`. It is one more runtime stop beside the list of D92, as D109's stop for a cycle of awaits is; the other choice is a hang. Two threads that take two `Shared` locks in opposite orders still deadlock without a report.
 - **`Atomic<T>` with a type parameter is E1411 by design.** No bound says "an integer type", so generic code cannot write `Atomic<T>`; only `std/atomic` itself does. E1412 is `Atomic.add` on an `Atomic<bool>`.
 - `Shared.get` is `from shared`, like `Cells.get`, and `look` of `Shared.read` is `(value: T) => U from value`, with a result `from shared`.
@@ -1613,7 +1614,7 @@ Status: Approved by the maintainer, 2026-11-13, with every recommendation of the
 **Built** (node simd, 2026-11-14): the types, literals, operators, lane reads, `==`, hashing, `Show`, `Simd.splat`, `Simd.fromFixed`, `Simd.toFixed` and `Simd.withLane`, as decided. A vector does not derive `Shape`, as a `FixedArray` does not (D84): `derives Shape` on a struct with a vector field reports that the vector has no Value form (orchestrator, 2026-11-14). A template does not take a vector; `Show.show` prints the lanes. `!` on a vector is the "expected bool" error it is on a number. A non-vector argument of a `std/simd` function is E1256. Node simd-library built the comparisons, `select`, `any`, `all`, `load`, `store`, `shuffle`, `sum`, `min`, `max`, `abs` and the shifts, and `bench/dot`. `Simd.abs` on a float vector clears the sign bit, so `-0.0` gives `0.0` and a NaN stays a NaN.
 ## D114. Tagged templates call a named function with the parts and an array of the values
 
-Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Spike tagged-templates-design, 2026-11-13. Evidence at commit b23bbd4f: `roadmaps/selfhost/nodes/tagged-templates-design/log.md`.
+Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Built by node tagged-templates, 2026-11-14. Spike tagged-templates-design, 2026-11-13. Evidence at commit b23bbd4f: `roadmaps/selfhost/nodes/tagged-templates-design/log.md`.
 
 Decision: `` tag`a${x}b${y}c` `` is the call `tag(["a", "b", "c"], [x, y])`, written at the use site, so D12 holds: the tag is a function the code names, and no other call is added. The parts array always has one more item than the values array; an empty part is `""`.
 
@@ -1637,7 +1638,7 @@ Decision: `` tag`a${x}b${y}c` `` is the call `tag(["a", "b", "c"], [x, y])`, wri
 - **Rejected: a new expression kind with children** (`TaggedTemplate(tag, parts, values)`). Each of the 33 template arms would need a second arm for it, and a walker that misses one skips the holes without an error.
 ## D115. Constant defaults on trailing parameters of declared functions
 
-Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike.
+Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Built by node parameter-defaults, 2026-11-14.
 
 Decision: a parameter of a declared function can have a default, `function render(node: Node, depth: int = 0, indent: string = "  ")`. A call may leave it out, by passing fewer positional arguments or by naming the later ones. Amends D12, which ruled out optional parameters; D87 stays as it is. The rules:
 
@@ -1721,7 +1722,7 @@ Evidence, on `feat/batch-13` (b23bbd4f): `selfhost/src` and `std/src` declare no
 **Built** (node refinement-types, 2026-11-13). As decided, with these details. A top-level `const` and a struct field default may now call any distinct type's `from` (they were E0192 and E0106 for every distinct type; part 2 assumed they worked). After `&&` the list may go on on the next line only before a comparison or a literal; a second `requires` (on the same line or the next) is E1220. E0321 names the hidden function (`Port.check is not available outside module ...`), and E0322 lists `check` only for a refined type. A `!= c` item with `c != 0` adds no fact. The check emits the items as one C condition with `lstr_eq` for string literals; the `@const` evaluator runs the same tests. Opaque refined types print no `requires` list in `narrac query` signatures, as they print no base.
 ## D117. A `uses` list inside a type takes one effect or a list in parentheses
 
-Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike.
+Status: Approved by the maintainer, 2026-11-13, with every recommendation of the spike. Built by node uses-list-syntax, 2026-11-14.
 
 Decision: in a type (a function type or a `Generator<T>` or `Coroutine<In, Out>` type), `uses` takes one effect name, or a comma list in parentheses: `() => int uses io`, `() => int uses (io, alloc)`, `Map<Generator<int> uses (io, alloc), int>`. A function declaration's own list, after its parameters and result type, stays a bare comma list: `function f(): int uses io, alloc {`. Parentheses are not valid there. The bare comma list in a type is removed, with no migration path. A `,` after a type's one effect always ends the type, so a trailing comma after `g: Generator<int> uses io` in a parameter list is valid.
 

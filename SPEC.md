@@ -953,7 +953,7 @@ const text = Label.label(price)
 | `Ordered` | `compare`, sorting | By `derives` or `implement` |
 | `Show` | Text for logs, tests and errors | By `derives` or `implement` |
 | `Shape` | Conversion to and from the `Value` tree of `std/shape`, for serialization | By the compiler for prelude types, by `derives` or `implement` for a struct or enum |
-| `Sendable` | Values that may cross threads (section 6) | Automatically for types without functions, `Cell`, `Async`, generators and the other types section 6 lists; never by `implement` |
+| `Sendable` | Values that may cross threads (section 6) | Automatically for types without functions, `Cell`, `Async`, generators, async generators and the other types section 6 lists; never by `implement` |
 
 - A type can replace the automatic `Equatable` or `Hashable` with its own `implement` block.
 - Primitive types, `string`, `Array<T>`, `Map<K, V>`, `Option<T>` and `Result<T, E>` implement the standard traits when their contents do.
@@ -1367,7 +1367,7 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Values across threads
 
-- **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
+- **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `AsyncGenerator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
 - A value captured by a thread function, sent through a channel or stored in a `Shared` is marked shared. Shared values use atomic reference counts. Unshared values use plain counts. Only a program that imports `std/thread` (or a module built on it) has shared values; any other program uses plain counts throughout.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
 - Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
@@ -1799,7 +1799,7 @@ export enum Color {
   - The expression may have the `alloc` effect and no other (E1034), because the first force can happen anywhere. `Lazies.force(table)` has the effects of the expression, so a caller of it lists `alloc` when the expression allocates.
   - A lazy value that forces itself, directly or through the functions it calls and the lazy values it forces, is an error (E1035). A function named as a value counts as called.
   - A lazy value that no code forces is not built and has no code in the program. A panic in the expression happens at the first force.
-  - Forcing is not thread safe yet: the ready flag is the once guard of one thread, as for other constants that are not scalars (D61). Threads must add the lock.
+  - Forcing is thread safe. In a program with threads the first force builds the value under a lock, as for other constants that are not scalars (D61, D111).
 - Modules have no initialization code. Program startup runs nothing before the entry function.
 
 ## 11. Code generation

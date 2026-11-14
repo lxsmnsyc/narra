@@ -1,7 +1,7 @@
 ---
 id: coroutine-send
 title: "Co.send for two-way generators"
-status: todo
+status: done
 priority: must
 type: feature
 story: batch-15
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 111837
 owns:
   - roadmaps/selfhost/nodes/coroutine-send/**
   - testdata/coroutine*

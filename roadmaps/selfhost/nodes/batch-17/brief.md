@@ -46,6 +46,8 @@ Maintainer request, 2026-11-16: the site is "still pretty boring". Redesign it a
 - query-hovers: one narrac query that returns every hover type and diagnostic of a file.
 - narra-twoslash: hover popups and inline errors on the site, from query-hovers.
 - curl-installer: release assets install.sh and install.ps1, every prebuilt target, docs/install.md led by the one-liner.
+- docs-search: a search palette over the guide, install and spec, as on the maintainer's other sites.
+- drop-npm-narrac: remove narrac's npm packages.
 - first-release (gate): push the first `v*` tag, so the one-liner works. The maintainer decides.
 
 ## Acceptance

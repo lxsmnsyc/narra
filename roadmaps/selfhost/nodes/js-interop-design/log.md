@@ -11,3 +11,9 @@
 - Judge measurements after round 1: a fresh instance per edit is 93 to 325 ms in V8 (J15). narrac.wasm runs with wasm exceptions turned off (J14). Warm clang in wasm takes 0.47 s on hello and 2.9 s on regex, and the runtime header is about 0.4 s of that (J18). J18 rejected the opponent's precompiled-header alternative.
 - Stopped at `debate.py status` = ask-user: Q1 (Run in the page or on a server) and Q2 (esbuild form or oxc form) go to the maintainer. D123, debate.md and outcome.md give the recommended answers.
 - No compiler code changed, so `sh scripts/test.sh` was not run.
+
+## 2026-11-15, after the maintainer's answers
+
+- Q1: park the REPL. Q2: "ideally it should be either", so both the command form and the Node-API form, each with native packages per platform and a wasm fallback.
+- Proof T3 (scratch `/private/tmp/claude-501/js-interop-design/t3`, about 10 minutes, nothing installed): hand-written Node-API glue around emitted C builds into a 51 KB `.node`, and a call takes 0.18 µs. See `debate/js-interop/evidence/T3-node-addon.md`.
+- D123 rewritten for both forms. The ledger records the answers as user rulings (P7 rejected, P1 upheld, REPL claims open). outcome.md has the revised children, the amendments for the C chain briefs, and two new questions (emnapi, synchronous exports).

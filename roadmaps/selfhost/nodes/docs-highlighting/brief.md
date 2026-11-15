@@ -1,7 +1,7 @@
 ---
 id: docs-highlighting
 title: "Consistent highlighting in the docs"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-17

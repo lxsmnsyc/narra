@@ -354,7 +354,7 @@ To use a fork or to pin a version, add an `[overrides]` table to the `narra.toml
 json = { git = "https://example.com/my-fork/narra-json", version = "1.2.1" }
 ```
 
-Narra trusts the folder where it keeps downloaded packages. The default is `.cache/narra` in your home folder, and `NARRA_CACHE` names another one. When Narra downloads a package, it computes the hash of the files once and writes it next to the copy. Each build compares that hash with `narra.lock`. It does not read the files again, so a file that you or another program changes inside the cache afterwards is built as it is now. If a package contains a symbolic link, Narra follows it. Keep the cache folder writable only by you, and delete a package's folder in it if you suspect a change. The next build downloads it again and compares it with the lock.
+Narra trusts the folder where it keeps downloaded packages. The default is `.cache/narra` in your home folder, and `NARRA_CACHE` names another one. When Narra downloads a package, it computes the hash of the files once and writes it next to the copy. Each build compares that hash with `narra.lock`. It does not read the files again, so a file that you or another program changes inside the cache afterwards is built as it is now. If a package contains a symbolic link, Narra follows it. Keep the cache folder writable only by you, and make a package's folder writable with `chmod -R u+w` and delete it if you suspect a change. The next build downloads it again and compares it with the lock.
 
 The editor support (`narrac lsp`) never downloads anything and never changes `narra.lock`. It reads the lock and the cache. Run `narrac build` once after adding a dependency so the editor can find it.
 

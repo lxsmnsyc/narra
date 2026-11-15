@@ -1,7 +1,7 @@
 ---
 id: guide-tools
 title: "Guide chapter: the narrac tools"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 212416
 owns:
   - roadmaps/selfhost/nodes/guide-tools/**
   - docs/guide/12-tools.md

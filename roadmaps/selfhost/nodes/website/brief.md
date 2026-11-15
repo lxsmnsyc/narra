@@ -50,7 +50,7 @@ A static website that publishes the language guide, the installation guide and `
 
 - Generator: brumate, in `website/`.
 - Hosting: Vercel, with `website` as the root directory and only `main` deployed (`website/vercel.json`, from the repo-setup template). The maintainer imports the repo on Vercel; agents do not.
-- Highlighter: twinkleplop at build time with `editors/textmate/narra.tmLanguage.json`, so pages ship no highlighting script. If twinkleplop cannot read a TextMate grammar, say so in the log and stop before writing a second grammar.
+- Highlighter: twinkleplop at build time, so pages ship no highlighting script. twinkleplop does not read TextMate grammars: languages are `@twinkleplop/*` packages written with `define_grammar` from `@twinkleplop/core/compile` (a state machine of `match`, `keyword`, `enter` and `leave` rules; see `@twinkleplop/json` and `@twinkleplop/typescript` in `/Users/alexis/Documents/GitHub/brumate/website/node_modules`). Write a Narra language in `website/` in that format, with the same token classes as `editors/textmate/narra.tmLanguage.json`, and check it over every guide and SPEC sample.
 
 ## Acceptance
 

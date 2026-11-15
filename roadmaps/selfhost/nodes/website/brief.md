@@ -1,7 +1,7 @@
 ---
 id: website
 title: Narra website
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-05
-spent:
+spent: 293405
 owns:
   - roadmaps/selfhost/nodes/website/**
   - website/**

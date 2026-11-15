@@ -1,7 +1,7 @@
 ---
 id: deps-fetch
 title: "Fetch a dependency version from git into the cache"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

@@ -40,6 +40,7 @@ import * as Process from "std/process"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Random from "std/random"
 import { Pos } from "narrac/syntax/ast"
 import { quoteGo } from "narrac/syntax/parser"
 import * as Modules from "narrac/driver/modules"
@@ -636,15 +637,39 @@ function findSearchDirectories(package: Package): Array<string> uses alloc {
 // --- the C compiler ---------------------------------------------------------
 
 function makeTempDirectory(): Result<string, string> uses io, alloc {
-  const made = Process.run("mktemp", ["-d"])
-  if (made is Err(message)) {
-    return Err(message)
+  // The folder comes from the environment, as mktemp would pick it, but the
+  // compiler makes it itself: a Windows compiler started from a POSIX shell
+  // would get a path from mktemp that it cannot open.
+  const parent = findTempParent()
+  let random = Random.fromSystem()
+  for (const _ of Ranges.upTo(100)) {
+    let number = 0
+    if (Random.nextInt(mutable random, 0, 1 << 60) is Some(drawn)) {
+      number = drawn
+    }
+    const directory = Path.join(parent, `narrac-${Int.toHex(number)}`)
+    if (Fs.exists(directory)) {
+      continue
+    }
+    const created = Fs.createDir(directory)
+    if (created is Err(message)) {
+      return Err(`cannot create a temporary folder in ${parent}: ${message}`)
+    }
+    return Ok(directory)
   }
-  const #[code, output, errorOutput] = made.value
-  if (code != 0) {
-    return Err(`mktemp: ${Str.trim(errorOutput)}`)
+  return Err(`cannot create a temporary folder in ${parent}`)
+}
+
+function findTempParent(): string uses io, alloc {
+  // TMPDIR first, then the Windows names, then the POSIX default.
+  for (const name of ["TMPDIR", "TEMP", "TMP"]) {
+    if (Env.get(name) is Some(value)) {
+      if (value != "") {
+        return value
+      }
+    }
   }
-  return Ok(Str.trim(output))
+  return "/tmp"
 }
 
 function chooseNamedTarget(

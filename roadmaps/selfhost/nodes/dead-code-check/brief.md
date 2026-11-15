@@ -1,7 +1,7 @@
 ---
 id: dead-code-check
 title: "Unreachable statements are a compile error"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 279923
 owns:
   - roadmaps/selfhost/nodes/dead-code-check/**
   - selfhost/src/deadcode.nra

@@ -241,7 +241,7 @@ static wchar_t* narra_proc_candidate(const wchar_t* directory, size_t directory_
   return NULL;
 }
 
-// Tries name as written when it has an extension, then name with .exe, then
+// Tries name as written when it ends in .exe, .com, .bat or .cmd, then name with .exe, then
 // with .com, inside one directory. Only these two extensions run directly;
 // .bat and .cmd need the shell and are not guessed.
 static wchar_t* narra_proc_probe(const wchar_t* directory, size_t directory_length, const wchar_t* name, bool* memory) {
@@ -249,7 +249,10 @@ static wchar_t* narra_proc_probe(const wchar_t* directory, size_t directory_leng
   for (const wchar_t* c = name; *c; c++) {
     if (*c == L'\\' || *c == L'/' || *c == L':') base = c + 1;
   }
-  bool has_extension = wcschr(base, L'.') != NULL;
+  // Only a program extension counts: a name such as python3.11 is not tried as written, so a
+  // file of that name in an earlier directory does not hide python3.11.exe.
+  const wchar_t* dot = wcsrchr(base, L'.');
+  bool has_extension = dot != NULL && (_wcsicmp(dot, L".exe") == 0 || _wcsicmp(dot, L".com") == 0 || _wcsicmp(dot, L".bat") == 0 || _wcsicmp(dot, L".cmd") == 0);
   wchar_t* found = NULL;
   if (has_extension) found = narra_proc_candidate(directory, directory_length, name, L"", memory);
   if (!found && !*memory) found = narra_proc_candidate(directory, directory_length, name, L".exe", memory);

@@ -1,7 +1,7 @@
 "use strict";
 
 // One row per package that holds a native narrac. `target` is the name `narrac targets` prints
-// for the row. A platform with no row, Windows included, runs the wasm package.
+// for the row. A platform with no row runs the wasm package.
 const NATIVE_ROWS = [
   {
     platform: "darwin",
@@ -45,7 +45,18 @@ const NATIVE_ROWS = [
     target: "Linux-X86_64-musl",
     package: "narrac-linux-x64-musl",
   },
+  {
+    platform: "win32",
+    arch: "x64",
+    libc: "",
+    target: "Windows-X86_64",
+    package: "narrac-win32-x64",
+  },
 ];
+
+function findExecutableName(row) {
+  return row.platform === "win32" ? "narrac.exe" : "narrac";
+}
 
 function detectLibc(platform) {
   // Only Linux has two C libraries; the Node report says which one this process runs on.
@@ -79,4 +90,4 @@ function findHostTarget() {
   return row ? row.target : undefined;
 }
 
-module.exports = { NATIVE_ROWS, detectLibc, findNativeRow, findHostRow, findHostTarget };
+module.exports = { NATIVE_ROWS, findExecutableName, detectLibc, findNativeRow, findHostRow, findHostTarget };

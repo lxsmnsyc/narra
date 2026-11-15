@@ -2,7 +2,7 @@
 
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
-const { findHostRow, findHostTarget } = require("./platform.js");
+const { findExecutableName, findHostRow, findHostTarget } = require("./platform.js");
 const { runWasi } = require("./wasi.js");
 
 let cachedModule;
@@ -14,7 +14,7 @@ function findRunner() {
     const row = findHostRow();
     if (row) {
       try {
-        return { kind: "native", path: require.resolve(`${row.package}/bin/narrac`) };
+        return { kind: "native", path: require.resolve(`${row.package}/bin/${findExecutableName(row)}`) };
       } catch (error) {
         // A missing package means optional dependencies were skipped: use wasm.
         if (error.code !== "MODULE_NOT_FOUND") {

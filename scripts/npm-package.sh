@@ -124,6 +124,7 @@ for row in ${NARRA_NPM_ROWS:-}; do
     Linux-X86_64) package=narrac-linux-x64 ;;
     Linux-Arm64-musl) package=narrac-linux-arm64-musl ;;
     Linux-X86_64-musl) package=narrac-linux-x64-musl ;;
+    Windows-X86_64) package=narrac-win32-x64 ;;
     *)
       echo "npm-package: no package for row $row" >&2
       exit 2
@@ -142,7 +143,7 @@ for source in "$root"/npm/narrac "$root"/npm/narrac-*; do
   [ -f "$source/package.json" ] || continue
   name=$(basename "$source")
   case "$name" in
-    narrac-darwin-* | narrac-linux-*)
+    narrac-darwin-* | narrac-linux-* | narrac-win32-*)
       # A platform package ships only when this run has its binary.
       [ -f "$work/bin/$name" ] || continue
       mkdir -p "$out/package/$name/bin"
@@ -158,6 +159,10 @@ for source in "$root"/npm/narrac "$root"/npm/narrac-*; do
     narrac-darwin-* | narrac-linux-*)
       cp "$work/bin/$name" "$out/package/$name/bin/narrac"
       chmod 755 "$out/package/$name/bin/narrac"
+      ;;
+    narrac-win32-*)
+      cp "$work/bin/$name" "$out/package/$name/bin/narrac.exe"
+      chmod 755 "$out/package/$name/bin/narrac.exe"
       ;;
     narrac-wasm)
       cp "$work/narrac.wasm" "$out/package/$name/narrac.wasm"

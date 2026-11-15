@@ -1919,6 +1919,106 @@ Decision (maintainer, 2026-11-14), after the benchmark of node inline-benchmark 
 - **What stays.** `map`, `andThen` and `orElse` in `std/option` keep their signatures and results. An arrow passed to them takes the non-escaping closure path: its environment is on the caller's stack and costs no allocation (D46 and SPEC section 2). An `@inline` function used as a value already had an ordinary C function.
 - **Limit of the evidence.** The benchmark used small bodies that clang inlines by itself. A callee that clang refuses to inline could differ; no such function existed.
 
+## D122. C libraries: `@export(C)` functions, copied strings, a guarded entry per export, shared and static output
+
+Decision (spike c-abi-design, 2026-11-15). It settles C interop step 2 of SPEC section 9 and is the base of D123 (C libraries, Node addons, wasm glue). Narra follows Go's `-buildmode=c-shared` and Rust's `cdylib` with `extern "C"`: the library is a flag of the build, the manifest has no library table, and the language gets one attribute. Two proofs were run on an Apple M2 with zig 0.17.1, wasmtime 50.0.1 and Node 26.12.1, load average 8 to 10. Scratch files: `/private/tmp/claude-501/c-abi-design/`.
+
+| measured | result |
+| --- | --- |
+| panic stopped by a `setjmp` guard around an export body, using the real `runtime.h` (`guard.c`), 1000 calls, every odd call panics | process alive, 500 messages returned, the next call returns the right value; 1000 allocations (2 per panic) stay live |
+| cost of the guard on macOS, 10 million calls (`cost.c`) | `setjmp` 315 ns per call, `_setjmp` 6.8 ns per call |
+| reactor module `zig cc -target wasm32-wasi -mexec-model=reactor` with a guarded export, `narra_alloc` and `narra_free` (`reactor.c`) | exports are `memory`, `_initialize` and the four named functions, no imports; Node 26 and `wasmtime run -W exceptions=y` both run it; after a caught panic the next call works |
+| the same reactor built with the legacy exception model (the default of zig 0.17.1) | wasmtime 50 refuses it: `legacy_exceptions feature required for try instruction`. `-mllvm -wasm-use-legacy-eh=false` fixes it |
+| link of a program that uses `setjmp` on wasm with zig 0.17.1 and `-lsetjmp` | `undefined symbol: __c_longjmp` until the program defines the tag with `__asm__(".globl __c_longjmp\n.tagtype __c_longjmp i32\n__c_longjmp:\n")` |
+
+1. **Ownership: strings and bytes are copied, both ways.** An exported signature may hold `string` and `bytes`. No other reference-counted type crosses in the first build (`Array`, `Map`, `Box`, structs, enums, `Option`, function values: E1621).
+   - **In.** The C side passes a pointer and a length that the call only borrows. The wrapper copies them into a new Narra value, calls the function, and releases the copy when the call ends. A `string` is checked for UTF-8 first (`narra_bytes_utf8_error`, `std_bytes.c`). Bad UTF-8 is `Err` in the checked entry (item 3) and a panic in the plain entry. A borrowed view would dangle as soon as the function stores its parameter, so no view is passed.
+   - **Out.** A `string` or `bytes` result is a `narra_buffer { uint8_t* data; size_t length; }` filled through an out parameter. `data` is a `malloc` copy, followed by a zero byte that `length` does not count, and is `NULL` when `length` is 0. The host frees it only with `narra_<library>_free(data)`. Memory outside the Narra heap lets any host thread free it and keeps it out of the leak count.
+   - **Support functions** in every library: `void* narra_<library>_alloc(size_t)`, `void narra_<library>_free(void*)` (accepts `NULL`) and `void narra_<library>_shutdown(void)`. They carry the library name so two Narra libraries in one process do not meet at one symbol. `shutdown` is optional: it releases the constants and tasks as `main` does at exit and runs the leak check under `NARRA_CHECK_LEAKS`. No export may be called after it.
+   - **Opaque handles are designed, not built.** A struct that holds strings or arrays leaves the library only as `Opaque<T>` (`std/opaque`, later node c-handles): a counted reference to a Narra value. In C it is a pointer to an incomplete struct named for `T`. Returning one gives the host one count. An exported parameter of that type only borrows it. The header gets `narra_<library>_retain_<T>` and `narra_<library>_release_<T>`. `Ptr<T>` is not used for this, since SPEC section 9 makes a `Ptr` to a counted value E0998.
+   - **The C shape.** The types written in the signature decide the C types through the table below, and the header shows the result. The wrapper does only what the table lists. This is not a hidden conversion: `@export(C)` is the written request for it, as `#[napi]` in napi-rs and `#[wasm_bindgen]` are. Go passes `GoString` by value and Rust passes only C types. Narra has to take `string` and `bytes` because D123 item 3 converts them in the glue.
+
+   | Narra | C parameter | C result |
+   | --- | --- | --- |
+   | `i8` to `i32`, `u8` to `u32`, `int`, `i64`, `u64`, `f32`, `f64`, `bool` | `int8_t` to `uint64_t` (`int` is `int64_t`), `float`, `double`, `bool` | the same type |
+   | `Ptr<T>` | `T*` | `T*` |
+   | `string`, `bytes` | `const uint8_t* name, size_t name_length` | `narra_buffer*` out parameter |
+   | none | not allowed | `void` |
+   | `Result<R, string>` | not allowed | status code and out parameters (item 3) |
+
+   - **Rejected: borrowed views passed straight in.** They dangle once the function stores the value, and the checker cannot see where it goes.
+   - **Rejected: `free()` on the result.** On Windows the host and the library may use different C runtimes, and a single named free function is the same on every target.
+   - **Rejected: structs by value (`GoString`).** Struct passing differs between ABIs and wasm passes a struct through memory. Flat pointers and lengths are the same everywhere.
+
+2. **Layouts: `@repr`.** SPEC section 9 is written with `@repr(C)` for structs and `@repr(u8)`, `@repr(i32)` and the other integer types for enums. D73, D95 and the error text that asks for `@repr(i32)` use it, so `@layout(C)` was an earlier name and goes out of SPEC. It matches Rust. Allowed fields of an `@repr(C)` struct: numbers, `bool`, `Ptr<T>`, nested `@repr(C)` structs, `FixedArray` of these and `@repr` enums. `char`, strings, arrays, `Option` and function values are E1610. None of this is on the path of the first build: no D122, D123 or node-addon signature uses a struct, so node c-layout stays parked with E1610-E1619.
+
+3. **Exported functions.** `@export(C, "name")` goes on a top-level function with a body.
+   - **Allowed.** Parameters and results from the table of item 1. Any effects, written as for any function (`uses io, alloc`). A C caller needs no `unsafe`, since C has no checker. The function may be private. It is a tree shaking root.
+   - **Rejected.** A type parameter, an effect parameter, `async`, a generator, a `mutable` parameter (E1622), a type outside the table (E1621), a missing body, a method, or an argument other than `C` and a string literal (E1620).
+   - **Names.** The C name follows the E1001 rules of extern members (an identifier, not `main`, not starting with `narra_` or `lstr_`, not a generated name). Two exports with one name, or an export with the C name of an extern member, are E1623. The Narra function is an ordinary function: Narra code calls it directly, with no wrapper.
+   - **Two entries per export.** The plain entry `name` has the C shape of item 1, and a panic ends the process with the usual message and exit code 101, as Rust's `extern "C"` aborts and Go's `c-shared` stops the program. The checked entry `narra_try_name` returns `int32_t`: 0 ok, 1 `Err`, 2 panic. It adds the result as an out parameter (not for `void`) and `narra_buffer* message`, which holds the `Err` text or the panic text (`panic at <where>: <message>`) and is freed like any buffer. Both are public in the header. The glue of D123 calls only the checked entry.
+   - **`Result` exports.** A function that returns `Result<R, string>` has only the checked entry, because a plain C function cannot return an `Err`. Another error type is E1621.
+   - **Reason.** A host that wants C-natural calls gets them, and a host that must survive a panic (Node, wasm) pays for a guard only there.
+
+4. **Runtime state in a library.**
+   - **No start-up.** Nothing in the runtime needs `main`: the heap is static and zero-initialized, constants build on first read (D61), and each thread's async loop is created on first use. No init export exists. A library build has no `int main`.
+   - **The guard.** The checked entry sets `narra_panic_jmp`, calls the body, and restores it. `narra_panic` already does `longjmp` when the pointer is set. The runtime switches every `setjmp` and `longjmp` to `_setjmp` and `_longjmp` (macros `NARRA_SETJMP` and `NARRA_LONGJMP`; plain `setjmp` on Windows and the sjlj form on wasm). A panic then also saves where it happened, next to the message. `_setjmp` costs 6.8 ns per call and `setjmp` 315 ns on macOS (signal mask system call), so the guard is only affordable with `_setjmp`.
+   - **What a stopped panic costs.** The frames between the panic and the guard are not released, so what they held leaks: 2 blocks for the string in the proof. The library stays usable. The wrapper also clears `narra_draining`, and in thread mode releases the constant lock if the panic came from a constant getter. A `Shared` locked by an unwound `Shared.update` callback stays locked, and a later call on it stops with the re-entry message of D111. A panic is a bug, so Narra does not add cleanup frames. A host that cannot accept the leak treats status 2 as fatal.
+   - **Host threads.** One lock per library, recursive, taken by every plain and checked entry when the output is shared, static or wasm (`NARRA_LIBRARY`), so one host call runs at a time. A host thread that calls in uses the static heap, so no per-thread heap or thread-exit hook is needed, and a program that imports `std/thread` keeps D111's thread mode inside a call. An export that calls the host, which calls an export again on the same thread, is allowed by the recursive lock. An executable that has `@export` functions takes no lock: they are callbacks on the program's own thread (the `qsort` comparator).
+   - **Async.** The lock does not run the async loop, and no `async` export exists. A task that an export detaches stays in the loop of that thread, and `shutdown` drops it as program exit does. Running the loop from a call is outline node-addon-async (D123 item 5).
+   - **Rejected: one heap per host thread.** It needs a registration on first call, a hook at thread end (a `pthread` key, `DllMain` on Windows), and the limit of 4096 heaps. No D123 use needs parallel calls.
+   - **Rejected: abort on every panic.** It ends a Node process for a bug in one call, against D123 item 3.
+   - **Rejected: a trap on wasm.** A trap leaves the shadow stack pointer where the panic left it, so the glue would have to save and restore a global, and the C test harness could not test the same path.
+
+5. **Output.** Flags, no `narra.toml` table (Go has none, and D123 keeps the manifest free of output formats): `narrac build --emit shared-lib|static-lib|node-addon|wasm-js [--target name] [-o path]`. The library name is the package name, or the `-bin` value, and must be a C identifier (E1630). Each build writes the library file and `<name>.h` beside it.
+
+   | target | `shared-lib` | `static-lib` |
+   | --- | --- | --- |
+   | macOS | `lib<name>.dylib` (`-dynamiclib`, install name `@rpath/lib<name>.dylib`) | `lib<name>.a` |
+   | Linux, musl too | `lib<name>.so` (`-shared -fPIC`) | `lib<name>.a` |
+   | Windows | `<name>.dll` and the import library `<name>.dll.lib` | `<name>.lib` |
+   | `Wasi-Wasm32` | `<name>.wasm`, a reactor module (`-mexec-model=reactor`) | E1631 |
+
+   - **Visibility.** Runtime and emitted functions are `static`. The only public symbols are the entries of item 3 and the support functions of item 1, marked `NARRA_API` (`visibility("default")`, `__declspec(dllexport)` on Windows, `export_name` on wasm). `nm` shows nothing else.
+   - **The header** has the include guard, `extern "C"`, `NARRA_API`, the type `narra_buffer` (guarded, so two Narra headers can be included together), the status macros, one prototype per entry and the support functions. It builds with `cc -std=c11 -Wall -Werror` and as C++.
+   - **Wasm reactor.** The exports are `memory`, `_initialize` (the glue calls it once), both entries of every export and the three support functions. The module imports only what the runtime needs from `wasi_snapshot_preview1`, which the glue provides. The compiler flags for the row: `-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false`, `-lsetjmp`, and the `__c_longjmp` tag defined by the emitted C. The legacy form fails on wasmtime 50. The run needs `-W exceptions=y`.
+   - **Node addon.** `<name>.node` is a shared library whose only symbol is `napi_register_module_v1` (D123 item 3), with the wrappers `static` in the same file as the entries.
+
+6. **Cost and codes.**
+
+   | node | changes | codes |
+   | --- | --- | --- |
+   | c-export-functions (M) | attribute rows, `exports.nra` (signature check), `emitexports.nra` (two entries per export), roots for tree shaking, runtime (`NARRA_SETJMP`, panic location, UTF-8 check, the library lock, `shutdown`) | E1620-E1629 |
+   | c-abi-export (M) | driver flag `--emit shared-lib` and `static-lib`, header writer, visibility, wasm flags | E1630-E1639 |
+   | node-addon (M) | glue writer and driver output | E1640-E1649 |
+   | wasm-js-glue (M) | JS and `.d.ts` writer | E1650-E1659 |
+   | c-layout (M, parked) | one attribute and one check | E1610-E1619 |
+
+   - E1620 wrong place or arguments for `@export`. E1621 type not allowed in a signature. E1622 type parameter, effect parameter, `async`, generator or `mutable` parameter. E1623 duplicate C name or clash with an extern member. E1630 library name not a C identifier. E1631 output not available for the target. E1632 no `@export(C)` function in the program.
+   - `SPEC.md` section 9 loses the `@layout` text and gets the rules above. `compiler/README.md` records the runtime changes.
+
+7. **Node-API (first build).** The glue calls `narra_try_name` as a `static` function of its own file, so a `.node` has no other symbol. A call is argument check, copy in, call, copy out.
+   - **Types.** `i8`, `i16`, `i32`, `u8`, `u16`, `u32`, `f32` and `f64` are JS `number`. `int`, `i64` and `u64` are `bigint`, so no value loses digits and the source type shows the choice (an author who wants a `number` writes `i32` or `f64`). `bool` is `boolean`. `string` is `string` (lone surrogates become U+FFFD in V8's conversion). `bytes` is `Uint8Array` in and out (a `Buffer` is returned). `Result<R, string>` is `R`. No result is `undefined`. An export with a `Ptr<T>` parameter or result has no JS meaning: E1640.
+   - **Errors.** A wrong argument count or type throws `TypeError` that names the parameter. `Err` throws `Error(message)` with `code` `ERR_NARRA_ERR`. A panic, stopped by the guard of item 4, throws `Error("panic at <where>: <message>")` with `code` `ERR_NARRA_PANIC`. The process continues.
+   - **Later builds.** `Array<T>` as a JS array, `Option<T>` as `T | undefined` (`Option<Option<T>>` is rejected) and plain structs as objects, all by copy. Fieldless enums as their name strings. None of these needs the C layout.
+   - **`.d.ts`.** `number`, `bigint`, `boolean`, `string`, `Uint8Array`, `void`. The wasm glue writes the same file.
+
+8. **Node threads.** The runtime state is per process, not per Node environment, and calls are serialized by the library lock of item 4. A `.node` loaded in several `worker_threads` is one shared library in one process, so its globals exist once, and `napi_register_module_v1` runs once per environment. It keeps no state, so no instance data is used. An export called on a worker waits for the lock if another thread is inside one, then runs on the worker's thread with the static heap. No Narra value crosses between calls except constants, which are immutable. A host that calls an export on one thread and waits for a worker that calls an export has the usual lock-order deadlock.
+
+9. **Wasm reactor.** The module of item 5. The glue (`wasm-js-glue`) uses these memory calls.
+   - **Setup.** Instantiate with the WASI imports, call `_initialize`, then allocate one 64-byte scratch area with `narra_<library>_alloc` for the result and message buffers.
+   - **Argument.** Encode the string or bytes, call `narra_<library>_alloc(length)`, write the bytes, pass the pointer and length, and call `narra_<library>_free` after the call. Re-read `memory.buffer` after every call and allocation, since memory growth detaches old views.
+   - **Result.** Read `data` and `length` (two 32-bit values on wasm32) from the scratch area, decode or copy, and call `narra_<library>_free(data)`. 64-bit integers are `bigint` here too. Status 1 and 2 build the same `Error` as item 7.
+   - **Engines.** Node 26 and wasmtime 50 run the module. The exception model that `-wasm-use-legacy-eh=false` writes must exist in the browser; the headless check of wasm-js-glue says which versions have it.
+
+- **Reason.** One body per export, two C entries, and a guard only where a host asks for one match D123: C hosts keep the Rust and Go behavior, and Node and wasm get errors instead of a dead process. Flat pointers and lengths, `malloc` copies and a named free work the same on every ABI, and the host needs no knowledge of the Narra heap. Measured: 6.8 ns for the guard with `_setjmp`, against the 0.18 µs per addon call of T3.
+- **Cost.** About 2,700 lines over four nodes (estimate: 700, 500, 800, 700). Every library call pays a lock (about 20 ns uncontended, estimate) and the checked entry a guard. A caught panic leaks what its frames held. The runtime changes `setjmp` for every build, so the test builds that use it (D109, `Co.resume`) change too.
+- **Rejected: a `[library]` table in `narra.toml`.** The format is a build flag in Go and in D123. A table would tie the manifest to output kinds.
+- **Rejected: exports that return `Result` as C structs.** One struct per `R` needs a type name in the header for each, and the status form needs none.
+- **Rejected: checked entries only.** A pure function like `add` would need an out parameter and a status for C hosts that cannot panic.
+
+Not built yet.
+
 ## D123. Narra for JS and TS: C libraries and Node addons from the compiler, npm packaging outside it
 
 Decision (spike js-interop-design, a goal debate, revised with the maintainer's answers of 2026-11-15): Narra sits on the layer of Go and Rust. The compiler builds programs, C libraries, Node addons and wasm modules for every row of contract `targets`. It does not know about npm: no `[npm]` table in `narra.toml` and no `narrac package` command. Packaging for npm is a script owned by the package that ships, as esbuild ships Go binaries with its own scripts. narrac is the first such package. The website REPL is parked (priority later). The measurements below stay for when it comes back. Debate: `roadmaps/selfhost/debate/js-interop/debate.md`. Measurements: proofs T1, T2 and T3 in the debate's `evidence/`, on an Apple M2 (8 GB, macOS 27) with zig 0.17.1, wasmtime 50.0.1 and Node 26.12.1, load average 4 to 48 (other workers building).

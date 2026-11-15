@@ -98,7 +98,8 @@ static lstr* narra_env_arg(int64_t i) {
   return narra_io_lossy(a, strlen(a));
 }
 #elif defined(_WIN32)
-// The C runtime of MinGW splits the command line into __argc and __argv.
+// The C runtime of MinGW splits the command line into __argc and __argv, in
+// the ANSI code page, so a non-ASCII argument is not UTF-8.
 static int64_t narra_env_argc(void) { return __argc; }
 static lstr* narra_env_arg(int64_t i) {
   const char* a = __argv[i];

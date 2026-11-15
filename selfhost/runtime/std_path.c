@@ -192,6 +192,11 @@ static lstr* narra_path_dirname_rest(const char* p, int64_t n) {
 static lstr* narra_path_dirname(lstr* path) {
   int64_t drive = narra_path_drive(path->data, path->len);
   lstr* rest = narra_path_dirname_rest(path->data + drive, path->len - drive);
+  if (drive > 0 && rest->len == 1 && rest->data[0] == '.') {
+    // "C:" and "C:a" have the drive itself as their directory.
+    lstr_release(rest);
+    return narra_path_slice(path->data, 0, drive);
+  }
   return narra_path_with_drive(path->data, drive, rest);
 }
 

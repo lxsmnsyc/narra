@@ -1,7 +1,7 @@
 ---
 id: wasi-runtime
 title: "Runtime and std on wasm32-wasi"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16

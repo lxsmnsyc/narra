@@ -79,8 +79,11 @@ else
   NARRAC="$work/compiler/narrac" sh "$root/scripts/test.sh"
 fi
 
-# Pack the binary and the std sources.
+# Pack the binary and the std sources. COPYFILE_DISABLE stops macOS tar from adding
+# ._ files that hold extended attributes.
 echo "release-build: pack"
+COPYFILE_DISABLE=1
+export COPYFILE_DISABLE
 mkdir -p "$work/pack/$name"
 cp "$work/compiler/narrac" "$work/pack/$name/narrac"
 cp -R "$root/std" "$work/pack/$name/std"

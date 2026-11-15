@@ -27,6 +27,7 @@ export struct Manifest {
   binaries: Array<Binary>
   search: Array<string>
   dependencies: Array<Dependency>
+  overrides: Array<Dependency> // [overrides]: read for every manifest, allowed in the root of a build only
 }
 
 // An error of the loader. An empty file and line 0 print as a bare message
@@ -62,6 +63,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   let name = ""
   let version = ""
   let dependencies: Array<Dependency> = []
+  let overrides: Array<Dependency> = []
   let binaries: Array<Binary> = []
   let search: Array<string> = []
   let table = ""
@@ -102,7 +104,11 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       continue
     }
     const known =
-      table == "package" || table == "link" || table == "dependencies" || table == "[[binary]]"
+      table == "package" ||
+        table == "link" ||
+        table == "dependencies" ||
+        table == "overrides" ||
+        table == "[[binary]]"
     const equalsIndex = Str.indexOf(line, "=")
     if (equalsIndex is None) {
       if (!known) {
@@ -123,7 +129,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     const parsed = parseValue(raw)
     if (parsed is Err(error)) {
-      if (table == "dependencies") {
+      if (table == "dependencies" || table == "overrides") {
         return Err(
           createError(
             lineNumber,
@@ -136,12 +142,16 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     const value = parsed.value
     const qualifiedKey = `${table}.${key}`
-    if (table == "dependencies") {
+    if (table == "dependencies" || table == "overrides") {
       const dependency = readDependency(key, value, lineNumber)
       if (dependency is Err(error)) {
         return Err(error)
       }
-      Arrays.push(mutable dependencies, dependency.value)
+      if (table == "overrides") {
+        Arrays.push(mutable overrides, dependency.value)
+      } else {
+        Arrays.push(mutable dependencies, dependency.value)
+      }
       continue
     }
     if (qualifiedKey == "package.version") {
@@ -229,9 +239,29 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     seen[binary.name] = true
   }
+  for (const group of Arrays.values([dependencies, overrides])) {
+    const checked = checkDependencyNames(group, name)
+    if (checked is Err(error)) {
+      return Err(error)
+    }
+  }
+  return Ok(Manifest {
+    name,
+    version,
+    binaries,
+    search,
+    dependencies,
+    overrides,
+  })
+}
+
+function checkDependencyNames(
+  group: Array<Dependency>,
+  packageName: string,
+): Result<bool, LoadError> uses alloc {
   let names: Map<string, bool> = Map {}
-  for (const dependency of Arrays.values(dependencies)) {
-    if (dependency.name == "std" || dependency.name == name) {
+  for (const dependency of Arrays.values(group)) {
+    if (dependency.name == "std" || dependency.name == packageName) {
       return Err(
         createError(
           dependency.line,
@@ -251,13 +281,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     names[dependency.name] = true
   }
-  return Ok(Manifest {
-    name,
-    version,
-    binaries,
-    search,
-    dependencies,
-  })
+  return Ok(true)
 }
 
 function readDependency(

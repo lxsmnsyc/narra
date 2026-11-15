@@ -68,11 +68,14 @@ In this repository, under `skills/narra/` with a `.claude-plugin/marketplace.jso
 
 ## Eval
 
-- 20 fixed tasks in `skills/narra/evals/`: 8 write-a-function tasks with a `narrac test` file, 6 fix-the-compile-error tasks, 6 change-an-existing-program tasks. The tests are written before any run.
-- Run each task with and without the skill through `claude plugin eval`, 3 runs each, same model.
+Size decided on 2026-11-14: the smallest eval that still tells whether the skill helps, because each run holds the 8 GB machine for minutes and blocks batch workers.
+
+- 10 fixed tasks in `skills/narra/evals/`: 4 write-a-function tasks with a `narrac test` file, 3 fix-the-compile-error tasks, 3 change-an-existing-program tasks. The tests are written before any run.
+- Run each task with and without the skill through `claude plugin eval`, 2 runs each, same model: 40 runs, at most 2 at a time.
+- Run it alone, at the end of the batch, after every code child has landed, with no other worker building.
 - Measure: share of runs whose final program passes `narrac check` and the task test, and the number of `narrac check` calls before the first pass.
-- Success threshold, fixed now: the skill raises the pass share by at least 15 points, or cuts the median check calls by a third with an equal pass share. Report the result in `outcome.md` also when it misses.
-- Token cost: 120 agent runs. Estimate the spend from 3 trial runs first and stop if it is over 3M tokens.
+- Success threshold, fixed now: the skill raises the pass share by at least 15 points, or cuts the median check calls by a third with an equal pass share. With 20 runs a side, report the counts, not only the shares. Report the result in `outcome.md` also when it misses.
+- Cost cap: estimate from 2 trial runs first; stop if the eval would pass 1.5M tokens or 2 hours.
 
 ## Acceptance
 

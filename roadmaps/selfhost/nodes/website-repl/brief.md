@@ -2,7 +2,7 @@
 id: website-repl
 title: REPL on the Narra website
 status: todo
-priority: could
+priority: later
 type: feature
 story:
 early: false
@@ -40,5 +40,8 @@ depends_on:
 A page on the website where a reader types Narra, sees diagnostics, and runs the program, so guide samples can open in it. Requested by the maintainer on 2026-11-14.
 
 ## Notes
+
+Parked by the maintainer on 2026-11-14. D123 keeps the measurements (narrac in wasm, clang in the page); refine from it when the REPL is picked up.
+
 
 Outline until js-interop-design writes D123; refine the children from it.

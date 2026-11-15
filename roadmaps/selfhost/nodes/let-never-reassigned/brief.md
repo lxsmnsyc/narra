@@ -1,7 +1,7 @@
 ---
 id: let-never-reassigned
 title: "A `let` that is never reassigned is a compile error"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-16

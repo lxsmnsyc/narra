@@ -28,7 +28,7 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { Pos, Decl, FuncDecl, Expr, TypeExpr } from "narrac/syntax/ast"
-import { Token, formatLexError, lex } from "narrac/syntax/lexer"
+import { Token, TokenKind, formatLexError, lex } from "narrac/syntax/lexer"
 import * as Modules from "narrac/driver/modules"
 import { Package, SourceModule } from "narrac/driver/modules"
 import { LoadError } from "narrac/driver/manifest"
@@ -272,11 +272,51 @@ function collectHovers(
 ): Array<Hover> uses alloc {
   let hovers: Array<Hover> = []
   let slots: Map<string, int> = Map {}
+  let tokenIndexes: Map<string, int> = Map {}
+  let tokenIndex = 0
+  for (const token of Arrays.values(view.tokens)) {
+    tokenIndexes[`${Int.toString(token.line)}:${Int.toString(token.column)}`] = tokenIndex
+    tokenIndex++
+  }
   for (const site of Arrays.values(view.sites)) {
     // Only named places on one line; a later site at the same place is the innermost.
     if (site.name == "" || site.kind == SiteKind.LabelSite || site.start.line != site.end.line) {
       continue
     }
+    const length = site.end.column - site.start.column
+
+    // A variant shows its fields, and the enum name before it shows the enum.
+    const ref = findSiteRef(checker, view, site)
+    if (ref is Ref.Constructor(enumIndex, variantIndex)) {
+      putHover(
+        mutable hovers,
+        mutable slots,
+        site.start,
+        length,
+        describeVariant(checker, enumIndex, variantIndex),
+      )
+      const key = `${Int.toString(site.start.line)}:${Int.toString(site.start.column)}`
+      if (tokenIndexes[key] is Some(index)) {
+        let dotText = ""
+        let before = view.tokens[0]
+        if (index >= 2) {
+          dotText = view.tokens[index - 1].text
+          before = view.tokens[index - 2]
+        }
+        if (dotText == "." && before.kind == TokenKind.TokIdent) {
+          const start = Pos { line: before.line, column: before.column }
+          putHover(
+            mutable hovers,
+            mutable slots,
+            start,
+            Str.charCount(before.text),
+            `enum ${before.text}`,
+          )
+        }
+      }
+      continue
+    }
+
     const described = describeSite(mutable checker, mutable effects, effectsKnown, view, site)
     if (described is None) {
       continue
@@ -286,31 +326,153 @@ function collectHovers(
     if (Arrays.length(names) > 0) {
       text = `${text}\nuses ${Str.join(names, ", ")}`
     }
-    const hover = Hover {
-      line: site.start.line,
-      column: site.start.column,
-      length: site.end.column - site.start.column,
-      text,
-    }
-    const key = `${Int.toString(hover.line)}:${Int.toString(hover.column)}`
-    if (slots[key] is Some(slot)) {
-      hovers[slot] = hover
-    } else {
-      slots[key] = Arrays.length(hovers)
-      Arrays.push(mutable hovers, hover)
+    putHover(mutable hovers, mutable slots, site.start, length, text)
+  }
+  collectImportHovers(mutable checker, mutable effects, view, mutable hovers, mutable slots)
+
+  // Leave out a hover with no text, then sort: sites are nearly in source order already.
+  let kept: Array<Hover> = []
+  for (const hover of Arrays.values(hovers)) {
+    if (hover.text != "") {
+      Arrays.push(mutable kept, hover)
     }
   }
-  // Insertion sort: sites are nearly in source order already.
-  for (let index = 1; index < Arrays.length(hovers); index++) {
+  for (let index = 1; index < Arrays.length(kept); index++) {
     let position = index
-    while (position > 0 && isHoverBefore(hovers[position], hovers[position - 1])) {
-      const swap = hovers[position]
-      hovers[position] = hovers[position - 1]
-      hovers[position - 1] = swap
+    while (position > 0 && isHoverBefore(kept[position], kept[position - 1])) {
+      const swap = kept[position]
+      kept[position] = kept[position - 1]
+      kept[position - 1] = swap
       position--
     }
   }
-  return hovers
+  return kept
+}
+
+function putHover(
+  mutable hovers: Array<Hover>,
+  mutable slots: Map<string, int>,
+  start: Pos,
+  length: int,
+  text: string,
+) uses alloc {
+  // One entry per place: a later one replaces an earlier one.
+  const hover = Hover { line: start.line, column: start.column, length, text }
+  const key = `${Int.toString(hover.line)}:${Int.toString(hover.column)}`
+  if (slots[key] is Some(slot)) {
+    hovers[slot] = hover
+  } else {
+    slots[key] = Arrays.length(hovers)
+    Arrays.push(mutable hovers, hover)
+  }
+}
+
+function describeVariant(checker: Checker, enumIndex: int, variantIndex: int): string uses alloc {
+  const variant = checker.enums[enumIndex].variants[variantIndex]
+  const head = `${typeString(checker, Type.TEnum(enumIndex))}.${variant.name}`
+  if (Arrays.length(variant.fields) == 0) {
+    return head
+  }
+  let fields: Array<string> = []
+  for (const field of Arrays.values(variant.fields)) {
+    Arrays.push(mutable fields, `${field.name}: ${typeString(checker, field.fieldType)}`)
+  }
+  return `${head}(${Str.join(fields, ", ")})`
+}
+
+function describeMember(
+  checker: Checker,
+  effects: EffectState,
+  path: string,
+  name: string,
+): string uses alloc {
+  // The text for a name a module exports, or "" when it has none to show.
+  let functionIndex = 0
+  for (const info of Arrays.values(checker.functions)) {
+    if (info.module == path && info.name == name && info.selfType is None) {
+      if (describeCallable(checker, effects, Ref.Function(functionIndex)) is Some(found)) {
+        return found[0]
+      }
+    }
+    functionIndex++
+  }
+  let constIndex = 0
+  for (const info of Arrays.values(checker.consts)) {
+    if (info.module == path && info.name == name) {
+      return findConstType(checker, constIndex)
+    }
+    constIndex++
+  }
+  for (const info of Arrays.values(checker.structs)) {
+    if (info.module == path && info.name == name && !info.tuple) {
+      return `struct ${name}`
+    }
+  }
+  for (const info of Arrays.values(checker.enums)) {
+    if (info.module == path && info.name == name) {
+      return `enum ${name}`
+    }
+  }
+  if (checker.registry.modules[path] is Some(module)) {
+    if (module.functions[name] is Some(builtinIndex)) {
+      const builtin = checker.registry.functions[builtinIndex]
+      if (builtin.result != "") {
+        let used = copy(builtin.effects)
+        sortStrings(mutable used)
+        return `(${Str.join(builtin.parameters, ", ")}) => ${builtin.result}${writeTypeUses(used)}`
+      }
+    }
+  }
+  return ""
+}
+
+function collectImportHovers(
+  mutable checker: Checker,
+  mutable effects: EffectState,
+  view: ModuleView,
+  mutable hovers: Array<Hover>,
+  mutable slots: Map<string, int>,
+) uses alloc {
+  // The aliases of `import * as Alias`, and each imported name.
+  let aliases: Map<string, string> = Map {}
+  for (const declaration of Arrays.values(view.module.ast.imports)) {
+    if (declaration.alias != "") {
+      aliases[declaration.alias] = declaration.path
+      putHover(
+        mutable hovers,
+        mutable slots,
+        declaration.aliasPos,
+        Str.charCount(declaration.alias),
+        `module ${declaration.path}`,
+      )
+    }
+    for (const imported of Arrays.values(declaration.names)) {
+      const text = describeMember(checker, effects, declaration.path, imported.name)
+      putHover(mutable hovers, mutable slots, imported.pos, Str.charCount(imported.name), text)
+    }
+  }
+  // Each use of an alias, `Alias.member`, shows the module and the member. A member with no
+  // text to show loses the hover its call gave.
+  const tokens = view.tokens
+  for (const index of Ranges.between(0, Arrays.length(tokens) - 2)) {
+    const token = tokens[index]
+    if (token.kind != TokenKind.TokIdent || tokens[index + 1].text != ".") {
+      continue
+    }
+    if (index > 0 && tokens[index - 1].text == ".") {
+      continue
+    }
+    if (aliases[token.text] is Some(path)) {
+      const start = Pos { line: token.line, column: token.column }
+      putHover(mutable hovers, mutable slots, start, Str.charCount(token.text), `module ${path}`)
+      const member = tokens[index + 2]
+      if (index + 2 < Arrays.length(tokens) && member.kind == TokenKind.TokIdent) {
+        const memberStart = Pos { line: member.line, column: member.column }
+        const text = describeMember(checker, effects, path, member.text)
+        putHover(mutable hovers, mutable slots, memberStart, Str.charCount(member.text), text)
+      }
+    }
+  }
 }
 
 function isHoverBefore(left: Hover, right: Hover): bool {

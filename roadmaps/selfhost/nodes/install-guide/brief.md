@@ -1,7 +1,7 @@
 ---
 id: install-guide
 title: Installation guide
-status: active
+status: done
 priority: could
 type: docs
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-01
-spent:
+spent: 133346
 owns:
   - roadmaps/selfhost/nodes/install-guide/**
   - docs/install.md

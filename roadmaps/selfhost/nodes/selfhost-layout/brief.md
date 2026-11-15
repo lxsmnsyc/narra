@@ -1,7 +1,7 @@
 ---
 id: selfhost-layout
 title: Group the self-hosted compiler's modules into directories
-status: todo
+status: done
 priority: could
 type: refactor
 story: batch-16

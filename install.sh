@@ -46,7 +46,7 @@ fi
 # Find the version. Without NARRA_VERSION, follow the redirect of the latest release.
 version=${NARRA_VERSION:-}
 if [ -z "$version" ]; then
-  latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") ||
+  latest=$(curl -fsSLI --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") ||
     fail "could not look up the latest release"
   version=${latest##*/}
   case "$version" in
@@ -64,28 +64,40 @@ esac
 name=narra-$version-$os-$arch
 base=${NARRA_BASE_URL:-https://github.com/$repository/releases/download/v$version}
 # A custom base URL must use https, except for a test server on this machine.
+protocols='=https'
 case "$base" in
   https://*) ;;
   http://*)
     authority=${base#http://}
     authority=${authority%%/*}
-    case "$authority" in
-      *@*) fail "NARRA_BASE_URL must not hold a user name: $base" ;;
-      localhost | localhost:[0-9]* | 127.0.0.1 | 127.0.0.1:[0-9]*) ;;
+    # The host must be exactly localhost or 127.0.0.1, with no port or a port of digits only.
+    host=${authority%%:*}
+    port=${authority#"$host"}
+    case "$host" in
+      localhost | 127.0.0.1) ;;
       *) fail "NARRA_BASE_URL must start with https:// (http:// only for localhost or 127.0.0.1): $base" ;;
     esac
+    case "$port" in
+      '') ;;
+      :*[!0-9]* | :) fail "NARRA_BASE_URL has a bad port: $base" ;;
+    esac
+    # A local test server may speak http; the first request only.
+    protocols='=http,https'
     ;;
   *) fail "NARRA_BASE_URL must start with https:// (http:// only for localhost or 127.0.0.1): $base" ;;
 esac
+if [ -z "${NARRA_INSTALL:-}" ] && [ -z "${HOME:-}" ]; then
+  fail "HOME is not set. Set NARRA_INSTALL to the folder that receives narrac"
+fi
 install_dir=${NARRA_INSTALL:-$HOME/.local/bin}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 echo "install: narra $version for $os $arch"
-curl -fsSL -o "$work/$name.tar.gz" "$base/$name.tar.gz" ||
+curl -fsSL --proto "$protocols" --proto-redir '=https' -o "$work/$name.tar.gz" "$base/$name.tar.gz" ||
   fail "could not download $base/$name.tar.gz"
-curl -fsSL -o "$work/$name.tar.gz.sha256" "$base/$name.tar.gz.sha256" ||
+curl -fsSL --proto "$protocols" --proto-redir '=https' -o "$work/$name.tar.gz.sha256" "$base/$name.tar.gz.sha256" ||
   fail "could not download $base/$name.tar.gz.sha256"
 
 # Check the SHA-256 before anything is unpacked.

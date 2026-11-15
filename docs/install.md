@@ -146,7 +146,7 @@ Each release on GitHub has an archive for macOS on arm64 and one for Linux on x6
 curl -fsSL https://raw.githubusercontent.com/lxsmnsyc/narra/main/install.sh | sh
 ```
 
-The script stops with an error and installs nothing when the sums differ. It also needs `curl` and `tar`. `narrac` still calls the C compiler each time it builds a program, so keep the C compiler installed.
+The script stops with an error and installs nothing when the sums differ. The sum catches a damaged or incomplete download. It does not catch a compromised release: the sum is published next to the archive, so whoever can replace one can replace the other. It also needs `curl` and `tar`. `narrac` still calls the C compiler each time it builds a program, so keep the C compiler installed.
 
 Two variables change what the script does:
 
@@ -161,6 +161,6 @@ For example, this installs version 0.1.0 into `/usr/local/bin`:
 curl -fsSL https://raw.githubusercontent.com/lxsmnsyc/narra/main/install.sh | NARRA_VERSION=0.1.0 NARRA_INSTALL=/usr/local/bin sh
 ```
 
-`NARRA_BASE_URL` is a testing override. It names a folder that holds the archive and its `.sha256` file instead of the GitHub release, and it must start with `https://`. Only `http://localhost` and `http://127.0.0.1` are allowed without TLS.
+`NARRA_BASE_URL` is a testing override. It names a folder that holds the archive and its `.sha256` file instead of the GitHub release, and it must start with `https://`. Only `http://localhost` and `http://127.0.0.1` are allowed without TLS, and every redirect must use `https://`. The script needs `HOME` or `NARRA_INSTALL` to know where to install.
 
 Run the same command again to update. To uninstall, delete the `narrac` file. For other systems, such as macOS on x64 or Linux on arm64, build from source as shown above.

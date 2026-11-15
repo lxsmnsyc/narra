@@ -1,7 +1,7 @@
 ---
 id: deps-manifest-lock
 title: "[dependencies] in narra.toml and the narra.lock format"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-16

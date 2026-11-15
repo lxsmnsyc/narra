@@ -1,7 +1,7 @@
 ---
 id: workspace-design
 title: "Spike: workspaces for several packages in one repository"
-status: todo
+status: active
 priority: could
 type: spike
 story: batch-16

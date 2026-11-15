@@ -1,7 +1,7 @@
 ---
 id: target-table
 title: "Target table and narrac build --target"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-16

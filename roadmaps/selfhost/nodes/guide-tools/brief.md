@@ -1,7 +1,7 @@
 ---
 id: guide-tools
 title: "Guide chapter: the narrac tools"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-16

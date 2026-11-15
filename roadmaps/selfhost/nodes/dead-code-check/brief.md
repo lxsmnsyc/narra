@@ -1,7 +1,7 @@
 ---
 id: dead-code-check
 title: "Unreachable statements are a compile error"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-16

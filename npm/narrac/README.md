@@ -30,3 +30,7 @@ native package.
 
 A file name passed to `check` or `emit` must not start with `-`, because the command would read it
 as a flag. Write `./-name.nra` instead; the API refuses such a name with an error.
+
+Under the wasm fallback a path may not leave the working directory by `..` (`../other/main.nra`
+fails with a capability error), because the module only holds the working directory and the top
+folder of each absolute path argument. Pass an absolute path, or run from a parent folder.

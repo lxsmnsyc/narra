@@ -71,7 +71,7 @@ function rewriteLink(href: string, from: string): string {
   return `${REPOSITORY}/blob/main/${target}${rest}`;
 }
 
-function makeSlug(text: string): string {
+export function makeSlug(text: string): string {
   // As GitHub makes it, so the links inside the documents keep working.
   return text
     .toLowerCase()

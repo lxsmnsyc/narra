@@ -1,48 +1,65 @@
 ---
 id: c-abi-export
-title: Shared library output with stable C ABI exports
+title: "Shared and static library output with a C header"
 status: todo
 priority: could
 type: feature
 story:
 early: false
-outline: true
+outline: false
 milestone: p5-distribution
 target:
 ship: auto
+land: auto
 from:
-size: L
+size: M
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
-gate: true
+gate: false
 added: 2026-11-06
 spent:
-owns: []
-shared: []
-reserves: []
+owns:
+  - roadmaps/selfhost/nodes/c-abi-export/**
+  - selfhost/src/cheader.nra
+  - testdata/library/**
+shared:
+  - selfhost/src/driver.nra
+  - selfhost/src/manifest.nra
+  - selfhost/src/emit.nra
+  - selfhost/src/diagnostics.nra
+  - selfhost/tests/src/*.nra
+  - SPEC.md
+  - compiler/README.md
+reserves: [diag E1630-E1639]
 provides: []
 depends_on:
-  - on: c-interop
+  - on: c-export-functions
     kind: hard
-    why: builds on `@export(C)`, `@repr(C)`, `Ptr<T>` and `CString` from c-interop
-  - on: cross-targets
-    kind: hard
-    why: a library is built per target, through the same target and C compiler handling
+    why: a library is its exported functions; the output needs them to exist
+  - on: target-table
+    kind: contract
+    via: targets
 ---
-
-# Shared library output with stable C ABI exports
+# Shared and static library output with a C header
 
 ## Goal
 
-`narra build --emit=shared-lib` (and `static-lib`) builds a `.so`, `.dylib`, `.dll` or wasm module whose `@export(C)` functions have a stable C ABI, like Rust's `cdylib` with `extern "C"`. It also writes a C header for the exports. A C test program links the library, calls the exports and runs clean under AddressSanitizer and the leak check.
+`narrac build --emit shared-lib` and `--emit static-lib` (and a `[[library]]` table in `narra.toml` if D122 says so) build a `.dylib`, `.so`, `.dll` or `.a` whose only visible symbols are the `@export(C)` functions, plus a C header declaring them and the C-layout types they use. Like Rust's `cdylib` with `extern "C"`. Per target through `--target` (contract `targets`).
 
-## Notes
+## Context
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+The old outline depended on cross-targets (the run script); only the target table is needed, so the edge is a contract on target-table. A wasm reactor module, if D122 keeps it, is built and run through wasi-runtime's flags.
 
-- Gate: the ownership rule for values that cross the boundary needs a decision record before the code. It covers strings and byte buffers passed in (borrowed for the call, or copied) and returned (the library allocates, and the host frees through an exported `narra_free`-style function), plus what reference-counted values may appear in an exported signature at all. A host must never free memory it cannot free, and nothing may leak.
-- Runtime state a library needs that a binary does not: initialization without `main`, thread-local state per calling thread, and panics that must not unwind into the host (abort, or return an error code).
-- Export names are not hashed (see c-interop), so they need the clash check against the name table.
+## Acceptance
+
+- [ ] A C test program links the shared library and the static library, calls each export, and runs clean under AddressSanitizer and the leak check, in the test harness with `cc` alone.
+- [ ] `nm` shows only exported symbols (plus the runtime ones D122 names) in the shared library.
+- [ ] The header compiles with `cc -std=c11 -Wall -Werror`.
+- [ ] `sh scripts/test.sh` passes.
+
+## Sizing
+
+M: driver flags, a header writer, visibility.

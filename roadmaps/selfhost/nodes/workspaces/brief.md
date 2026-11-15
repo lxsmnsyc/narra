@@ -38,4 +38,4 @@ Build the workspace design from D101: a root manifest that lists member packages
 
 ## Notes
 
-Outline until workspace-design writes D101; refine the children from it. Likely related to package-dependencies (git dependencies, lock file) and package-exports (D97).
+Outline until workspace-design writes D101 and the maintainer reads it (gate); the children come from D101, not from this brief. They join batch-16 only if the gate clears while the batch is open, otherwise the next batch. They build on the batch-16 dependency nodes (`contracts/dependencies.md`, one lock file) and on package-exports, and must land before selfhost-layout if this repository moves to a workspace.

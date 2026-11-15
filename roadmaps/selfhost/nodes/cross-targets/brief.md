@@ -1,48 +1,66 @@
 ---
 id: cross-targets
-title: Cross-compilation targets, including wasm32-wasi
+title: "Build and run every target from one machine"
 status: todo
 priority: could
 type: feature
-story:
+story: batch-16
 early: false
-outline: true
+outline: false
 milestone: p5-distribution
 target:
 ship: auto
+land: auto
 from:
-size: L
+size: M
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/cross-check.sh
 exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-06
 spent:
-owns: []
-shared: []
+owns:
+  - .github/workflows/windows.yml
+  - roadmaps/selfhost/nodes/cross-targets/**
+  - scripts/cross-check.sh
+shared:
+  - scripts/test.sh
+  - compiler/README.md
+  - README.md
 reserves: []
 provides: []
 depends_on:
-  - on: selfhost-bootstrap
+  - on: target-table
     kind: hard
-    why: target selection is built once, in the self-hosted driver, not in the Go compiler
+    why: the script drives `narrac build --target` for every row
+  - on: wasi-runtime
+    kind: behavior
+    via: targets
+  - on: windows-runtime
+    kind: behavior
+    via: targets
 ---
-
-# Cross-compilation targets, including wasm32-wasi
-
-> 2026-11-09: the Go compiler and Go test harness were retired (story c-seed, PR #101). Build only in `selfhost/src` (and `std/src`, `selfhost/runtime/`); ignore the Go half of any plan below. Go test names below map to `selfhost/tests` suites; run `sh scripts/test.sh`. Refine this brief before starting.
+# Build and run every target from one machine
 
 ## Goal
 
-`narra build --target <triple>` builds a binary for another platform from one host: darwin and linux on arm64 and x64, linux musl, windows x64, and `wasm32-wasi`. The triple passes through to the C compiler (`zig cc -target <triple>`, or clang with `--target` and a sysroot; wasi-sdk for wasm). The runtime in `runtimetext.nra` compiles and passes the sample programs on each target. A CI-free script builds every target from one machine, and the samples run under wasmtime for `wasm32-wasi`.
+`sh scripts/cross-check.sh` builds the sample programs for every row of `narrac targets` from one host and runs each where it can, comparing output with the `.out` goldens. This is the check the portability nodes use, and the source of release binaries and of any per-platform npm builds js-interop-design picks.
 
-## Notes
+## Context
 
-Outline. Break into full briefs when `plan.py refine` lists it.
-
-- Today `selfhost/src` only emits C. The Go driver (`compiler/internal/narra/driver.go`) and `selfhost/bootstrap.sh` call `cc` with fixed flags (`-std=c11 -w ... -lm`). Decide where `narra build` lives in the self-hosted compiler first, together with c-seed if that has landed.
-- Runtime portability to check: `_Thread_local`, `getenv`, `fopen` and the file APIs used by std, `-lm`, and anything POSIX-only. wasm32-wasi has no threads by default, so threads and async must be gated or stubbed per target.
-- build-conditions should read the same target description for `std/build` constants and `@target`, so the two nodes share one target table. Whichever lands first defines it.
 - Source: the 2026-11-06 discussion on shipping Narra tools to npm as per-platform packages, the way esbuild, swc and oxc do.
+- C compiler: `zig cc` (in `CC` through a one-line wrapper, since `$CC` is one program name, `driver.nra`). Other platforms run on: Linux through `docker run --platform linux/amd64` and `linux/arm64` (`alpine` for musl, `debian` for gnu), wasm through `wasmtime -W exceptions=y`, Windows through wine in a `linux/amd64` docker container locally (and natively in the CI job below), macOS x86_64 through Rosetta on an arm64 Mac.
+- CI: `.github/workflows/windows.yml` runs the Windows rows of the script natively on `windows-latest`, on pull requests to `main` only (the repository is public, so minutes are free). It is the proof for the Windows nodes; wine is only the fast local loop. Check the YAML with `actionlint` when installed. No agent pushes or triggers it; the batch pull request runs it.
+- A runner that is missing is a skip with a message, not a failure, so the script works on a plain Linux box with only docker absent.
+
+## Acceptance
+
+- [ ] On this machine (macOS arm64, zig, docker, wasmtime) the script builds every row and runs every row that has a runner; the samples a target leaves out (wasi-runtime's list) are skipped by name.
+- [ ] `seed/narrac.c` is built for every row and, where it runs, compiles `testdata/c_interop.nra` to the same C as the host.
+- [ ] Exit status 0 only when every run matches its golden. Not part of `scripts/test.sh` (needs zig and docker); `compiler/README.md` says when to run it.
+
+## Sizing
+
+M: one script, a sample list, a runner table.

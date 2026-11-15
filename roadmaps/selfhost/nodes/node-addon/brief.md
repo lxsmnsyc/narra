@@ -1,7 +1,7 @@
 ---
 id: node-addon
 title: Node-API bindings for publishing Narra libraries to npm
-status: todo
+status: dropped
 priority: could
 type: feature
 story:
@@ -39,3 +39,7 @@ A Narra library (like napi-rs for Rust) that builds a Node-API addon from export
 ## Notes
 
 Parked. Its first user would be a TypeScript transformer written in Narra and called in-process from bundlers. Decide when refined whether this is a std module, a separate package, or only a guide with an example.
+
+## Dropped (2026-11-14)
+
+Replaced by js-interop-design. The maintainer's goal is Narra usable from JS and TS packages, the way esbuild (Go) and oxc (Rust) are, and a REPL on the website. A Node-API addon is one possible answer, not the goal; the transformer named above was never a maintainer request.

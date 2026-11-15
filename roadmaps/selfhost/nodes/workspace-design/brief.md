@@ -4,7 +4,7 @@ title: "Spike: workspaces for several packages in one repository"
 status: todo
 priority: could
 type: spike
-story:
+story: batch-16
 early: false
 outline: false
 milestone: p4-packages
@@ -37,7 +37,8 @@ Decide whether and how one repository can hold several Narra packages that depen
 
 ## Context
 
-- Today a package is a directory with `narra.toml` and `src/` (SPEC section 15, `selfhost/src/manifest.nra`, `selfhost/src/modules.nra`). `[dependencies]` is rejected with E0407, and git dependencies (node package-dependencies) are not built. Module visibility across packages is D97 (node package-exports, not built).
+- Today a package is a directory with `narra.toml` and `src/` (SPEC section 15, `selfhost/src/manifest.nra`, `selfhost/src/modules.nra`). Git dependencies and `narra.lock` are built in the same batch (deps-manifest-lock, deps-fetch, deps-resolve, package-dependencies; see `contracts/dependencies.md`), and so are exports (package-exports). Design path or workspace dependencies to fit that contract.
+- `moduleHash` (`selfhost/src/hash.nra`) hashes the module path without the package name; package-dependencies adds the name for dependency packages only. Say how workspace members are hashed.
 - Cargo: a root `Cargo.toml` with `[workspace] members = [...]`, path dependencies between members, one lock file and one target directory. pnpm: `pnpm-workspace.yaml` globs and `workspace:*` versions.
 - This repository could be the first user: `selfhost/`, `std/` and the `bench/` programs are separate trees today, and only `selfhost/` has a `narra.toml`.
 
@@ -54,7 +55,7 @@ Decide whether and how one repository can hold several Narra packages that depen
 ## Acceptance
 
 - [ ] D101 written in the style of D100, with Decision, Reason, Cost and Rejected, marked "Not built yet", or a recommendation to wait with the reason.
-- [ ] Proposed child briefs in `outcome.md` (id, title, goal, size, dependencies, acceptance), including whether this repository moves to a workspace.
+- [ ] Proposed child briefs in `outcome.md` (id, title, goal, size, dependencies, acceptance), including the move of this repository to a workspace. The move is decided (2026-11-14): this repository becomes a workspace once node workspaces lands, so the phase order can restructure it. It does not block selfhost-layout, which only regroups files inside one package.
 - [ ] The maintainer reads D101 before any child starts (gate).
 
 ## Sizing

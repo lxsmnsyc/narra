@@ -136,8 +136,8 @@ static bool narra_fs_read_bytes(lstr* path, lstr** out, lstr** err) {
 
 static bool narra_fs_write(lstr* path, lstr* text, int64_t* written, lstr** err) {
   if (!narra_io_no_nul(path, err)) return false;
-#ifdef __wasi__
-  // WASI has no /dev: the two standard output paths write descriptors 1 and 2.
+#if defined(__wasi__) || defined(_WIN32)
+  // WASI and Windows have no /dev: the two standard output paths write descriptors 1 and 2.
   FILE* standard = NULL;
   if (strcmp(path->data, "/dev/stdout") == 0) standard = stdout;
   if (strcmp(path->data, "/dev/stderr") == 0) standard = stderr;

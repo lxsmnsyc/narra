@@ -128,7 +128,7 @@ else
   done < "$work/targets.txt"
 fi
 
-tripleof() {
+findTriple() {
   while read -r name triple; do
     if [ "$name" = "$1" ]; then
       printf '%s' "$triple"
@@ -138,14 +138,14 @@ tripleof() {
   return 1
 }
 
-isexpected() {
+matchExpectedFailure() {
   case " $expected_failures " in
     *" $1 "*) return 0 ;;
   esac
   return 1
 }
 
-isleftout() {
+matchLeftOut() {
   case " $left_out " in
     *" $1:$2 "*) return 0 ;;
   esac
@@ -261,7 +261,8 @@ runbinary() {
         sh -c 'cat > /program && chmod +x /program && cd /repo && /program "$@"' sh "$@" < "$binary"
       ;;
     wine)
-      withtimeout docker run --rm -i -e TMPDIR=/tmp --platform linux/amd64 -v "$root:/repo:ro" "$wine_image" \
+      # The prefix has no PATH, and Process.run searches PATH only, so WINEPATH names the system folder.
+      withtimeout docker run --rm -i -e TMPDIR=/tmp -e 'WINEPATH=C:\windows\system32' --platform linux/amd64 -v "$root:/repo:ro" "$wine_image" \
         sh -c 'cat > /program.exe && cd /repo && wine /program.exe "$@"' sh "$@" < "$binary"
       ;;
   esac
@@ -298,7 +299,7 @@ record() {
 
 checkrow() {
   row=$1
-  triple=$(tripleof "$row") || {
+  triple=$(findTriple "$row") || {
     say "cross-check: unknown row $row (narrac targets lists the rows)" >&2
     record "$row" all fail "unknown row"
     return
@@ -319,7 +320,7 @@ checkrow() {
 
   # the sample programs
   for sample in $samples; do
-    if isleftout "$row" "$sample"; then
+    if matchLeftOut "$row" "$sample"; then
       say "  $sample: left out on this row"
       record "$row" "$sample" skipped "left out"
       continue
@@ -354,6 +355,8 @@ checkrow() {
   fi
   seedbinary="$work/$row/seed$suffix"
   seedlibs_text=$(seedlibs "$row")
+  # The flag and library lists hold several words on purpose.
+  # shellcheck disable=SC2046,SC2086
   if ! "$CC" -target "$triple" -O2 -DNARRA_RELEASE -std=c11 -w $(seedflags "$row") -o "$seedbinary" "$root/seed/narrac.c" $seedlibs_text > "$work/$row/seed.build" 2>&1; then
     say "  seed: build failed"
     sed -n 1,3p "$work/$row/seed.build" | sed 's/^/    /'
@@ -440,7 +443,7 @@ for row in $rows; do
   done < "$results"
   mark=""
   if [ "$failed" -gt 0 ]; then
-    if isexpected "$row" && [ "${STRICT:-}" != 1 ]; then
+    if matchExpectedFailure "$row" && [ "${STRICT:-}" != 1 ]; then
       mark="expected failure"
       expected=$((expected + 1))
     else
@@ -453,7 +456,7 @@ for row in $rows; do
       mark="FAIL, nothing ran"
       unexpected=$((unexpected + 1))
     fi
-  elif isexpected "$row"; then
+  elif matchExpectedFailure "$row"; then
     mark="passes now: remove it from expected_failures"
   fi
   printf '%-24s %5d %4d %8d %7d  %s\n' "$row" "$built" "$ran" "$skipped" "$failed" "$mark"

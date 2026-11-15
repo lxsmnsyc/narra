@@ -1,6 +1,6 @@
 # Installing Narra
 
-You install Narra by building its compiler, `narrac`, from source and copying the one file it produces to a folder on your `PATH`. The build takes about a minute on a recent Mac.
+You install Narra by building its compiler, `narrac`, from source and copying the one file it produces to a folder on your `PATH`. The build takes a few minutes.
 
 ## What you need
 

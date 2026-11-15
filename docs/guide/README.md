@@ -50,9 +50,8 @@ Save a sample to a file and run it with `narrac run file.nra` to try your own ch
 
 The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
-- Dependencies on other packages, and workspaces of several packages.
+- Workspaces of several packages.
 - Functions that C programs can call, and `@layout` for structs shared with C.
-- Building for Windows and WebAssembly.
 
 Some features are built but not taught in the guide yet:
 
@@ -61,3 +60,4 @@ Some features are built but not taught in the guide yet:
 - `@const` functions, `ensures` lines and refinement types.
 - `typeof` in types and `Dynamic` trait values.
 - Unsafe code, C interop and build conditions.
+- Building for another system with `--target`, including Windows and WebAssembly (WASI).

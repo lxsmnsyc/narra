@@ -2,7 +2,7 @@
 
 `narra.tmLanguage.json` is a standard TextMate grammar with the scope name `source.narra`. Any tool that reads TextMate JSON grammars can load it: VS Code, Shiki, and others.
 
-It covers comments (`//`, `///`, `/* */`), annotations (`@const`, `@export(C)`), strings, characters, template strings with `${...}` holes, tagged templates, numbers (`0xFF`, `0b1010`, `1_000`, `1.0e-9`), keywords, `uses` effect lists, type annotations after `:`, and `function*` and `async function`. The keyword list comes from `selfhost/src/lexer.nra`.
+It covers comments (`//`, `///`, `/* */`), annotations (`@const`, `@export(C)`), strings, characters, template strings with `${...}` holes, tagged templates, numbers (`0xFF`, `0b1010`, `1_000`, `1.0e-9`), keywords, `uses` effect lists, type annotations after `:`, and `function*` and `async function`. The keyword list comes from `selfhost/src/syntax/lexer.nra`.
 
 ## VS Code
 

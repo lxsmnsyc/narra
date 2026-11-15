@@ -329,7 +329,7 @@ The first `narrac build`, `narrac run` or `narrac test` does three things:
 2. It downloads each chosen tag with `git` into a cache folder (`$NARRA_CACHE`, or `~/.cache/narra`) and makes it read-only. A version that is already in the cache is not downloaded again.
 3. It writes `narra.lock` next to `narra.toml`.
 
-`narra.lock` records, for each package, the repository, the chosen version, the commit of the tag and a hash of its files. Commit this file. When the lock and the repository disagree, for example because someone moved a tag, the build stops with an error instead of using different code. A build that changes nothing leaves the file as it was.
+`narra.lock` records, for each package, the repository, the chosen version, the tag it was fetched from, the commit of the tag and a hash of its files. Commit this file. When the lock and the repository disagree, for example because someone moved a tag, the build stops with an error instead of using different code. A build that changes nothing leaves the file as it was.
 
 A package may import only itself, `std` and the packages in its own `[dependencies]`. If `json` itself depends on `util`, your package still needs its own entry for `util` before it can import `"util/text"`. Without it the build reports that the package has no `[dependencies]` entry for `util`.
 
@@ -353,6 +353,8 @@ To use a fork or to pin a version, add an `[overrides]` table to the `narra.toml
 [overrides]
 json = { git = "https://example.com/my-fork/narra-json", version = "1.2.1" }
 ```
+
+Narra trusts the folder where it keeps downloaded packages. The default is `.cache/narra` in your home folder, and `NARRA_CACHE` names another one. When Narra downloads a package, it computes the hash of the files once and writes it next to the copy. Each build compares that hash with `narra.lock`. It does not read the files again, so a file that you or another program changes inside the cache afterwards is built as it is now. If a package contains a symbolic link, Narra follows it. Keep the cache folder writable only by you, and delete a package's folder in it if you suspect a change. The next build downloads it again and compares it with the lock.
 
 The editor support (`narrac lsp`) never downloads anything and never changes `narra.lock`. It reads the lock and the cache. Run `narrac build` once after adding a dependency so the editor can find it.
 

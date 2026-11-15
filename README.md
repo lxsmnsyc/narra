@@ -8,8 +8,6 @@ Status: specification draft. The compiler, `narrac`, is written in Narra (`selfh
 
 To build and install `narrac`, follow [docs/install.md](docs/install.md).
 
-`npm/` holds the packages of `narrac` for npm (a command, a typed API and a wasm fallback). `sh scripts/npm-package.sh` builds and checks them. Nothing is published from here.
-
 To have a coding agent write Narra with `narrac`, add the skill in [skills/narra](skills/narra/SKILL.md) to Claude Code: `/plugin marketplace add lxsmnsyc/narra`, then `/plugin install narra@narra`.
 
 ## Goals

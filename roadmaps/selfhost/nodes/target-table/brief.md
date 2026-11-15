@@ -1,7 +1,7 @@
 ---
 id: target-table
 title: "Target table and narrac build --target"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 235171
 owns:
   - roadmaps/selfhost/nodes/target-table/**
   - selfhost/src/buildtarget.nra

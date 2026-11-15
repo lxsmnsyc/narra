@@ -90,7 +90,7 @@ Phase order (maintainer, 2026-11-13): p1-syntax (finalize the language for the s
 - std-source gate follow-ups (2026-11-05) -> std-foundation; option (c), retiring the Go compiler -> c-seed
 - std library growth -> std-source, std-json (with shape-trait, shape-derive and call-type-args for `Json.decode<T>`), std-io-more, std-basics, std-unicode, std-arena, std-iterator (2026-11-01)
 - closure capture of `let` and `mutable` -> closure-borrow, cell-capture; identity type cycles -> identity-cycles (2026-11-01); `Range.stepped` -> std-basics; std modules of parked features stay with those nodes
-- shipping Narra binaries and libraries to other platforms and npm (user request 2026-11-06) -> cross-targets, c-abi-export, node-addon
+- shipping Narra binaries and libraries to other platforms and npm (user request 2026-11-06) -> cross-targets, narrac-wasm, npm-narrac, c-abi-export, node-addon, wasm-js-glue (D123)
 - refined 2026-11-07: sized numbers (F7) -> sized-numbers, sized-conversions, sized-f32, bytes-type; `mutable` as a reference -> mutable-reference, mutable-bindings; explicit call type arguments (F21) moved from typed-calls-and-effects to call-type-args; hot selfhost std tables -> std-tables-split
 - not in the original list, needed for self-hosting: split-compiler, box-recursive, maps, strings-std, io-std
 

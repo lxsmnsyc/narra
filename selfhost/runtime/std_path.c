@@ -81,6 +81,27 @@ static bool narra_io_no_nul(lstr* s, lstr** err) {
 
 
 
+// On Windows both "/" and "\\" separate segments, and a leading drive such as
+// "C:" is kept in front of the result. Results always use "/".
+static bool narra_path_is_separator(char c) {
+  return c == '/' || (NARRA_PATH_WINDOWS && c == '\\');
+}
+
+static int64_t narra_path_drive(const char* p, int64_t n) {
+  if (!NARRA_PATH_WINDOWS || n < 2 || p[1] != ':') return 0;
+  bool letter = (p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z');
+  return letter ? 2 : 0;
+}
+
+static lstr* narra_path_with_drive(const char* p, int64_t drive, lstr* rest) {
+  if (drive == 0) return rest;
+  lstr* s = lstr_new(drive + rest->len);
+  memcpy(s->data, p, (size_t)drive);
+  memcpy(s->data + drive, rest->data, (size_t)rest->len);
+  lstr_release(rest);
+  return s;
+}
+
 static lstr* narra_path_slice(const char* p, int64_t start, int64_t end) {
   lstr* s = lstr_new(end - start);
   memcpy(s->data, p + start, (size_t)(end - start));
@@ -88,17 +109,17 @@ static lstr* narra_path_slice(const char* p, int64_t start, int64_t end) {
 }
 
 // Node's path.posix.normalize: drops "." and empty segments, resolves "..".
-static lstr* narra_path_normalize(const char* p, int64_t n) {
-  bool absolute = n > 0 && p[0] == '/';
-  bool trailing = n > 0 && p[n - 1] == '/';
+static lstr* narra_path_normalize_rest(const char* p, int64_t n) {
+  bool absolute = n > 0 && narra_path_is_separator(p[0]);
+  bool trailing = n > 0 && narra_path_is_separator(p[n - 1]);
   char* out = malloc((size_t)n + 4);
   if (!out) narra_panic("runtime", "out of memory");
   int64_t o = 0;
   int64_t i = 0;
   while (i < n) {
-    while (i < n && p[i] == '/') i++;
+    while (i < n && narra_path_is_separator(p[i])) i++;
     int64_t start = i;
-    while (i < n && p[i] != '/') i++;
+    while (i < n && !narra_path_is_separator(p[i])) i++;
     int64_t len = i - start;
     if (len == 0 || (len == 1 && p[start] == '.')) continue;
     if (len == 2 && p[start] == '.' && p[start + 1] == '.') {
@@ -133,6 +154,11 @@ static lstr* narra_path_normalize(const char* p, int64_t n) {
   return s;
 }
 
+static lstr* narra_path_normalize(const char* p, int64_t n) {
+  int64_t drive = narra_path_drive(p, n);
+  return narra_path_with_drive(p, drive, narra_path_normalize_rest(p + drive, n - drive));
+}
+
 static lstr* narra_path_join(lstr* left, lstr* right) {
   if (left->len == 0 && right->len == 0) return lstr_from_cstr(".");
   if (left->len == 0) return narra_path_normalize(right->data, right->len);
@@ -146,15 +172,13 @@ static lstr* narra_path_join(lstr* left, lstr* right) {
   return s;
 }
 
-static lstr* narra_path_dirname(lstr* path) {
-  const char* p = path->data;
-  int64_t n = path->len;
+static lstr* narra_path_dirname_rest(const char* p, int64_t n) {
   if (n == 0) return lstr_from_cstr(".");
-  bool root = p[0] == '/';
+  bool root = narra_path_is_separator(p[0]);
   int64_t end = -1;
   bool matched = true;
   for (int64_t i = n - 1; i >= 1; i--) {
-    if (p[i] == '/') {
+    if (narra_path_is_separator(p[i])) {
       if (!matched) { end = i; break; }
     } else {
       matched = false;
@@ -165,12 +189,24 @@ static lstr* narra_path_dirname(lstr* path) {
   return narra_path_slice(p, 0, end);
 }
 
+static lstr* narra_path_dirname(lstr* path) {
+  int64_t drive = narra_path_drive(path->data, path->len);
+  lstr* rest = narra_path_dirname_rest(path->data + drive, path->len - drive);
+  if (drive > 0 && rest->len == 1 && rest->data[0] == '.') {
+    // "C:" and "C:a" have the drive itself as their directory.
+    lstr_release(rest);
+    return narra_path_slice(path->data, 0, drive);
+  }
+  return narra_path_with_drive(path->data, drive, rest);
+}
+
 static lstr* narra_path_basename(lstr* path) {
-  const char* p = path->data;
+  int64_t drive = narra_path_drive(path->data, path->len);
+  const char* p = path->data + drive;
   int64_t start = 0, end = -1;
   bool matched = true;
-  for (int64_t i = path->len - 1; i >= 0; i--) {
-    if (p[i] == '/') {
+  for (int64_t i = path->len - drive - 1; i >= 0; i--) {
+    if (narra_path_is_separator(p[i])) {
       if (!matched) { start = i + 1; break; }
     } else if (end == -1) {
       matched = false;
@@ -182,13 +218,14 @@ static lstr* narra_path_basename(lstr* path) {
 }
 
 static lstr* narra_path_extname(lstr* path) {
-  const char* p = path->data;
+  int64_t drive = narra_path_drive(path->data, path->len);
+  const char* p = path->data + drive;
   int64_t start_dot = -1, start_part = 0, end = -1;
   int pre_dot = 0;
   bool matched = true;
-  for (int64_t i = path->len - 1; i >= 0; i--) {
+  for (int64_t i = path->len - drive - 1; i >= 0; i--) {
     char c = p[i];
-    if (c == '/') {
+    if (narra_path_is_separator(c)) {
       if (!matched) { start_part = i + 1; break; }
       continue;
     }

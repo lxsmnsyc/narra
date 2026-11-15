@@ -1,0 +1,2635 @@
+// The checker context, ported from the Checker struct and helpers of
+// compiler/internal/narra/check.go, diagnostic.go (report) and the
+// orderTypes half of check_types.go.
+//
+// One `Checker` value is threaded through every pass as `mutable checker`. Every
+// array and map in it has one owner, so pushes and writes happen in place.
+// Declaration tables are written through `checker.structs[i].fields = ...`.
+//
+// Side tables are indexed by node id. They are sized by the id count
+// given to newChecker (the package's `nextId` plus the prelude's ids, see
+// declare.nra), never by the number of nodes, because ids have gaps. A
+// dummy node built after a parse error has id -1; parsed files that reach
+// the checker have none, but every write checks the range anyway.
+import { filledArray } from "narrac/driver/textops"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Math from "std/math"
+import {
+  Pos,
+  FuncDecl,
+  Param,
+  ConstDecl,
+  Decl,
+  ImportDecl,
+  Expr,
+  Block,
+  Arg,
+  FieldInit,
+  TypeExpr,
+  Pattern,
+  SourceFacts,
+  createEmptyFacts,
+} from "narrac/syntax/ast"
+import { Fix, createEdit, createFix, insertAt, moveColumn } from "narrac/driver/fixes"
+import { getPosKey } from "narrac/syntax/trivia"
+import {
+  Type,
+  Field,
+  StructInfo,
+  EnumInfo,
+  DistinctInfo,
+  AliasInfo,
+  ParamInfo,
+  GenericInfo,
+  TraitInfo,
+  TypeTraits,
+  ImplInfo,
+  ImplRef,
+  MapKeyCheck,
+  PointerCheck,
+  typeKey,
+  plainTypeKey,
+  isBoxedEnum,
+  isInteger,
+  findFixedLength,
+  findLaneSize,
+  formatVectorName,
+} from "narrac/check/types"
+import { Registry, newRegistry } from "narrac/std/builtins"
+import {
+  BuildTarget,
+  TargetRequirement,
+  DroppedRange,
+  createUnknownTarget,
+} from "narrac/driver/buildtarget"
+import { collectFuncIds, collectBlockIds, collectExpressionIds } from "narrac/syntax/idcheck"
+import { writeTypeUses } from "narrac/check/typeuses"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+
+// The names one module sees (Go's modScope): its own declarations, the
+// names it imports and the prelude's types and generics. An imported name
+// maps to the same table index as in the module that declares it, so
+// types, functions, constants and traits compare by index across modules.
+export struct ModScope {
+  path: string // "" for the prelude
+  file: string // for diagnostics: "prelude", "src/text.nra", "hello.nra"
+  isSource: bool // a module of the package (Go's src != nil); false for the prelude
+  imports: Array<ImportDecl> // the module's imports, in source order
+  declarations: Array<Decl> // the module's declarations, for reportTypeError
+  exports: Map<string, int> // exported name -> index in declarations (Go's SourceModule.Exports; the last one wins)
+  types: Map<string, Type> // non-generic named types, with the primitives
+  generics: Map<string, int> // Checker.generics
+  aliases: Map<string, int> // Checker.aliases
+  functions: Map<string, int> // Checker.functions, own and imported
+  consts: Map<string, int> // Checker.consts, own and imported
+  traits: Map<string, int> // Checker.traits: the module's own traits and its imports'
+  modules: Map<string, string> // namespace alias -> module path, package or std
+  imported: Map<string, int> // std function imported by name -> Registry.functions index
+  facts: SourceFacts // source text facts for fixes, set by declareModule
+}
+
+// The entry function of one binary: a Checker.functions index, or -1 when the
+// entry names no exported function of the package.
+export struct EntryInfo {
+  binary: string
+  funcIndex: int
+}
+
+// The module and function name a binary's entry names, known before any body
+// is checked, so the entry function's parameter can be exempt from the unused
+// check (Go's isEntryFunc).
+export struct EntryTarget {
+  module: string
+  name: string
+}
+
+// A top-level function. typeParameters is empty for a non-generic function.
+// Parameter types are in the side table Checker.paramTypes by Param.id.
+export struct FuncInfo {
+  name: string
+  module: string
+  scope: int
+  declaration: FuncDecl
+  typeParameters: Array<int> // Checker.parameters
+  result: Type
+  // Set for a member of an implement block on a generic type: the type with its parameters open.
+  selfType: Option<Type> = None
+}
+
+// A written use of a constrained struct or enum, waiting for flushTypeBounds (typebounds.nra).
+export struct TypeBoundCheck {
+  pos: Pos
+  generic: int
+  arguments: Array<Type>
+  file: string
+}
+
+// A written Dynamic<Trait>, waiting for flushDynamicTraits (dynamic.nra) to
+// check the trait once its functions are resolved.
+export struct DynamicTraitUse {
+  pos: Pos
+  traitIndex: int
+  file: string
+}
+
+// A top-level constant. declaredType is the declared type, set by declareConstTypes;
+// None without an annotation until the body checker infers it. The body
+// The checker evaluates the value once (state CONST_NEW, CONST_BUSY, CONST_DONE)
+// and keeps its type in valueType.
+export struct ConstInfo {
+  name: string
+  module: string
+  scope: int
+  declaration: ConstDecl
+  declaredType: Option<Type>
+  state: int = 0
+  valueType: Option<Type> = None
+}
+
+export const CONST_NEW = 0
+export const CONST_BUSY = 1
+export const CONST_DONE = 2
+
+// What a name or call resolves to, kept per checked body by node id.
+export enum Ref {
+  Unresolved
+  Local(index: int) // BodyInfo.locals
+  Const(index: int) // Checker.consts
+  Function(index: int) // Checker.functions
+  Builtin(index: int) // Registry.functions
+  // A field read through an enum value narrowed to one variant
+  // (selfhost-check-patterns). A pattern that names a variant records
+  // Constructor.
+  Narrow(enumIndex: int, variantIndex: int)
+  // Added by selfhost-check-calls (calls.nra, ctors.nra):
+  Constructor(enumIndex: int, variant: int) // Checker.enums, EnumInfo.variants
+  Implementation(block: int, index: int) // Checker.implementations[block].functions[index]
+  TraitFunction(traitIndex: int, name: string) // a trait function the compiler implements
+  Distinct(index: int) // Checker.distincts: T.from or T.toInt
+  // Added by selfhost-check-closures: a call through a function value.
+  Value
+  // A constant type parameter used as a value: its value in an instance, or
+  // open in the generic declaration, where the value is not known (constgenerics.nra).
+  ConstantParameter(value: int, open: bool)
+}
+
+// One function of Go's Program.Funcs, in the order Go lists them (contracts/emitter.md).
+export enum ProgramFunc {
+  PlainFunc(funcIndex: int) // Checker.functions, non-generic
+  InstanceFunc(instance: int) // Checker.instanceList
+  ImplFunc(block: int, index: int) // Checker.implementations[block].functions[index]
+}
+
+// A local variable, parameter or loop variable of one checked body (Go's
+// Local). noEscape marks a function-type parameter without `escaping`.
+// selfhost-check-patterns adds narrowing beside it.
+// How a local was bound. Only a Plain local (a `const` or `let` with a plain
+// name), a Reference and a `mutable` parameter can have their contents
+// changed; the others hold a copy of part of another value and are
+// read-only. A Reference is the name of `for (mutable item of items)`: a
+// pointer to the element, which acts as a `mutable` parameter.
+export enum BindingKind derives Equatable {
+  Plain
+  Pattern
+  Loop
+  Destructured
+  Reference
+}
+
+// The source of a `for (mutable item of items)` loop being checked.
+// The body cannot use a place that overlaps it: local is the BodyInfo.locals
+// index at its root, path the fields after it, with "[]" for an element.
+export struct LoopBorrow {
+  local: int
+  path: Array<string>
+  source: string
+  name: string
+}
+
+export struct LocalInfo {
+  name: string
+  localType: Type
+  isMutable: bool
+  param: bool
+  pos: Pos
+  noEscape: bool
+  used: bool
+  // For the fix of an unused local: where the name is written, whether it is
+  // a `{ host }` shorthand, and the positions of the assignments to it.
+  namePos: Pos
+  shorthand: bool = false
+  writes: Array<Pos> = []
+  // For the never-reassigned check: the `let` keyword of a plain declaration (letLine is
+  // 0 for any other local), and whether the local was ever written.
+  letLine: int = 0
+  letColumn: int = 0
+  assigned: bool = false
+  binding: BindingKind
+  // For a Loop binding: the place the loop reads (`players`), or "" when the
+  // the source is no place, and whether its elements have contents, for the hint
+  // of a write through the binding.
+  loopSource: string = ""
+  loopContents: bool = false
+  // checker.localCount right after the increment; the C name is v_<name>_<number>
+  // (filled by selfhost-emit-program).
+  number: int = 0
+  // The depth of the scope that last bound the name.
+  depth: int = 0
+}
+
+// A name bound in a scope and the value it replaced (-1 for none).
+export struct ScopeBinding {
+  name: string
+  previous: int
+}
+
+// What the checker knows about one arrow function of a body (Go's Closure).
+// captures are BodyInfo.locals indexes in order of first use; stack is set
+// when the arrow is passed straight to a non-escaping parameter. The hint
+// is the expected type from a generic call whose type arguments are not all
+// known yet: a None parameter or result is unknown.
+export struct ClosureInfo {
+  nodeId: int
+  stack: bool
+  captures: Array<int>
+  // The captured local `const`s the closure, or one nested in it, changes:
+  // they are captured by reference, as a `let` is.
+  refCaptures: Array<int> = []
+  // Set when the arrow, or one nested in it, assigns a captured `let` or changes its contents.
+  writesCaptured: bool = false
+  // Set for an async arrow or block: its task copies each capture when it starts.
+  isTask: bool = false
+  // Set when the arrow is checked against an expected function type whose
+  // result is fresh, so its result may not share a parameter.
+  expectsFresh: bool = false
+  hasHint: bool
+  hintParameters: Array<Option<Type>>
+  hintResult: Option<Type>
+  // The `from` parameter of the hint's function type, -1 for none.
+  hintShared: int = -1
+}
+
+// An arrow function being checked: the depth of the scope it appears in.
+// A local declared at that depth or deeper belongs to the arrow.
+export struct ArrowContext {
+  outerDepth: int
+  closure: int // BodyInfo.closures
+}
+
+// The syntax a checked body walks, for the types dump and later passes.
+export enum BodyRoot {
+  RootFunc(declaration: FuncDecl)
+  RootBlock(block: Block)
+  RootExpr(expression: Expr)
+}
+
+// The results of one checked body. A generic function is checked once
+// with its type parameters open and once per instance over the same syntax,
+// so results are kept per body, not per package: types, refs and declared
+// are indexed by `id - first`, where [first, first + length) covers the ids
+// of the body's nodes. declared gives the local a node declares (a
+// parameter, VarStmt or ForStmt), or -1.
+export struct BodyInfo {
+  module: string
+  kind: string // func, test, impl, const, default
+  name: string // the header text after the kind
+  typeArguments: Array<Type>
+  root: BodyRoot
+  first: int
+  types: Array<Option<Type>>
+  refs: Array<Ref>
+  declared: Array<int>
+  locals: Array<LocalInfo>
+  errorCount: int // Checker.errors when the body started, for the unused-name check
+  // Closure state (selfhost-check-closures): closures in discovery order,
+  // found by arrow node id in closureIndex; arrows is the stack of arrows
+  // being checked (arrowDepth deep, popped slots are reused); allowedId is
+  // the one Ident that may name a non-escaping parameter.
+  closures: Array<ClosureInfo>
+  closureIndex: Map<int, int>
+  arrows: Array<ArrowContext>
+  arrowDepth: int
+  allowedId: int
+  // Facts for the emitter (contracts/emitter.md, filled by selfhost-emit-program):
+  // the call, Ident or FieldExpr ids that name a generic function, to a
+  // Checker.instanceList index; and the Self type of each trait function call.
+  instanceRefs: Map<int, int>
+  traitSelf: Map<int, Type>
+  // The element a tuple index reads, by the id of the index expression.
+  tupleIndexes: Map<int, int>
+}
+
+// The entry point of the recursive body checker. Narra modules cannot
+// import in a cycle and a function value cannot take a mutable parameter,
+// so modules below narrac/check/exprs (calls, patterns, closures, builtins) reach
+// expressions and blocks through a type that implements this trait: the
+// functions that need it take `walker: W` with `<W: Walker>`, and
+// narrac/check/body passes its BodyWalker.
+export trait Walker {
+  function checkExpression(
+    walker: Self,
+    mutable checker: Checker,
+    expression: Expr,
+    want: Option<Type>,
+  ): Type from want uses alloc
+  function checkBlock(walker: Self, mutable checker: Checker, block: Block) uses alloc
+  // Resolves a pattern against the type of the value it matches (narrac/check/match).
+  function resolvePattern(
+    walker: Self,
+    mutable checker: Checker,
+    pattern: Pattern,
+    valueType: Type,
+  ) uses alloc
+  // `is` and `match` expressions (narrac/check/match).
+  function checkPatterns(
+    walker: Self,
+    mutable checker: Checker,
+    expression: Expr,
+    want: Option<Type>,
+  ): Type from want uses alloc
+  // Map literals, tuple literals, spread struct literals and Map indexes
+  // (narrac/syntax/literals).
+  function checkMapLiteral(
+    walker: Self,
+    mutable checker: Checker,
+    expression: Expr,
+    want: Option<Type>,
+  ): Type from want uses alloc
+  function checkTuple(
+    walker: Self,
+    mutable checker: Checker,
+    pos: Pos,
+    elements: Array<Expr>,
+    want: Option<Type>,
+  ): Type from checker uses alloc
+  function checkSpread(
+    walker: Self,
+    mutable checker: Checker,
+    pos: Pos,
+    typeName: string,
+    fields: Array<FieldInit>,
+    spread: Expr,
+    want: Option<Type>,
+  ): Type from want uses alloc
+  function checkMapIndex(
+    walker: Self,
+    mutable checker: Checker,
+    nodeId: int,
+    index: Expr,
+    mapKey: Type,
+    mapValue: Type,
+  ): Type from mapValue uses alloc
+  // Calls and constructors (calls.nra, ctors.nra) sit above narrac/check/exprs,
+  // which reaches them through these two. checkConstructorName checks a
+  // constructor used as a value (`None`, `Shape.Empty`); enumName is "" for
+  // a bare name, and the result is None when no enum has the constructor.
+  function checkCall(
+    walker: Self,
+    mutable checker: Checker,
+    nodeId: int,
+    pos: Pos,
+    callee: Expr,
+    arguments: Array<Arg>,
+    want: Option<Type>,
+  ): Type from checker uses alloc
+  function checkConstructorName(
+    walker: Self,
+    mutable checker: Checker,
+    nodeId: int,
+    pos: Pos,
+    enumName: string,
+    name: string,
+    want: Option<Type>,
+  ): Option<Type> from checker uses alloc
+  // A block in value position (narrac/check/stmts).
+  function checkBlockExpression(
+    walker: Self,
+    mutable checker: Checker,
+    expression: Expr,
+    want: Option<Type>,
+  ): Type from checker uses alloc
+  // A match arm written as a block in value position is a block expression.
+  function checkBlockBody(
+    walker: Self,
+    mutable checker: Checker,
+    pos: Pos,
+    block: Block,
+    want: Option<Type>,
+  ): Type from checker uses alloc
+  // Arrow functions (narrac/check/closures).
+  function checkArrow(
+    walker: Self,
+    mutable checker: Checker,
+    expression: Expr,
+    want: Option<Type>,
+  ): Type from checker uses alloc
+  // Std functions with a named check (narrac/std/stdcalls).
+  function checkStdCall(
+    walker: Self,
+    mutable checker: Checker,
+    pos: Pos,
+    arguments: Array<Arg>,
+    name: string,
+    kind: string,
+    want: Option<Type>,
+  ): Type from want uses alloc
+}
+
+// An instance of a generic function (Go's pendingFunc with the cloned
+// declaration): the syntax stays shared, so the instance keeps its
+// signature here and its results in its own body. scope is the
+// declaring module and env maps the type parameter names to typeArguments.
+export struct FuncInstance {
+  funcIndex: int // Checker.functions
+  scope: int
+  environment: Map<string, Type>
+  typeArguments: Array<Type>
+  parameters: Array<Type>
+  result: Type
+}
+
+// A compile error. code is the diagnostic code (see diagnostics.nra). fixes
+// are the suggested edits, usually none.
+export struct CheckError {
+  code: string
+  file: string
+  pos: Pos
+  message: string
+  fixes: Array<Fix> = []
+}
+
+// A block expression being checked (Go's blockCtx): the type its returns
+// agree on, and the loops and labels outside it, which it cannot leave.
+export struct BlockContext {
+  result: Option<Type> // the expected type, or the type of the first return
+  returns: int
+  loops: int
+  labels: Array<string>
+  cond: bool // a conditional expression `c ? a : b`
+  reported: bool // the valueless-branch error was reported
+}
+
+export struct Checker {
+  // Declaration tables. A Type indexes into the first four.
+  structs: Array<StructInfo>
+  enums: Array<EnumInfo>
+  distincts: Array<DistinctInfo>
+  aliases: Array<AliasInfo>
+  parameters: Array<ParamInfo>
+  generics: Array<GenericInfo>
+  functions: Array<FuncInfo>
+  consts: Array<ConstInfo>
+  // Generic instances and tuple types by "<generic>|<typeKeys>" or
+  // "T|<typeKeys>", and the instances in creation order (Go's instanceTypes).
+  instances: Map<string, Type>
+  aliasNames: Map<string, string> // type key -> the alias that last resolved to it
+  instanceTypes: Array<Type>
+  // Non-generic structs and enums in declaration order, prelude first
+  // (the concrete list Go passes to finish).
+  concrete: Array<Type>
+  // Module scopes; cur is the module being checked (Go's c.mod).
+  scopes: Array<ModScope>
+  current: int
+  // The type parameters in scope by name (Go's c.env).
+  environment: Map<string, Type>
+  // Side tables by node id.
+  paramTypes: Array<Type> // the type of each Param, TVoid until set
+  // Locals declared so far, for unique local names (body checker).
+  localCount: int
+  // Traits (traits.nra). traits holds every declared trait; a module's
+  // ModScope.traits maps names to indexes. typeTraits has one entry per
+  // struct and enum declaration (and the prelude's), found by
+  // "<module>|<name>" in typeTraitIndex. bounds maps a type parameter to the
+  // traits in its constraint. implementations are the checked implement blocks, and
+  // implFunctions maps "<typeKey>|Trait.function" to the implementing function.
+  traits: Array<TraitInfo>
+  typeTraits: Array<TypeTraits>
+  typeTraitIndex: Map<string, int>
+  bounds: Map<int, Array<int>>
+  busy: Map<string, bool>
+  typeofChain: string
+  // The parameters a signature has resolved so far, for `typeof` in a later parameter.
+  signatureNames: Map<string, Type>
+  implementations: Array<ImplInfo>
+  implFunctions: Map<string, ImplRef>
+  mapKeys: Array<MapKeyCheck>
+  pointerElements: Array<PointerCheck> = []
+  typeBounds: Array<TypeBoundCheck> = []
+  dynamicTraits: Array<DynamicTraitUse> = []
+  errors: Array<CheckError>
+  errorKeys: Map<string, bool> // file, line, column and message of each error in errors
+  // Structs and enums in C definition order, set by finish (Go's
+  // Program.Types).
+  order: Array<Type>
+  // By Checker.enums index, set by finish: true when the enum keeps its
+  // payload on the heap, false when the payload is stored in the value.
+  heapEnums: Array<bool>
+  // By Checker.structs and Checker.enums index, set by finish when the
+  // package has no errors: true when a value holds reference counts.
+  countedStructs: Array<bool>
+  countedEnums: Array<bool>
+  // By Checker.structs and Checker.enums index, set by finish when the
+  // package has no errors: the size and alignment of the C value.
+  structLayouts: Array<CLayout>
+  enumLayouts: Array<CLayout>
+  // The std registry (stdlib.nra), the scope index of each module path,
+  // the package (for unknown-module errors), the std modules the program
+  // uses in first-import order (Go's Program.Modules) and the entry
+  // function of each binary.
+  registry: Registry
+  scopeIndex: Map<string, int>
+  packageName: string
+  single: bool
+  dependencyNames: Map<string, bool>
+  used: Array<string>
+  // Set when a module imports a std thread module: the thread checks of
+  // threadcheck.nra run only then.
+  threads: bool = false
+  entries: Array<EntryInfo>
+  entryTargets: Array<EntryTarget>
+  // The body checker (body.nra, exprs.nra, statements.nra). checkingBodies is
+  // set by `narrac types`; without it the declaration passes skip field
+  // defaults, as `narrac declarations` did before bodies existed. bodies lists
+  // the checked bodies in the order their checks start; body is the one
+  // being checked, or -1. localNames maps every name bound in an open block
+  // scope of that body to a BodyInfo.locals index (or -1), and so do the
+  // narrowing keys. scopeUndo holds the first scopeUndoCount bindings made in
+  // the open scopes, each with the value it replaced, and scopeStarts holds
+  // where each scope's bindings begin, so closing a scope restores the names
+  // it replaced. resultType is the
+  // result of the function being checked (void outside functions), loops
+  // the depth of loops, and inTest is set inside a test body.
+  checkingBodies: bool = false
+  // Generic structs built since the last default check (resolve.nra's
+  // buildGeneric queues them; Go checks their defaults during the build).
+  pendingDefaults: Array<int> = []
+  // Generic structs whose open default check reported an error, and the struct
+  // instances whose defaults of fields that use a type parameter are still to
+  // be checked with the instance's types (body.nra's checkInstanceDefaults).
+  failedDefaults: Map<int, bool>
+  pendingInstanceDefaults: Array<int> = []
+  bodies: Array<BodyInfo> = []
+  body: int = -1
+  localNames: Map<string, int>
+  scopeUndo: Array<ScopeBinding> = []
+  scopeUndoCount: int = 0
+  scopeStarts: Array<int> = []
+  scopeDepth: int = 0
+  resultType: Type
+  // Set while the result of an arrow function is inferred from its returns
+  // (selfhost-check-closures): a return checks its value without an
+  // expected type.
+  inferring: bool = false
+  loops: int = 0
+  // The line and column of the iterable of the for loop being checked, or line 0
+  // (Go's c.forSource): Array.values and Array.entries are valid only there.
+  forSourceLine: int = 0
+  forSourceColumn: int = 0
+  // The labels of the enclosing loops, innermost last.
+  labels: Array<string> = []
+  // The block expressions being checked, innermost last.
+  blocks: Array<BlockContext> = []
+  inTest: bool = false
+  // The Checker.functions index of the function whose signature or body is
+  // being checked (an instance's generic function), or -1 (Go's sigFunc):
+  // it binds the effect variables of generator types; generator is set in
+  // a function* body.
+  functionIndex: int = -1
+  generator: bool = false
+  // Set in the body of an async function, an async arrow or an async block,
+  // where `await` is allowed (D109 item 4).
+  asyncBody: bool = false
+  // Generator uses checked after the effect pass (Go's generatorUses), and
+  // the inferred effects of each private function* by generatorKey, filled
+  // by the effect pass.
+  generatorUses: Array<GeneratorUse> = []
+  // Function values stored where a function type with the same signature is
+  // expected, checked by the effect pass against what the value does.
+  // The flag looseFunctions is set while the argument for a function-type parameter of
+  // a private function is checked: such a parameter takes the effects of the
+  // argument at each call.
+  functionStores: Array<FunctionStore> = []
+  looseFunctions: bool = false
+  // False while the emitter writes the C name table: C types carry no effects.
+  printEffects: bool = true
+  // The Checker.functions index of the function whose call is being checked, or -1.
+  calleeIndex: int = -1
+  // The id of the values array of the tagged template whose call is being checked, or -1.
+  taggedValues: int = -1
+  generatorEffects: Map<string, Array<string>>
+  // The type arguments written on the call being checked, by call node id
+  // (`f<int>(x)`). checkCallEndingNarrowing sets them; the generic and trait
+  // call code empties the entry when it uses it, so a non-empty entry after
+  // the check means the callee takes no type arguments.
+  callTypeArguments: Map<int, Array<TypeExpr>>
+  // The order of the named arguments of each call whose arguments are not
+  // written in parameter order, by call node id: entry i is the
+  // written index of the argument passed to parameter i. The AST keeps the
+  // written order, which is the evaluation order; a pass that pairs an
+  // argument with its parameter reads the call through orderArguments.
+  argumentOrders: Map<int, Array<int>>
+  // The effects of each call result with bound generator effects (a
+  // TGenerator origin of -2 - index), filled by the effect pass.
+  boundGenerators: Array<Array<string>> = []
+  // The call node id that made each of them: only that call fills it (a
+  // generic `id(x)` returns the same type).
+  boundCallIds: Array<int> = []
+  // The effect names the callee declared for each of them, its variables included. A
+  // function type bound inside a call result uses the same slots, through a binder of
+  // -2 - index.
+  boundNames: Array<Array<string>> = []
+  // The id of the target of the assignment being checked, or -1 (Go's
+  // c.assigning): a Map index there is a write.
+  assigningId: int = -1
+  // The sources of the enclosing `for (mutable ...)` loops, innermost last,
+  // and the ids of the root names of the places already compared with them.
+  loopBorrows: Array<LoopBorrow> = []
+  borrowChecked: Array<int> = []
+  // The id of the integer literal directly under a unary minus, or -1: the
+  // literal may reach one further below zero.
+  negatedLiteralId: int = -1
+  // Generic function instances (instances.nra) in discovery order, found by
+  // "<func>|<typeKeys>" in funcInstances. pending is the queue of instances
+  // to check (instanceList indexes); checkPending (body.nra) works through
+  // it from pendingNext after every module's bodies.
+  instanceList: Array<FuncInstance> = []
+  funcInstances: Map<string, int>
+  // The first call of each generic function instance, "file:line:column", by
+  // its Checker.funcInstances key; errors only an instance has name it.
+  instanceCalls: Map<string, string>
+  pending: Array<int> = []
+  pendingNext: int = 0
+  // Facts for the emitter (contracts/emitter.md, filled by selfhost-emit-program).
+  // programFunctions follows Go's Program.Funcs order, programConsts lists the constants in
+  // the order each reaches CONST_DONE, composites every array, box, map and
+  // function type by typeKey. Until programRecorded is set the emitter reports
+  // "program facts" as unsupported.
+  programFunctions: Array<ProgramFunc> = []
+  programConsts: Array<int> = []
+  composites: Map<string, Type>
+  // BodyInfo index by the keys findBody documents (see keyBody).
+  bodyKeys: Map<string, int>
+  programRecorded: bool = true
+  // The function types written in source modules without `from`, by type key,
+  // for the fix that adds `from` to the type a shared result does not fit.
+  writtenFunctionTypes: Map<string, Array<WrittenFunctionType>>
+  // The tracked types a value of each type holds, by type key, for the shared results check.
+  heldTypeSets: Map<string, Map<string, bool>>
+  // The target of this build (std/build), and the `if` conditions it decides: the
+  // condition's expression id to the branch kept, true for the then branch.
+  buildTarget: BuildTarget
+  foldedConditions: Map<int, bool>
+  // The `requires` conditions of each function by Checker.functions index, and
+  // the calls to such functions, proven after every body (contracts.nra).
+  requirements: Map<int, Array<Requirement>>
+  contractCalls: Array<ContractCall> = []
+  // The `@target` of each function that has one, by Checker.functions index,
+  // and the source of the branches this target drops.
+  functionTargets: Map<int, TargetRequirement>
+  droppedRanges: Array<DroppedRange> = []
+  // The `ensures` patterns of each function by Checker.functions index, read with
+  // the requirements, and those of the body being proven, by body index.
+  resultContracts: Map<int, ResultContract>
+  bodyContracts: Map<int, ResultContract>
+  // The value of each top-level constant that calls an `@const` function, by
+  // Checker.consts index, computed by consteval.nra after the effect pass.
+  constValues: Map<int, ConstValue>
+}
+
+// A value computed while compiling (consteval.nra). Structs and tuples keep
+// their fields in declaration order; a map keeps its keys and values in
+// insertion order, with the position of each key by its keyText.
+export enum ConstValue {
+  Unit
+  Integer(value: int)
+  Float(value: f64)
+  Boolean(value: bool)
+  Character(value: char)
+  Text(value: string)
+  Items(elements: Array<ConstValue>)
+  Fields(values: Array<ConstValue>)
+  Variant(tag: int, values: Array<ConstValue>)
+  Entries(keys: Array<ConstValue>, values: Array<ConstValue>, positions: Map<string, int>)
+  Span(start: int, end: int, step: int)
+  Builder(parts: Array<string>)
+}
+
+// The `ensures` patterns of one function, and the folded bound of each comparison
+// pattern in them, by pattern id.
+export struct ResultContract {
+  patterns: Array<Pattern>
+  bounds: Map<int, int>
+}
+
+// One `requires` comparison: parameter `parameter` compared with `bound`, which the
+// source writes as boundText (a number or a constant's name), or with parameter
+// `other` when it is not -1 (a relation; boundText is its name). Comparisons with
+// the same clause index are joined by `||`.
+export struct Requirement {
+  parameter: int
+  comparison: string
+  bound: int
+  boundText: string
+  clause: int
+  other: int
+}
+
+// What a call proved about each argument when it was checked, and the set of
+// possible orders between the arguments of each relation requirement, in order.
+export struct ContractCall {
+  file: string
+  funcIndex: int
+  arguments: Array<ContractArgument>
+  relations: Array<int>
+}
+
+// constant is set when the argument is the integer constant value.
+export struct ContractArgument {
+  pos: Pos
+  low: int
+  high: int
+  nonzero: bool
+  constant: bool
+  value: int
+}
+
+// A function type as written, and the scope of the module that writes it.
+export struct WrittenFunctionType {
+  scope: int
+  type: TypeExpr
+}
+
+export function newChecker(ids: int): Checker uses alloc {
+  return Checker {
+    structs: [],
+    enums: [],
+    distincts: [],
+    aliases: [],
+    parameters: [],
+    generics: [],
+    functions: [],
+    consts: [],
+    instances: Map {},
+    failedDefaults: Map {},
+    aliasNames: Map {},
+    instanceTypes: [],
+    concrete: [],
+    scopes: [],
+    localNames: Map {},
+    current: 0,
+    environment: Map {},
+    paramTypes: filledArray(Type.TVoid, ids),
+    localCount: 0,
+    traits: [],
+    typeTraits: [],
+    typeTraitIndex: Map {},
+    bounds: Map {},
+    busy: Map {},
+    typeofChain: "",
+    signatureNames: Map {},
+    implementations: [],
+    implFunctions: Map {},
+    mapKeys: [],
+    errors: [],
+    errorKeys: Map {},
+    order: [],
+    heapEnums: [],
+    countedStructs: [],
+    countedEnums: [],
+    structLayouts: [],
+    enumLayouts: [],
+    registry: newRegistry(),
+    scopeIndex: Map {},
+    packageName: "",
+    single: false,
+    dependencyNames: Map {},
+    used: [],
+    entries: [],
+    entryTargets: [],
+    resultType: Type.TVoid,
+    funcInstances: Map {},
+    instanceCalls: Map {},
+    composites: Map {},
+    bodyKeys: Map {},
+    writtenFunctionTypes: Map {},
+    heldTypeSets: Map {},
+    buildTarget: createUnknownTarget(true),
+    foldedConditions: Map {},
+    functionTargets: Map {},
+    generatorEffects: Map {},
+    callTypeArguments: Map {},
+    argumentOrders: Map {},
+    requirements: Map {},
+    resultContracts: Map {},
+    bodyContracts: Map {},
+    constValues: Map {},
+  }
+}
+
+export function reportError(
+  mutable checker: Checker,
+  pos: Pos,
+  code: string,
+  message: string,
+) uses alloc {
+  // An error equal to one already recorded is dropped.
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  reportErrorIn(mutable checker, file, pos, code, message)
+}
+
+export function reportErrorIn(
+  mutable checker: Checker,
+  file: string,
+  pos: Pos,
+  code: string,
+  message: string,
+) uses alloc {
+  reportErrorWithFixes(mutable checker, file, pos, code, [], message)
+}
+
+export function reportErrorFix(
+  mutable checker: Checker,
+  pos: Pos,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+) uses alloc {
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  reportErrorWithFixes(mutable checker, file, pos, code, fixes, message)
+}
+
+function reportErrorWithFixes(
+  mutable checker: Checker,
+  file: string,
+  pos: Pos,
+  code: string,
+  fixes: Array<Fix>,
+  message: string,
+) uses alloc {
+  const key = `${code}|${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
+  if (checker.errorKeys[key] is Some(_)) {
+    return
+  }
+  checker.errorKeys[key] = true
+  // In a chain `a + b + c` the inner errors start at the same text. Only the
+  // outermost keeps its fix, because the others would leave an error.
+  if (Arrays.length(fixes) > 0) {
+    for (const index of Ranges.upTo(Arrays.length(checker.errors))) {
+      const old = checker.errors[index].fixes
+      if (
+        Arrays.length(old) > 0 &&
+          old[0].title == fixes[0].title &&
+          isSamePosition(old[0].edits[0].start, fixes[0].edits[0].start)
+      ) {
+        checker.errors[index].fixes = []
+      }
+    }
+  }
+  Arrays.push(mutable checker.errors, CheckError {
+    code,
+    file,
+    pos,
+    message,
+    fixes,
+  })
+}
+
+export function hasErrorAt(checker: Checker, pos: Pos): bool {
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  for (const error of Arrays.values(checker.errors)) {
+    if (error.file == file && isSamePosition(error.pos, pos)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isSamePosition(left: Pos, right: Pos): bool {
+  return left.line == right.line && left.column == right.column
+}
+
+export function findImportAt(checker: Checker): Pos {
+  const scope = checker.scopes[checker.current]
+  if (Arrays.length(scope.imports) > 0) {
+    return Pos { line: scope.imports[0].pos.line, column: 1 }
+  }
+  return Pos { line: scope.facts.header, column: 1 }
+}
+
+export function buildImportFix(checker: Checker, namespace: string, path: string): Fix uses alloc {
+  const at = findImportAt(checker)
+  return createFix(`import ${path}`, [insertAt(at, `import * as ${namespace} from "${path}"\n`)])
+}
+
+export function errorText(errors: Array<CheckError>): string uses alloc {
+  let builder = Str.builder()
+  for (const error of Arrays.values(errors)) {
+    Str.append(
+      mutable builder,
+      `error ${error.file}:${Int.toString(error.pos.line)}:${Int.toString(error.pos.column)}: ${error.message}\n`,
+    )
+  }
+  return Str.build(builder)
+}
+
+export function newScope(
+  mutable checker: Checker,
+  path: string,
+  file: string,
+  isSource: bool,
+  imports: Array<ImportDecl>,
+  declarations: Array<Decl>,
+): int uses alloc {
+  let types: Map<string, Type> = Map {
+    "int": Type.TInt,
+    "i64": Type.TInt,
+    "i8": Type.TI8,
+    "i16": Type.TI16,
+    "i32": Type.TI32,
+    "u8": Type.TU8,
+    "u16": Type.TU16,
+    "u32": Type.TU32,
+    "u64": Type.TU64,
+    "f64": Type.TF64,
+    "f32": Type.TF32,
+    "bool": Type.TBool,
+    "char": Type.TChar,
+    "string": Type.TStr,
+    "bytes": Type.TBytes,
+  }
+  let generics: Map<string, int> = Map {}
+  if (Arrays.length(checker.scopes) > 0) {
+    for (const entry of Maps.entries(checker.scopes[0].types)) {
+      const #[name, type] = entry
+      types[name] = type
+    }
+    for (const entry of Maps.entries(checker.scopes[0].generics)) {
+      const #[name, generic] = entry
+      generics[name] = generic
+    }
+  }
+  const scope = ModScope {
+    path,
+    file,
+    isSource,
+    imports,
+    declarations,
+    exports: Map {},
+    types,
+    generics,
+    aliases: Map {},
+    functions: Map {},
+    consts: Map {},
+    traits: Map {},
+    modules: Map {},
+    imported: Map {},
+    facts: createEmptyFacts(),
+  }
+  Arrays.push(mutable checker.scopes, scope)
+  const index = Arrays.length(checker.scopes) - 1
+  checker.scopeIndex[path] = index
+  return index
+}
+
+export function enter(mutable checker: Checker, scope: int): int {
+  const previous = checker.current
+  checker.current = scope
+  return previous
+}
+
+export function lookupType(checker: Checker, name: string): Option<Type> from checker {
+  return checker.scopes[checker.current].types[name]
+}
+
+export function lookupGeneric(checker: Checker, name: string): Option<int> {
+  return checker.scopes[checker.current].generics[name]
+}
+
+export function setParameterType(mutable checker: Checker, nodeId: int, type: Type) {
+  // Ids outside the table are ignored.
+  if (nodeId >= 0 && nodeId < Arrays.length(checker.paramTypes)) {
+    checker.paramTypes[nodeId] = type
+  }
+}
+
+export function lookupTrait(checker: Checker, name: string): int {
+  // Its own and imported traits come first, then the prelude's.
+  if (checker.scopes[checker.current].traits[name] is Some(index)) {
+    return index
+  }
+  if (checker.scopes[0].traits[name] is Some(preludeIndex)) {
+    return preludeIndex
+  }
+  return -1
+}
+
+export function stdTrait(checker: Checker, name: string): int {
+  if (checker.scopes[0].traits[name] is Some(index)) {
+    if (checker.traits[index].std) {
+      return index
+    }
+  }
+  return -1
+}
+
+export function checkMapKey(mutable checker: Checker, pos: Pos, key: Type) uses alloc {
+  // Keys that still hold type parameters are checked when the generic is used. The rest
+  // are checked once every module is declared (flushMapKeys in traits.nra), when the
+  // trait facts of later types are known.
+  if (containsTypeParameter(checker, key)) {
+    return
+  }
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  const item = MapKeyCheck { pos, key, file }
+  Arrays.push(mutable checker.mapKeys, item)
+}
+
+export function noteTypeBounds(
+  mutable checker: Checker,
+  pos: Pos,
+  generic: int,
+  arguments: Array<Type>,
+) uses alloc {
+  // Only a type with constraints is queued; flushTypeBounds checks it once every module is declared.
+  let constrained = false
+  for (const parameter of Arrays.values(checker.generics[generic].parameters)) {
+    if (checker.bounds[parameter] is Some(_)) {
+      constrained = true
+    }
+  }
+  if (!constrained) {
+    return
+  }
+  let file = ""
+  if (Arrays.length(checker.scopes) > 0) {
+    file = checker.scopes[checker.current].file
+  }
+  const item = TypeBoundCheck { pos, generic, arguments, file }
+  Arrays.push(mutable checker.typeBounds, item)
+}
+
+export function typeString(checker: Checker, type: Type): string uses alloc {
+  return match (type) {
+    Type.TInt => "int"
+    Type.TI8 => "i8"
+    Type.TI16 => "i16"
+    Type.TI32 => "i32"
+    Type.TU8 => "u8"
+    Type.TU16 => "u16"
+    Type.TU32 => "u32"
+    Type.TU64 => "u64"
+    Type.TF64 => "f64"
+    Type.TF32 => "f32"
+    Type.TBool => "bool"
+    Type.TChar => "char"
+    Type.TStr => "string"
+    Type.TBytes => "bytes"
+    Type.TVoid => "void"
+    Type.TStringBuilder => "StringBuilder"
+    Type.THandle => "Handle"
+    Type.TSync => "Sync"
+    Type.TStruct(index) => structString(checker, index)
+    Type.TEnum(
+      index,
+    ) => `${checker.enums[index].name}${typeArguments(checker, checker.enums[index].arguments)}`
+    Type.TDistinct(index) => checker.distincts[index].name
+    Type.TParam(index) => checker.parameters[index].name
+    Type.TArray(element) => `Array<${typeString(checker, element)}>`
+    Type.TBox(element) => `Box<${typeString(checker, element)}>`
+    Type.TDynamic(traitIndex) => `Dynamic<${checker.traits[traitIndex].name}>`
+    Type.TPtr(element) => `Ptr<${typeString(checker, element)}>`
+    Type.TMap(key, value) => `Map<${typeString(checker, key)}, ${typeString(checker, value)}>`
+    Type.TFunc(
+      parameters,
+      result,
+      effects,
+      binder,
+      shared,
+    ) => `(${listSharedTypes(checker, parameters, shared)}) => ${typeString(checker, result)}${formatSharedSuffix(shared)}${functionUsesSuffix(checker, effects, binder)}`
+    Type.TRange => "Range"
+    Type.TGenerator(
+      element,
+      _,
+      _,
+      _,
+      input,
+    ) => `${generatorName(checker, element, input)}${writeTypeUses(generatorEffectList(checker, type))}`
+    Type.TAsync(value) => `Async<${typeString(checker, value)}>`
+    Type.TAsyncGenerator(
+      element,
+      _,
+      _,
+      _,
+    ) => `AsyncGenerator<${typeString(checker, element)}>${writeTypeUses(generatorEffectList(checker, type))}`
+    Type.TModule(path) => `module ${path}`
+    Type.TConst(value) => Int.toString(value)
+    Type.TFixedArray(
+      element,
+      length,
+    ) => `FixedArray<${typeString(checker, element)}, ${typeString(checker, length)}>`
+    Type.TVector(lane, count) => formatVectorName(lane, count)
+  }
+}
+
+function generatorName(checker: Checker, element: Type, input: Type): string uses alloc {
+  if (input == Type.TVoid) {
+    return `Generator<${typeString(checker, element)}>`
+  }
+  return `Coroutine<${typeString(checker, input)}, ${typeString(checker, element)}>`
+}
+
+export function generatorEffectList(
+  checker: Checker,
+  type: Type,
+): Array<string> from type uses alloc {
+  // A private generator has its inferred effects once the effect pass has run.
+  let effects: Array<string> = []
+  let origin = -1
+  if (type is Type.TGenerator(_, generatorNames, _, generatorOrigin, _)) {
+    effects = generatorNames
+    origin = generatorOrigin
+  } else if (type is Type.TAsyncGenerator(_, streamNames, _, streamOrigin)) {
+    effects = streamNames
+    origin = streamOrigin
+  } else {
+    return []
+  }
+  if (origin == -1) {
+    return effects
+  }
+  if (origin < -1) {
+    return copy(checker.boundGenerators[-2 - origin])
+  }
+  if (checker.generatorEffects[generatorKey(checker, origin)] is Some(inferred)) {
+    return copy(inferred)
+  }
+  return []
+}
+
+export function generatorKey(checker: Checker, index: int): string uses alloc {
+  // The key is "<module>|<line>:<column>", the one the effect pass gives its functions.
+  const info = checker.functions[index]
+  return `${info.module}|${Int.toString(info.declaration.pos.line)}:${Int.toString(info.declaration.pos.column)}`
+}
+
+export function functionUsesSuffix(
+  checker: Checker,
+  effects: Array<string>,
+  binder: int,
+): string uses alloc {
+  // The effect variables of another function are left out: they are bound at each call.
+  if (!checker.printEffects || (binder >= 0 && binder != checker.functionIndex)) {
+    return ""
+  }
+  return writeTypeUses(effects)
+}
+
+function listSharedTypes(
+  checker: Checker,
+  parameters: Array<Type>,
+  shared: int,
+): string uses alloc {
+  let texts: Array<string> = []
+  for (const parameter of Arrays.values(parameters)) {
+    Arrays.push(mutable texts, typeString(checker, parameter))
+  }
+  return joinSharedTypes(texts, shared)
+}
+
+export function joinSharedTypes(texts: Array<string>, shared: int): string uses alloc {
+  // A function type keeps no parameter names, so the shared one is printed as `source`.
+  let parts: Array<string> = []
+  for (const index of Ranges.upTo(Arrays.length(texts))) {
+    if (index == shared) {
+      Arrays.push(mutable parts, `source: ${texts[index]}`)
+    } else {
+      Arrays.push(mutable parts, texts[index])
+    }
+  }
+  return Str.join(parts, ", ")
+}
+
+export function formatSharedSuffix(shared: int): string {
+  if (shared < 0) {
+    return ""
+  }
+  return " from source"
+}
+
+export function findSharedParameter(funcDecl: FuncDecl): int {
+  // The index of the parameter `from` names, or -1.
+  if (funcDecl.result is Some(result)) {
+    return findParameterIndex(funcDecl.parameters, result.resultFrom)
+  }
+  return -1
+}
+
+export function findFromNamePos(checker: Checker, resultType: TypeExpr): Pos uses alloc {
+  // Where the name after `from` is written, or the result type when it is not known.
+  const facts = checker.scopes[checker.current].facts
+  if (facts.fromNames[getPosKey("r", resultType.pos)] is Some(namePos)) {
+    return copy(namePos)
+  }
+  return copy(resultType.pos)
+}
+
+export function findParameterIndex(parameters: Array<Param>, name: string): int {
+  if (name == "") {
+    return -1
+  }
+  for (const index of Ranges.upTo(Arrays.length(parameters))) {
+    if (parameters[index].name == name) {
+      return index
+    }
+  }
+  return -1
+}
+
+function structString(checker: Checker, index: int): string uses alloc {
+  const info = checker.structs[index]
+  if (info.tuple) {
+    return `#[${typeList(checker, info.arguments)}]`
+  }
+  return `${info.name}${typeArguments(checker, info.arguments)}`
+}
+
+function typeArguments(checker: Checker, arguments: Array<Type>): string uses alloc {
+  if (Arrays.length(arguments) == 0) {
+    return ""
+  }
+  return `<${typeList(checker, arguments)}>`
+}
+
+export function typeList(checker: Checker, types: Array<Type>): string uses alloc {
+  let parts: Array<string> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable parts, typeString(checker, type))
+  }
+  return Str.join(parts, ", ")
+}
+
+export function typeModule(checker: Checker, type: Type): string {
+  return match (type) {
+    Type.TStruct(index) => checker.structs[index].module
+    Type.TEnum(index) => checker.enums[index].module
+    Type.TDistinct(index) => checker.distincts[index].module
+    _ => ""
+  }
+}
+
+export function containsTypeParameter(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TParam(_) => true
+    Type.TFunc(parameters, result, _, _, _) =>
+      anyTypeParameter(checker, parameters) || containsTypeParameter(checker, result)
+    Type.TArray(element)
+      | Type.TBox(element)
+      | Type.TPtr(element)
+      | Type.TAsync(element) => containsTypeParameter(checker, element)
+    Type.TFixedArray(element, length) =>
+      containsTypeParameter(checker, element) || containsTypeParameter(checker, length)
+    Type.TGenerator(element, _, _, _, input) =>
+      containsTypeParameter(checker, element) || containsTypeParameter(checker, input)
+    Type.TAsyncGenerator(element, _, _, _) => containsTypeParameter(checker, element)
+    Type.TMap(key, value) =>
+      containsTypeParameter(checker, key) || containsTypeParameter(checker, value)
+    Type.TStruct(index) => anyTypeParameter(checker, checker.structs[index].arguments)
+    Type.TEnum(index) => anyTypeParameter(checker, checker.enums[index].arguments)
+    _ => false
+  }
+}
+
+export function anyTypeParameter(checker: Checker, types: Array<Type>): bool {
+  for (const type of Arrays.values(types)) {
+    if (containsTypeParameter(checker, type)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function reportTypeError(
+  mutable checker: Checker,
+  type: Type,
+  code: string,
+  message: string,
+) uses alloc {
+  let scope = 0
+  let pos = Pos { line: 0, column: 0 }
+  match (type) {
+    Type.TStruct(index) => {
+      scope = checker.structs[index].scope
+      pos = copy(checker.structs[index].pos)
+    }
+    Type.TEnum(index) => {
+      scope = checker.enums[index].scope
+      pos = copy(checker.enums[index].pos)
+    }
+    _ => {}
+  }
+  const saved = enter(mutable checker, scope)
+  reportError(mutable checker, pos, code, message)
+  enter(mutable checker, saved)
+}
+
+export function finish(mutable checker: Checker, concrete: Array<Type>) uses alloc {
+  // Arrays, boxes, maps and function types are not listed here; the emitter collects
+  // them itself.
+  let all = copy(concrete)
+  for (const type of Arrays.values(checker.instanceTypes)) {
+    if (!containsTypeParameter(checker, type)) {
+      Arrays.push(mutable all, type)
+    }
+  }
+  // A FixedArray is a C struct of its own, defined after its element type.
+  for (const #[_, composite] of Maps.entries(checker.composites)) {
+    if (composite is Type.TFixedArray(_, _) && !containsTypeParameter(checker, composite)) {
+      Arrays.push(mutable all, composite)
+    }
+  }
+  // Layouts first: the order depends on which enums keep a heap payload.
+  decideHeapEnums(mutable checker)
+  let state: Map<string, int> = Map {}
+  for (const type of Arrays.values(all)) {
+    visitOrder(mutable checker, mutable state, type)
+  }
+  // A struct that holds itself would not end the walk; it is an error by now.
+  if (Arrays.length(checker.errors) > 0) {
+    return
+  }
+  decideLayouts(mutable checker)
+  reportLargeFixedArrays(mutable checker)
+}
+
+function decideHeapEnums(mutable checker: Checker) {
+  // The table is built in a local and stored once, so the checker holds it alone.
+  let memo = LayoutMemo { heapEnums: Map {}, sizes: Map {} }
+  let heapEnums: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable heapEnums, decideHeapEnum(checker, index, mutable memo))
+  }
+  checker.heapEnums = heapEnums
+}
+
+function decideLayouts(mutable checker: Checker) {
+  // Which types hold counted values, then the C layouts, which decide how a
+  // value is passed to a function.
+  let countedStructs: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
+    Arrays.push(mutable countedStructs, isCountedType(checker, Type.TStruct(index)))
+  }
+  let countedEnums: Array<bool> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable countedEnums, isCountedType(checker, Type.TEnum(index)))
+  }
+  checker.countedStructs = countedStructs
+  checker.countedEnums = countedEnums
+  let layouts: Map<int, CLayout> = Map {}
+  let structLayouts: Array<CLayout> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.structs))) {
+    Arrays.push(mutable structLayouts, layoutStruct(checker, index, mutable layouts))
+  }
+  let enumLayouts: Array<CLayout> = []
+  for (const index of Ranges.between(0, Arrays.length(checker.enums))) {
+    Arrays.push(mutable enumLayouts, layoutEnum(checker, index, mutable layouts))
+  }
+  checker.structLayouts = structLayouts
+  checker.enumLayouts = enumLayouts
+}
+
+// The size and alignment in bytes of a value in the emitted C.
+export struct CLayout {
+  size: int
+  align: int
+}
+
+// Values larger than this many bytes are passed to functions by pointer.
+const POINTER_PARAMETER_LIMIT = 16
+
+export function isPassedByPointer(checker: Checker, type: Type): bool uses alloc {
+  if (type is Type.TStruct(structIndex)) {
+    return readStructLayout(checker, structIndex).size > POINTER_PARAMETER_LIMIT
+  }
+  if (type is Type.TEnum(enumIndex)) {
+    return readEnumLayout(checker, enumIndex).size > POINTER_PARAMETER_LIMIT
+  }
+  if (type is Type.TDistinct(distinctIndex)) {
+    if (checker.distincts[distinctIndex].base is Some(base)) {
+      return isPassedByPointer(checker, base)
+    }
+    return false
+  }
+  if (type is Type.TFixedArray(_, _)) {
+    let layouts: Map<int, CLayout> = Map {}
+    return layoutValue(checker, type, mutable layouts).size > POINTER_PARAMETER_LIMIT
+  }
+  // A range is three ints.
+  return type == Type.TRange
+}
+
+// The most bytes one FixedArray value may take, so a local stays well inside a thread's
+// stack and C accepts the array.
+export const FIXED_ARRAY_SIZE_LIMIT = 1048576
+// Sizes stop growing here, far above the limit, so they never overflow an int.
+const SATURATED_SIZE = 1099511627776
+
+function multiplySaturated(size: int, count: int): int {
+  if (size > 0 && count > SATURATED_SIZE / size) {
+    return SATURATED_SIZE
+  }
+  return Math.min(size * count, SATURATED_SIZE)
+}
+
+export function findFixedArraySize(checker: Checker, type: Type): int uses alloc {
+  // The bytes of a FixedArray value, stopped at a size far above the limit.
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutValue(checker, type, mutable layouts).size
+}
+
+function reportLargeFixedArrays(mutable checker: Checker) uses alloc {
+  // Generic instances and struct fields that name a later struct are measured only here,
+  // once every layout is known; each is reported at the struct that holds it.
+  let reported: Map<string, bool> = Map {}
+  for (const type of Arrays.values(copy(checker.order))) {
+    if (
+      !(type is Type.TFixedArray(_, _)) ||
+        findFixedArraySize(checker, type) <= FIXED_ARRAY_SIZE_LIMIT
+    ) {
+      continue
+    }
+    const shown = typeString(checker, type)
+    let holder = type
+    for (const owner of Arrays.values(copy(checker.order))) {
+      if (owner is Type.TStruct(structIndex)) {
+        for (const field of Arrays.values(checker.structs[structIndex].fields)) {
+          if (field.fieldType == type) {
+            holder = copy(owner)
+          }
+        }
+      }
+    }
+    const key = typeKey(holder)
+    if (reported[key] is Some(_)) {
+      continue
+    }
+    reported[key] = true
+    reportTypeError(
+      mutable checker,
+      holder,
+      "E0995",
+      `${shown} takes more than ${Int.toString(FIXED_ARRAY_SIZE_LIMIT)} bytes, the limit for a FixedArray; use an Array`,
+    )
+  }
+}
+
+function readStructLayout(checker: Checker, index: int): CLayout uses alloc {
+  if (index < Arrays.length(checker.structLayouts)) {
+    return copy(checker.structLayouts[index])
+  }
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutStruct(checker, index, mutable layouts)
+}
+
+function readEnumLayout(checker: Checker, index: int): CLayout uses alloc {
+  if (index < Arrays.length(checker.enumLayouts)) {
+    return copy(checker.enumLayouts[index])
+  }
+  let layouts: Map<int, CLayout> = Map {}
+  return layoutEnum(checker, index, mutable layouts)
+}
+
+function alignUp(offset: int, align: int): int {
+  // Every alignment is at least 1.
+  if (align < 1) {
+    return offset
+  }
+  return (offset + align - 1) / align * align
+}
+
+function layoutValue(
+  checker: Checker,
+  type: Type,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  return match (type) {
+    Type.TI8 | Type.TU8 | Type.TBool => CLayout { size: 1, align: 1 }
+    Type.TI16 | Type.TU16 => CLayout { size: 2, align: 2 }
+    Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => CLayout { size: 4, align: 4 }
+    Type.TFunc(_, _, _, _, _) => CLayout { size: 16, align: 8 }
+    Type.TRange => CLayout { size: 24, align: 8 }
+    Type.TStruct(index) => layoutStruct(checker, index, mutable layouts)
+    Type.TEnum(index) => layoutEnum(checker, index, mutable layouts)
+    Type.TDistinct(index) => layoutDistinct(checker, index, mutable layouts)
+    Type.TFixedArray(element, _) => {
+      // The items of a FixedArray are packed; an empty one keeps one item.
+      const itemLayout = layoutValue(checker, element, mutable layouts)
+      return CLayout {
+        size: multiplySaturated(itemLayout.size, Math.max(findFixedLength(type), 1)),
+        align: itemLayout.align,
+      }
+    }
+    // Vector types are aligned to 8, as runtime heap blocks are (D112).
+    Type.TVector(lane, count) => CLayout { size: findLaneSize(lane) * count, align: 8 }
+    _ => CLayout { size: 8, align: 8 }
+  }
+}
+
+function layoutFields(
+  checker: Checker,
+  fields: Array<Field>,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  // C places each field at the next offset its alignment allows.
+  let offset = 0
+  let align = 1
+  for (const field of Arrays.values(fields)) {
+    const fieldLayout = layoutValue(checker, field.fieldType, mutable layouts)
+    offset = alignUp(offset, fieldLayout.align) + fieldLayout.size
+    if (fieldLayout.align > align) {
+      align = fieldLayout.align
+    }
+  }
+  // A struct without fields holds one char.
+  if (offset == 0) {
+    return CLayout { size: 1, align: 1 }
+  }
+  return CLayout { size: alignUp(offset, align), align }
+}
+
+function layoutStruct(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (index < Arrays.length(checker.structLayouts)) {
+    return copy(checker.structLayouts[index])
+  }
+  const key = 0 - 1 - index
+  if (layouts[key] is Some(known)) {
+    return copy(known)
+  }
+  // A struct that holds itself meets its own key as one byte; it is an error.
+  layouts[key] = CLayout { size: 1, align: 1 }
+  const layout = layoutFields(checker, checker.structs[index].fields, mutable layouts)
+  layouts[key] = layout
+  return layout
+}
+
+function layoutEnum(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (index < Arrays.length(checker.enumLayouts)) {
+    return copy(checker.enumLayouts[index])
+  }
+  // A tag alone, or a tag and a pointer to the heap payload.
+  if (!isBoxedEnum(checker.enums[index])) {
+    return CLayout { size: 4, align: 4 }
+  }
+  if (isHeapEnum(checker, index)) {
+    return CLayout { size: 16, align: 8 }
+  }
+  if (layouts[index] is Some(known)) {
+    return copy(known)
+  }
+  layouts[index] = CLayout { size: 4, align: 4 }
+  // An inline payload is a union of one struct per variant after the tag.
+  let unionSize = 0
+  let unionAlign = 1
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    if (Arrays.length(variant.fields) > 0) {
+      const variantLayout = layoutFields(checker, variant.fields, mutable layouts)
+      if (variantLayout.size > unionSize) {
+        unionSize = variantLayout.size
+      }
+      if (variantLayout.align > unionAlign) {
+        unionAlign = variantLayout.align
+      }
+    }
+  }
+  let align = 4
+  if (unionAlign > align) {
+    align = unionAlign
+  }
+  const unionOffset = alignUp(4, unionAlign)
+  const layout = CLayout {
+    size: alignUp(unionOffset + alignUp(unionSize, unionAlign), align),
+    align,
+  }
+  layouts[index] = layout
+  return layout
+}
+
+function layoutDistinct(
+  checker: Checker,
+  index: int,
+  mutable layouts: Map<int, CLayout>,
+): CLayout uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return layoutValue(checker, base, mutable layouts)
+  }
+  return CLayout { size: 8, align: 8 }
+}
+
+export function isCountedType(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TStr
+      | Type.TBytes
+      | Type.TStringBuilder
+      | Type.THandle
+      | Type.TSync
+      | Type.TArray(_)
+      | Type.TFunc(_, _, _, _, _)
+      | Type.TBox(_)
+      | Type.TMap(_, _)
+      | Type.TGenerator(_, _, _, _, _)
+      | Type.TAsync(_)
+      | Type.TAsyncGenerator(_, _, _, _)
+      | Type.TDynamic(_) => true
+    Type.TStruct(index) => isCountedStruct(checker, index)
+    Type.TEnum(index) => isCountedEnum(checker, index)
+    Type.TDistinct(index) => isCountedDistinct(checker, index)
+    Type.TFixedArray(element, _) => isCountedType(checker, element)
+    _ => false
+  }
+}
+
+function isCountedStruct(checker: Checker, index: int): bool {
+  if (index < Arrays.length(checker.countedStructs)) {
+    return checker.countedStructs[index]
+  }
+  for (const field of Arrays.values(checker.structs[index].fields)) {
+    if (isCountedType(checker, field.fieldType)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isCountedEnum(checker: Checker, index: int): bool {
+  if (index < Arrays.length(checker.countedEnums)) {
+    return checker.countedEnums[index]
+  }
+  // A heap payload is counted; an inline payload is counted through its fields.
+  if (isHeapEnum(checker, index)) {
+    return true
+  }
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    for (const field of Arrays.values(variant.fields)) {
+      if (isCountedType(checker, field.fieldType)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function isCountedDistinct(checker: Checker, index: int): bool {
+  if (checker.distincts[index].base is Some(base)) {
+    return isCountedType(checker, base)
+  }
+  return false
+}
+
+// Payloads up to this many bytes are stored in the enum value.
+const INLINE_PAYLOAD_LIMIT = 32
+
+export function isHeapEnum(checker: Checker, index: int): bool {
+  if (index < Arrays.length(checker.heapEnums)) {
+    return checker.heapEnums[index]
+  }
+  // An enum made after finish keeps the heap layout, which fits every enum.
+  return isBoxedEnum(checker.enums[index])
+}
+
+// Layout decisions and sizes found so far, by enum index; a struct's size is
+// kept under the negative key -1 - index.
+struct LayoutMemo {
+  heapEnums: Map<int, bool>
+  sizes: Map<int, int>
+}
+
+function decideHeapEnum(checker: Checker, index: int, mutable memo: LayoutMemo): bool uses alloc {
+  if (memo.heapEnums[index] is Some(decided)) {
+    return decided
+  }
+  // An enum without fields is a tag.
+  let heap = false
+  if (isBoxedEnum(checker.enums[index])) {
+    // An enum that holds itself, or whose payload is large, keeps it on the heap.
+    let visited: Map<int, bool> = Map {}
+    for (const variant of Arrays.values(checker.enums[index].variants)) {
+      for (const field of Arrays.values(variant.fields)) {
+        if (reachesEnum(checker, field.fieldType, index, mutable visited)) {
+          heap = true
+        }
+      }
+    }
+    if (!heap) {
+      heap = measurePayload(checker, index, mutable memo) > INLINE_PAYLOAD_LIMIT
+    }
+  }
+  memo.heapEnums[index] = heap
+  return heap
+}
+
+function reachesEnum(
+  checker: Checker,
+  type: Type,
+  target: int,
+  mutable visited: Map<int, bool>,
+): bool uses alloc {
+  // Only structs, enums and distinct types are followed: arrays, maps, boxes
+  // and functions are pointers.
+  match (type) {
+    Type.TEnum(index) => {
+      if (index == target) {
+        return true
+      }
+      if (visited[index] is Some(_)) {
+        return false
+      }
+      visited[index] = true
+      for (const variant of Arrays.values(checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          if (reachesEnum(checker, field.fieldType, target, mutable visited)) {
+            return true
+          }
+        }
+      }
+    }
+    Type.TStruct(index) => {
+      // Struct keys are negative, so they never equal an enum index.
+      const key = 0 - 1 - index
+      if (visited[key] is Some(_)) {
+        return false
+      }
+      visited[key] = true
+      for (const field of Arrays.values(checker.structs[index].fields)) {
+        if (reachesEnum(checker, field.fieldType, target, mutable visited)) {
+          return true
+        }
+      }
+    }
+    Type.TDistinct(index) => {
+      if (checker.distincts[index].base is Some(base)) {
+        return reachesEnum(checker, base, target, mutable visited)
+      }
+    }
+    // The items of a FixedArray are stored in place, like fields.
+    Type.TFixedArray(element, _) => {
+      return reachesEnum(checker, element, target, mutable visited)
+    }
+    _ => {}
+  }
+  return false
+}
+
+function measurePayload(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  // The largest variant, each field rounded up to 8 bytes.
+  let largest = 0
+  for (const variant of Arrays.values(checker.enums[index].variants)) {
+    let size = 0
+    for (const field of Arrays.values(variant.fields)) {
+      size = size + roundUp(measureValue(checker, field.fieldType, mutable memo))
+    }
+    if (size > largest) {
+      largest = size
+    }
+  }
+  return largest
+}
+
+function roundUp(size: int): int {
+  return (size + 7) / 8 * 8
+}
+
+function measureValue(checker: Checker, type: Type, mutable memo: LayoutMemo): int uses alloc {
+  return match (type) {
+    Type.TI8 | Type.TU8 | Type.TBool => 1
+    Type.TI16 | Type.TU16 => 2
+    Type.TI32 | Type.TU32 | Type.TF32 | Type.TChar => 4
+    Type.TFunc(_, _, _, _, _) => 16
+    Type.TRange => 24
+    Type.TStruct(index) => measureStruct(checker, index, mutable memo)
+    Type.TEnum(index) => measureEnum(checker, index, mutable memo)
+    Type.TDistinct(index) => measureDistinct(checker, index, mutable memo)
+    Type.TFixedArray(element, _) => multiplySaturated(
+      roundUp(measureValue(checker, element, mutable memo)),
+      Math.max(findFixedLength(type), 1),
+    )
+    Type.TVector(lane, count) => findLaneSize(lane) * count
+    _ => 8
+  }
+}
+
+function measureStruct(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  const key = 0 - 1 - index
+  if (memo.sizes[key] is Some(known)) {
+    return known
+  }
+  // A struct that holds itself meets its own key as 0; it is reported later.
+  memo.sizes[key] = 0
+  let size = 0
+  for (const field of Arrays.values(checker.structs[index].fields)) {
+    size = size + roundUp(measureValue(checker, field.fieldType, mutable memo))
+  }
+  memo.sizes[key] = size
+  return size
+}
+
+function measureEnum(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  if (!isBoxedEnum(checker.enums[index])) {
+    return 4
+  }
+  // This enum does not reach the one being measured, so the walk ends.
+  if (decideHeapEnum(checker, index, mutable memo)) {
+    return 16
+  }
+  if (memo.sizes[index] is Some(known)) {
+    return known
+  }
+  const size = 8 + measurePayload(checker, index, mutable memo)
+  memo.sizes[index] = size
+  return size
+}
+
+function measureDistinct(checker: Checker, index: int, mutable memo: LayoutMemo): int uses alloc {
+  if (checker.distincts[index].base is Some(base)) {
+    return measureValue(checker, base, mutable memo)
+  }
+  return 8
+}
+
+function visitOrder(
+  mutable checker: Checker,
+  mutable state: Map<string, int>,
+  type: Type,
+) uses alloc {
+  // A boxed enum is complete before its fields, which lets an enum hold itself.
+  let fields: Array<Field> = []
+  let boxed = false
+  match (type) {
+    Type.TStruct(index) => {
+      fields = copy(checker.structs[index].fields)
+    }
+    Type.TEnum(index) => {
+      boxed = isHeapEnum(checker, index)
+      for (const variant of Arrays.values(checker.enums[index].variants)) {
+        for (const field of Arrays.values(variant.fields)) {
+          Arrays.push(mutable fields, copy(field))
+        }
+      }
+    }
+    // The element type of a FixedArray is defined before it, as a field type is.
+    Type.TFixedArray(element, _) => {
+      fields = [
+        Field { name: "items", fieldType: element, default: None, pos: Pos { line: 0, column: 0 } },
+      ]
+    }
+    _ => {
+      return
+    }
+  }
+  const key = typeKey(type)
+  let mark = 0
+  if (state[key] is Some(stored)) {
+    mark = stored
+  }
+  if (mark == 2) {
+    return
+  }
+  if (mark == 1) {
+    const text = typeString(checker, type)
+    reportTypeError(
+      mutable checker,
+      type,
+      "E0109",
+      `type ${text} contains itself; put the recursive field in an enum, Box or array`,
+    )
+    return
+  }
+  if (boxed) {
+    state[key] = 2
+    Arrays.push(mutable checker.order, type)
+    for (const field of Arrays.values(fields)) {
+      // A struct still being visited holds this enum; it is defined after it.
+      if (state[typeKey(field.fieldType)] is Some(1)) {
+        continue
+      }
+      visitOrder(mutable checker, mutable state, field.fieldType)
+    }
+    return
+  }
+  state[key] = 1
+  for (const field of Arrays.values(fields)) {
+    visitOrder(mutable checker, mutable state, field.fieldType)
+  }
+  state[key] = 2
+  Arrays.push(mutable checker.order, type)
+}
+
+// A generator value used where a generator type with the same element type
+// is expected (Go's generatorUse).
+export struct GeneratorUse {
+  pos: Pos
+  file: string
+  want: Type
+  got: Type
+}
+
+// A function value used where a function type with the same signature is
+// expected. The value may have fewer effects than the type.
+export struct FunctionStore {
+  pos: Pos
+  file: string
+  body: int
+  want: Type
+  got: Type
+}
+
+// The state of the body being checked, saved while another body (a
+// constant checked at its first use) is checked in the middle of it.
+export struct BodyState {
+  body: int
+  localNames: Map<string, int>
+  scopeUndo: Array<ScopeBinding>
+  scopeUndoCount: int
+  scopeStarts: Array<int>
+  scopeDepth: int
+  resultType: Type
+  loops: int
+  labels: Array<string>
+  blocks: Array<BlockContext>
+  environment: Map<string, Type>
+  functionIndex: int
+  generator: bool
+  asyncBody: bool
+}
+
+export function startBody(
+  mutable checker: Checker,
+  kind: string,
+  name: string,
+  typeArguments: Array<Type>,
+  root: BodyRoot,
+  resultType: Type,
+  environment: Map<string, Type>,
+): BodyState from checker uses alloc {
+  // Find the id range of the body's nodes.
+  let ids: Array<int> = []
+  match (root) {
+    BodyRoot.RootFunc(declaration) => collectFuncIds(mutable ids, declaration)
+    BodyRoot.RootBlock(block) => collectBlockIds(mutable ids, block)
+    BodyRoot.RootExpr(expression) => collectExpressionIds(mutable ids, expression)
+  }
+  let first = 0
+  let last = -1
+  for (const nodeId of Arrays.values(ids)) {
+    if (last < first || nodeId < first) {
+      first = nodeId
+    }
+    if (nodeId > last) {
+      last = nodeId
+    }
+  }
+  let size = 0
+  if (last >= first) {
+    size = last - first + 1
+  }
+
+  // Save the outer body's state and start the new one.
+  const saved = BodyState {
+    body: checker.body,
+    localNames: checker.localNames,
+    scopeUndo: checker.scopeUndo,
+    scopeUndoCount: checker.scopeUndoCount,
+    scopeStarts: checker.scopeStarts,
+    scopeDepth: checker.scopeDepth,
+    resultType: checker.resultType,
+    loops: checker.loops,
+    labels: checker.labels,
+    blocks: checker.blocks,
+    environment: checker.environment,
+    functionIndex: checker.functionIndex,
+    generator: checker.generator,
+    asyncBody: checker.asyncBody,
+  }
+  const module = checker.scopes[checker.current].path
+  const info = BodyInfo {
+    module,
+    kind,
+    name,
+    typeArguments,
+    root,
+    first,
+    types: filledArray(None, size),
+    refs: filledArray(Ref.Unresolved, size),
+    declared: filledArray(-1, size),
+    locals: [],
+    errorCount: Arrays.length(checker.errors),
+    closures: [],
+    closureIndex: Map {},
+    arrows: [],
+    arrowDepth: 0,
+    allowedId: -1,
+    instanceRefs: Map {},
+    traitSelf: Map {},
+    tupleIndexes: Map {},
+  }
+  Arrays.push(mutable checker.bodies, info)
+  checker.body = Arrays.length(checker.bodies) - 1
+  checker.localNames = Map {}
+  checker.scopeUndo = []
+  checker.scopeUndoCount = 0
+  checker.scopeStarts = [0]
+  checker.scopeDepth = 1
+  checker.resultType = resultType
+  checker.loops = 0
+  checker.labels = []
+  checker.blocks = []
+  checker.environment = environment
+  checker.functionIndex = -1
+  checker.generator = false
+  checker.asyncBody = false
+  return saved
+}
+
+export function finishBody(mutable checker: Checker, saved: BodyState) uses alloc {
+  reportUnusedLocals(mutable checker)
+  checker.body = saved.body
+  checker.localNames = saved.localNames
+  checker.scopeUndo = saved.scopeUndo
+  checker.scopeUndoCount = saved.scopeUndoCount
+  checker.scopeStarts = saved.scopeStarts
+  checker.scopeDepth = saved.scopeDepth
+  checker.resultType = saved.resultType
+  checker.loops = saved.loops
+  checker.labels = saved.labels
+  checker.blocks = saved.blocks
+  checker.environment = saved.environment
+  checker.functionIndex = saved.functionIndex
+  checker.generator = saved.generator
+  checker.asyncBody = saved.asyncBody
+}
+
+function reportUnusedLocals(mutable checker: Checker) uses alloc {
+  // A name that starts with `_` is unused on purpose, the parameter of the entry
+  // function `run` is exempt, and a body that already has an error reports nothing.
+  if (checker.body < 0) {
+    return
+  }
+  const body = copy(checker.bodies[checker.body])
+  if (Arrays.length(checker.errors) > body.errorCount) {
+    return
+  }
+
+  // The parameter of `export function run(args)` of the entry module has a
+  // fixed signature.
+  let entryParameter = false
+  if (body.root is BodyRoot.RootFunc(declaration)) {
+    // A C function of an extern block has no body to read its parameters.
+    if (declaration.externBlock is Some(_)) {
+      return
+    }
+    if (body.kind == "func" && declaration.exported && Arrays.length(declaration.parameters) == 1) {
+      for (const target of Arrays.values(checker.entryTargets)) {
+        if (target.module == body.module && target.name == declaration.name) {
+          entryParameter = true
+        }
+      }
+    }
+  }
+
+  // Collect the unused locals, then put them in source order.
+  let unused: Array<int> = []
+  for (const index of Ranges.between(0, Arrays.length(body.locals))) {
+    const local = body.locals[index]
+    if (local.used || local.name == "" || Str.startsWith(local.name, "_")) {
+      continue
+    }
+    if (entryParameter && index == 0) {
+      continue
+    }
+    Arrays.push(mutable unused, index)
+  }
+  reportNeverReassigned(mutable checker, body, unused)
+  for (const position of Ranges.between(1, Arrays.length(unused))) {
+    for (
+      let current = position;
+      current > 0 &&
+        isPositionBefore(body.locals[unused[current]].pos, body.locals[unused[current - 1]].pos);
+      current--
+    ) {
+      const swapped = unused[current]
+      unused[current] = unused[current - 1]
+      unused[current - 1] = swapped
+    }
+  }
+  for (const index of Arrays.values(unused)) {
+    const local = body.locals[index]
+    const fixes = buildRenameUnusedFix(local)
+    if (local.param) {
+      reportErrorFix(
+        mutable checker,
+        local.pos,
+        "E0922",
+        fixes,
+        `parameter "${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
+      )
+    } else {
+      reportErrorFix(
+        mutable checker,
+        local.pos,
+        "E0921",
+        fixes,
+        `"${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
+      )
+    }
+  }
+}
+
+function reportNeverReassigned(
+  mutable checker: Checker,
+  body: BodyInfo,
+  unused: Array<int>,
+) uses alloc {
+  // A `let` that nothing writes should be a `const`. An unused one is reported as unused.
+  for (const index of Ranges.between(0, Arrays.length(body.locals))) {
+    const local = body.locals[index]
+    if (local.letLine == 0 || local.assigned || Str.startsWith(local.name, "_")) {
+      continue
+    }
+    const letPos = Pos { line: local.letLine, column: local.letColumn }
+    let isUnused = false
+    for (const other of Arrays.values(unused)) {
+      if (other == index) {
+        isUnused = true
+      }
+    }
+    if (isUnused) {
+      continue
+    }
+    reportErrorFix(
+      mutable checker,
+      local.pos,
+      "E1510",
+      [createFix("Change `let` to `const`", [createEdit(letPos, moveColumn(letPos, 3), "const")])],
+      `"${local.name}" is never reassigned; declare it with \`const\``,
+    )
+  }
+}
+
+function buildRenameUnusedFix(local: LocalInfo): Array<Fix> from local uses alloc {
+  // The declaration `{ host }` becomes `{ host: _host }`, because renaming alone would
+  // change the field.
+  const unused = `_${local.name}`
+  let edits = [insertAt(local.namePos, "_")]
+  if (local.shorthand) {
+    const end = moveColumn(local.namePos, Str.charCount(local.name))
+    edits = [insertAt(end, `: ${unused}`)]
+  }
+  // The assignments are renamed too, or the file would not compile.
+  for (const written of Arrays.values(local.writes)) {
+    Arrays.push(mutable edits, insertAt(written, "_"))
+  }
+  return [createFix(`Rename to ${unused}`, edits)]
+}
+
+function isPositionBefore(left: Pos, right: Pos): bool {
+  if (left.line != right.line) {
+    return left.line < right.line
+  }
+  return left.column < right.column
+}
+
+export function findBodySlot(body: BodyInfo, nodeId: int): int {
+  const slot = nodeId - body.first
+  if (slot < 0 || slot >= Arrays.length(body.types)) {
+    return -1
+  }
+  return slot
+}
+
+function findSlot(checker: Checker, nodeId: int): int {
+  if (checker.body < 0) {
+    return -1
+  }
+  return findBodySlot(checker.bodies[checker.body], nodeId)
+}
+
+export function setNodeType(mutable checker: Checker, nodeId: int, nodeType: Type) uses alloc {
+  const slot = findSlot(checker, nodeId)
+  if (slot >= 0) {
+    const body = checker.body
+    checker.bodies[body].types[slot] = Some(nodeType)
+  }
+}
+
+export function getNodeType(checker: Checker, nodeId: int): Option<Type> from checker {
+  const slot = findSlot(checker, nodeId)
+  if (slot < 0) {
+    return None
+  }
+  return checker.bodies[checker.body].types[slot]
+}
+
+export function setRef(mutable checker: Checker, nodeId: int, ref: Ref) uses alloc {
+  const slot = findSlot(checker, nodeId)
+  if (slot >= 0) {
+    const body = checker.body
+    checker.bodies[body].refs[slot] = ref
+  }
+}
+
+export function getRef(checker: Checker, nodeId: int): Ref {
+  const slot = findSlot(checker, nodeId)
+  if (slot < 0) {
+    return Ref.Unresolved
+  }
+  return checker.bodies[checker.body].refs[slot]
+}
+
+export function findLocal(checker: Checker, name: string): int {
+  if (checker.localNames[name] is Some(index)) {
+    return index
+  }
+  return -1
+}
+
+export function markAssigned(mutable checker: Checker, index: int) {
+  checker.bodies[checker.body].locals[index].assigned = true
+}
+
+export function getLocal(checker: Checker, index: int): LocalInfo from checker {
+  return checker.bodies[checker.body].locals[index]
+}
+
+export function canChangeContents(local: LocalInfo): bool {
+  // A `mutable` parameter, a `const` or `let` declared with a plain name, or the name
+  // of a `for (mutable ...)` loop.
+  if (local.param) {
+    return local.isMutable
+  }
+  return local.binding == BindingKind.Plain || local.binding == BindingKind.Reference
+}
+
+export function setBinding(mutable checker: Checker, local: int, value: Expr, kind: BindingKind) {
+  // The `for` head with a pattern or `let` becomes a declaration from the loop's hidden
+  // name `__for_L_C` (parser), so such a declaration is a Loop binding that takes the
+  // loop's source; any other declaration gets kind.
+  const body = checker.body
+  if (value is Expr.Ident(_, _, name)) {
+    if (Str.startsWith(name, "__for_")) {
+      const hidden = findLocal(checker, name)
+      if (hidden >= 0) {
+        const source = copy(checker.bodies[body].locals[hidden])
+        checker.bodies[body].locals[local].binding = BindingKind.Loop
+        checker.bodies[body].locals[local].loopSource = source.loopSource
+        // A destructured element has no loop form of its own; the hint
+        // writes through the source.
+        checker.bodies[body].locals[local].loopContents =
+          source.loopContents && kind != BindingKind.Destructured
+        return
+      }
+    }
+  }
+  checker.bodies[body].locals[local].binding = kind
+}
+
+export function isContentsType(checker: Checker, type: Type): bool {
+  // These are the only types a `mutable` parameter can have.
+  return match (type) {
+    Type.TStruct(index) => !checker.structs[index].tuple
+    Type.TArray(_)
+      | Type.TFixedArray(_, _)
+      | Type.TMap(_, _)
+      | Type.TBox(_)
+      | Type.TStringBuilder
+      | Type.TGenerator(_, _, _, _, _) => true
+    _ => false
+  }
+}
+
+export function checkMutableType(
+  mutable checker: Checker,
+  pos: Pos,
+  type: Type,
+  selfParameter: int,
+) uses alloc {
+  // The Self of the trait being declared is selfParameter, or -1; `mutable value: Self`
+  // is allowed there.
+  if (isContentsType(checker, type) || type == Type.TVoid) {
+    return
+  }
+  let found = typeString(checker, type)
+  if (type is Type.TParam(index)) {
+    if (index == selfParameter) {
+      return
+    }
+    found = `type parameter ${found}`
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0948",
+    `a mutable parameter needs a type whose contents change in place (a struct, Array, Map, Box, StringBuilder or Generator), found ${found}; return the new value instead`,
+  )
+}
+
+export function isConstantParameter(checker: Checker, type: Type): bool {
+  return match (type) {
+    Type.TConst(_) => true
+    Type.TParam(index) => checker.parameters[index].isConstant
+    _ => false
+  }
+}
+
+export function isNameTaken(checker: Checker, name: string): bool uses alloc {
+  // A local of the body, or a constant type parameter of the function, which a
+  // local would hide.
+  if (findLocal(checker, name) >= 0) {
+    return true
+  }
+  if (checker.environment[name] is Some(bound)) {
+    return isConstantParameter(checker, bound)
+  }
+  return false
+}
+
+export function declareLocal(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  name: string,
+  localType: Type,
+  isMutable: bool,
+  param: bool,
+): int uses alloc {
+  // Shadowing is an error, except for `_`.
+  if (name != "_" && isNameTaken(checker, name)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0103",
+      `"${name}" is already declared in this function; shadowing is not allowed`,
+    )
+  }
+  checker.localCount++
+
+  // Record the local and the node that declares it. The name is written at
+  // pos unless the parser noted another place.
+  const body = checker.body
+  let namePos = pos
+  if (checker.scopes[checker.current].facts.namePositions[nodeId] is Some(written)) {
+    namePos = written
+  }
+  const number = checker.localCount
+  const shorthand = checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_)
+  Arrays.push(
+    mutable checker.bodies[body].locals,
+    LocalInfo {
+      name,
+      localType,
+      isMutable,
+      param,
+      binding: BindingKind.Plain,
+      pos: copy(pos),
+      noEscape: false,
+      used: false,
+      number,
+      namePos: copy(namePos),
+      shorthand,
+    },
+  )
+  const index = Arrays.length(checker.bodies[body].locals) - 1
+  const slot = findSlot(checker, nodeId)
+  if (slot >= 0) {
+    checker.bodies[body].declared[slot] = index
+  }
+  bindName(mutable checker, name, index)
+  checker.bodies[body].locals[index].depth = checker.scopeDepth - 1
+  return index
+}
+
+export function bindName(mutable checker: Checker, name: string, index: int) uses alloc {
+  // Keep the replaced value so that closing the scope restores it.
+  let previous = -1
+  if (checker.localNames[name] is Some(replaced)) {
+    previous = replaced
+  }
+  const binding = ScopeBinding { name, previous }
+  if (checker.scopeUndoCount < Arrays.length(checker.scopeUndo)) {
+    checker.scopeUndo[checker.scopeUndoCount] = binding
+  } else {
+    Arrays.push(mutable checker.scopeUndo, binding)
+  }
+  checker.scopeUndoCount++
+  checker.localNames[name] = index
+}
+
+export function pushScope(mutable checker: Checker) uses alloc {
+  // The stack keeps popped slots and overwrites them on reuse, since std/array has no pop.
+  if (checker.scopeDepth < Arrays.length(checker.scopeStarts)) {
+    checker.scopeStarts[checker.scopeDepth] = checker.scopeUndoCount
+  } else {
+    const start = checker.scopeUndoCount
+    Arrays.push(mutable checker.scopeStarts, start)
+  }
+  checker.scopeDepth++
+}
+
+export function popScope(mutable checker: Checker) uses alloc {
+  // Give back the names this scope replaced, last binding first.
+  const start = checker.scopeStarts[checker.scopeDepth - 1]
+  while (checker.scopeUndoCount > start) {
+    checker.scopeUndoCount--
+    const binding = checker.scopeUndo[checker.scopeUndoCount]
+    checker.localNames[binding.name] = binding.previous
+  }
+  checker.scopeDepth--
+}
+
+export function unsupported(mutable checker: Checker, pos: Pos, what: string): Type uses alloc {
+  // The harness (selfhost_bodies_test.go) skips any input whose output holds
+  // `unsupported:`.
+  reportError(mutable checker, pos, "E0213", `unsupported: ${what}`)
+  return Type.TVoid
+}
+
+export function hasNamedArgument(arguments: Array<Arg>): bool {
+  for (const argument of Arrays.values(arguments)) {
+    if (argument.name is Some(_)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function orderArguments(
+  checker: Checker,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Array<Arg> from arguments uses alloc {
+  // A call without a recorded order passes the arguments as written.
+  if (checker.argumentOrders[nodeId] is Some(order)) {
+    let ordered: Array<Arg> = []
+    for (const written of Arrays.values(order)) {
+      Arrays.push(mutable ordered, arguments[written])
+    }
+    return ordered
+  }
+  return arguments
+}
+
+export function findParameterIndexes(
+  checker: Checker,
+  nodeId: int,
+  count: int,
+): Array<int> uses alloc {
+  // Each argument keeps its own index unless named arguments changed the order.
+  let indexes: Array<int> = []
+  for (const index of Ranges.between(0, count)) {
+    Arrays.push(mutable indexes, index)
+  }
+  if (checker.argumentOrders[nodeId] is Some(order)) {
+    for (const parameter of Ranges.between(0, Arrays.length(order))) {
+      indexes[order[parameter]] = parameter
+    }
+  }
+  return indexes
+}
+
+export function getExpressionId(expression: Expr): int {
+  return match (expression) {
+    Expr.IntLit(nodeId, _, _)
+      | Expr.FloatLit(nodeId, _, _)
+      | Expr.StringLit(nodeId, _, _, _)
+      | Expr.CharLit(nodeId, _, _)
+      | Expr.BoolLit(nodeId, _, _)
+      | Expr.TemplateLit(nodeId, _, _)
+      | Expr.TemplateParts(nodeId, _, _)
+      | Expr.Ident(nodeId, _, _)
+      | Expr.FieldExpr(nodeId, _, _, _)
+      | Expr.IsExpr(nodeId, _, _, _)
+      | Expr.IndexExpr(nodeId, _, _, _)
+      | Expr.MapLit(nodeId, _, _, _, _)
+      | Expr.CallExpr(nodeId, _, _, _, _)
+      | Expr.UnaryExpr(nodeId, _, _, _)
+      | Expr.BinaryExpr(nodeId, _, _, _, _)
+      | Expr.StructLit(nodeId, _, _, _, _, _)
+      | Expr.ArrayLit(nodeId, _, _, _)
+      | Expr.MatchExpr(nodeId, _, _, _)
+      | Expr.BlockExpr(nodeId, _, _)
+      | Expr.ArrowExpr(nodeId, _, _, _, _, _)
+      | Expr.AwaitExpr(nodeId, _, _)
+      | Expr.AsyncExpr(nodeId, _, _) => nodeId
+  }
+}
+
+export function isConditional(expression: Expr): bool {
+  // The parser starts its block at the `?` and the expression at the condition.
+  if (expression is Expr.BlockExpr(_, pos, block)) {
+    return block.pos.line != pos.line || block.pos.column != pos.column
+  }
+  return false
+}
+
+export function getExpressionPos(expression: Expr): Pos {
+  return match (expression) {
+    Expr.IntLit(_, pos, _)
+      | Expr.FloatLit(_, pos, _)
+      | Expr.StringLit(_, pos, _, _)
+      | Expr.CharLit(_, pos, _)
+      | Expr.BoolLit(_, pos, _)
+      | Expr.TemplateLit(_, pos, _)
+      | Expr.TemplateParts(_, pos, _)
+      | Expr.Ident(_, pos, _)
+      | Expr.FieldExpr(_, pos, _, _)
+      | Expr.IsExpr(_, pos, _, _)
+      | Expr.IndexExpr(_, pos, _, _)
+      | Expr.MapLit(_, pos, _, _, _)
+      | Expr.CallExpr(_, pos, _, _, _)
+      | Expr.UnaryExpr(_, pos, _, _)
+      | Expr.BinaryExpr(_, pos, _, _, _)
+      | Expr.StructLit(_, pos, _, _, _, _)
+      | Expr.ArrayLit(_, pos, _, _)
+      | Expr.MatchExpr(_, pos, _, _)
+      | Expr.BlockExpr(_, pos, _)
+      | Expr.ArrowExpr(_, pos, _, _, _, _)
+      | Expr.AwaitExpr(_, pos, _)
+      | Expr.AsyncExpr(_, pos, _) => copy(pos)
+  }
+}
+
+export function isNumeric(valueType: Type): bool {
+  return isInteger(valueType) || valueType == Type.TF64 || valueType == Type.TF32
+}
+
+export function findBody(checker: Checker, key: string): int {
+  // Keys: "func|<funcIndex>", "inst|<instance>", "impl|<block>|<index>",
+  // "test|<module>|<n-th test of the module>", "const|<constIndex>",
+  // "default|<module>.<name>|<field>" (the module is left out in the prelude; a generic
+  // struct has one default body shared by its instances, except for a field whose type
+  // uses a type parameter, which is keyed "default|<instance type key>|<field>").
+  if (checker.bodyKeys[key] is Some(index)) {
+    return index
+  }
+  return -1
+}
+
+export function noteAsyncUse(mutable checker: Checker) uses alloc {
+  // The task runtime is written for a program that names Async<T>, awaits or
+  // makes a task, in the order of the other std modules.
+  for (const used of Arrays.values(checker.used)) {
+    if (used == "std/internal/async") {
+      return
+    }
+  }
+  Arrays.push(mutable checker.used, "std/internal/async")
+}
+
+export function findTaskClosureId(expression: Expr): int {
+  // The closure facts of `async (x) => ...` are kept by the arrow's id, those
+  // of `async { ... }` by the async expression's id.
+  if (expression is Expr.AsyncExpr(nodeId, _, body)) {
+    if (body is Expr.ArrowExpr(arrowId, _, _, _, _, _)) {
+      return arrowId
+    }
+    return nodeId
+  }
+  return -1
+}
+
+export function internComposite(mutable checker: Checker, type: Type): Type from type uses alloc {
+  // Types that hold a type parameter are not recorded.
+  const key = plainTypeKey(type)
+  if (checker.composites[key] is None && !containsTypeParameter(checker, type)) {
+    checker.composites[key] = type
+  }
+  return type
+}
+
+export function instanceDefaultKey(type: Type, field: string): string uses alloc {
+  return `default|${plainTypeKey(type)}|${field}`
+}
+
+export function keyBody(mutable checker: Checker, key: string) uses alloc {
+  checker.bodyKeys[key] = checker.body
+}

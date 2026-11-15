@@ -1,6 +1,7 @@
 // std/internal/async. The loop of a thread (D109 items 6, 7 and 8): a ready
 // queue of tasks to resume, the unfinished tasks, the tasks waiting in
-// Async.idle, a timer heap and a poller (kqueue on macOS, epoll on Linux).
+// Async.idle, a timer heap and a poller (kqueue on macOS, epoll on Linux, WSAPoll on
+// Windows).
 //
 // A turn runs the ready queue in order until it is empty, then waits in the
 // poller until the nearest timer deadline or until a registered descriptor is
@@ -17,8 +18,14 @@
 #include <sys/event.h>
 #elif defined(__linux__)
 #include <sys/epoll.h>
+#elif defined(__wasi__)
+// WASI preview 1 has no descriptor poller here: the loop has timers and no
+// descriptor waits, and a turn with nothing ready sleeps until the nearest timer.
+#elif defined(_WIN32)
+#include <winsock2.h>
+#include <windows.h>
 #else
-#error "async needs a poller: kqueue (macOS) or epoll (Linux)"
+#error "async needs a poller: kqueue (macOS), epoll (Linux), WSAPoll (Windows) or WASI timers only"
 #endif
 #include <errno.h>
 #include <time.h>
@@ -214,8 +221,12 @@ static void narra_timer_remove(narra_wait* wait) {
 // The poller.
 
 static void narra_poller_open(void) {
+#if !defined(__wasi__)
   if (narra_async_loop.poller_open) return;
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  // WSAPoll takes its list on every call, so there is nothing to open.
+  narra_async_loop.poller = 0;
+#elif defined(__APPLE__)
   narra_async_loop.poller = kqueue();
 #else
   narra_async_loop.poller = epoll_create1(0);
@@ -226,12 +237,17 @@ static void narra_poller_open(void) {
     exit(101);
   }
   narra_async_loop.poller_open = true;
+#endif
 }
 
 static void narra_poller_close(void) {
+#if !defined(__wasi__)
   if (!narra_async_loop.poller_open) return;
+#ifndef _WIN32
   close(narra_async_loop.poller);
+#endif
   narra_async_loop.poller_open = false;
+#endif
 }
 
 // The wait of the io list on descriptor in one direction, or NULL.
@@ -280,10 +296,17 @@ static int narra_epoll_sync(int descriptor, bool registered) {
 // Adds a wait, already in the io list, to the poller; 0, or the errno value.
 static int narra_poller_add(narra_wait* wait) {
   narra_poller_open();
-#if defined(__APPLE__)
+#if defined(__wasi__)
+  (void)wait;
+  return ENOSYS;
+#elif defined(__APPLE__)
   struct kevent change;
   EV_SET(&change, wait->descriptor, wait->writable ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, wait);
   if (kevent(narra_async_loop.poller, &change, 1, NULL, 0, NULL) < 0) return errno;
+  return 0;
+#elif defined(_WIN32)
+  // The wait is in the io list; the next poll watches it.
+  (void)wait;
   return 0;
 #else
   return narra_epoll_sync(wait->descriptor, narra_io_find(wait->descriptor, !wait->writable) != NULL);
@@ -293,11 +316,19 @@ static int narra_poller_add(narra_wait* wait) {
 // Takes a wait, already out of the io list, out of the poller. woke is true
 // when the poller reported it, so kqueue has deleted its one-shot event.
 static void narra_poller_remove(int descriptor, bool writable, bool woke) {
-#if defined(__APPLE__)
+#if defined(__wasi__)
+  (void)descriptor;
+  (void)writable;
+  (void)woke;
+#elif defined(__APPLE__)
   if (woke) return;
   struct kevent change;
   EV_SET(&change, descriptor, writable ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0, NULL);
   kevent(narra_async_loop.poller, &change, 1, NULL, 0, NULL);
+#elif defined(_WIN32)
+  (void)descriptor;
+  (void)writable;
+  (void)woke;
 #else
   (void)writable;
   (void)woke;
@@ -503,9 +534,49 @@ static void narra_loop_cancel_all_waits(void) {
 // rather than spin.
 static void narra_poller_failed(void) {
   fflush(stdout);
+#ifdef _WIN32
+  fprintf(stderr, "async: the poller failed: Winsock error %d\n", WSAGetLastError());
+#else
   fprintf(stderr, "async: the poller failed: %s\n", strerror(errno));
+#endif
   exit(101);
 }
+
+#ifdef _WIN32
+// Waits up to timeout nanoseconds for the sockets of the io list, one entry
+// per wait; with none, the thread sleeps until the nearest timer. A closed or
+// failed socket wakes its wait too, as with epoll.
+static void narra_poll_sockets(int64_t timeout) {
+  int64_t milliseconds = (timeout + 999999) / 1000000;
+  if (narra_async_loop.io_count == 0) {
+    Sleep((DWORD)milliseconds);
+    return;
+  }
+  int64_t total = narra_async_loop.io_count;
+  WSAPOLLFD* entries = malloc((size_t)total * sizeof(WSAPOLLFD));
+  narra_wait** waiting = malloc((size_t)total * sizeof(narra_wait*));
+  if (!entries || !waiting) {
+    fflush(stdout);
+    fprintf(stderr, "async: out of memory for the poller\n");
+    exit(101);
+  }
+  int64_t listed = 0;
+  for (narra_wait* wait = narra_async_loop.io; wait; wait = wait->next_io) {
+    entries[listed].fd = (SOCKET)wait->descriptor;
+    entries[listed].events = wait->writable ? POLLWRNORM : POLLRDNORM;
+    entries[listed].revents = 0;
+    waiting[listed] = wait;
+    listed++;
+  }
+  int ready = WSAPoll(entries, (ULONG)listed, (INT)milliseconds);
+  if (ready == SOCKET_ERROR) narra_poller_failed();
+  for (int64_t i = 0; ready > 0 && i < listed; i++) {
+    if (entries[i].revents != 0) narra_wait_end(waiting[i], 0, true);
+  }
+  free(entries);
+  free(waiting);
+}
+#endif
 
 // Waits in the poller until the nearest deadline (at most a day) or a ready
 // descriptor, then finishes the waits that are due. False when there is
@@ -520,6 +591,15 @@ static bool narra_loop_poll(void) {
     int64_t left = deadline <= now ? 0 : deadline - now;
     if (left < timeout) timeout = left;
   }
+#if defined(__wasi__)
+  // Only timers exist: sleep until the nearest deadline.
+  struct timespec limit;
+  limit.tv_sec = (time_t)(timeout / 1000000000);
+  limit.tv_nsec = (long)(timeout % 1000000000);
+  nanosleep(&limit, NULL);
+#elif defined(_WIN32)
+  narra_poll_sockets(timeout);
+#else
   enum { NARRA_POLL_EVENTS = 64 };
   int count;
 #if defined(__APPLE__)
@@ -552,6 +632,7 @@ static bool narra_loop_poll(void) {
     if (writer && (ready & (EPOLLOUT | broken))) narra_wait_end(writer, 0, true);
 #endif
   }
+#endif
   int64_t now = narra_loop_now();
   while (narra_async_loop.timer_count > 0 && narra_async_loop.timers[0]->deadline <= now) {
     narra_wait* wait = narra_async_loop.timers[0];

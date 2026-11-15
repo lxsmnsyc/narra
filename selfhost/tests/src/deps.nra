@@ -1,0 +1,462 @@
+// The deps suite: the dependency cache (`narrac pkg --fetch`, `narrac pkg --versions`) against
+// fixture repositories that the suite builds with git in a scratch folder. A case that needs git is
+// skipped, with a message, when git is not on PATH. No case reaches the network: every repository is
+// a file:// URL and every cache is a scratch folder.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { repeatString, splitString } from "testrunner/textops"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Fixtures from "testrunner/gitfixtures"
+import { collectBuildCases, runBuildCase } from "testrunner/depsbuild"
+import { collectResolveCases, runResolveCase } from "testrunner/depsresolve"
+import { Scratch, makeScratch } from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+const CASE_NAMES = [
+  "fetch-twice",
+  "two-members",
+  "versions",
+  "error-git-missing",
+  "error-unreachable",
+  "error-tag-missing",
+  "error-tree-mismatch",
+  "error-no-cache",
+  "error-checkout",
+  "tag-beats-branch",
+  "long-tag",
+  "relative-cache",
+]
+
+const NO_GIT_PATH = "PATH=/nonexistent"
+
+struct Step {
+  folder: string
+  tags: Array<string>
+  annotatedTags: Array<string>
+}
+
+export function collectCases(context: Context): Array<TestCase> uses alloc {
+  let cases: Array<TestCase> = []
+  for (const name of Arrays.values(CASE_NAMES)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "deps",
+      name: name,
+      path: Path.join(context.testdata, "deps"),
+      variant: name,
+    })
+  }
+  for (const resolveCase of Arrays.values(collectResolveCases(context))) {
+    Arrays.push(mutable cases, copy(resolveCase))
+  }
+  for (const buildCase of Arrays.values(collectBuildCases(context))) {
+    Arrays.push(mutable cases, copy(buildCase))
+  }
+  return cases
+}
+
+function listSteps(): Array<Step> uses alloc {
+  return [
+    Step {
+      folder: "a-1.0.0",
+      tags: ["a/v1.0.0", "a/v1.0.99999999999999999999", "v0.5.0", "release"],
+      annotatedTags: [],
+    },
+    Step { folder: "b-1.0.0", tags: ["b/v1.0.0", "v1.10.0"], annotatedTags: [] },
+    Step {
+      folder: "a-1.2.0",
+      tags: ["v1.9.0", "a/v1.0", "a/v2.0.0-rc1"],
+      annotatedTags: ["a/v1.2.0"],
+    },
+    Step { folder: "a-1.10.0", tags: ["a/v1.10.0"], annotatedTags: [] },
+  ]
+}
+
+function buildMembers(context: Context, repository: string): Result<bool, string> uses io, alloc {
+  const created = Fixtures.createRepository(repository)
+  if (created is Err(message)) {
+    return Err(message)
+  }
+  for (const step of Arrays.values(listSteps())) {
+    const source = Path.join(context.testdata, `deps/members/${step.folder}`)
+    const committed = Fixtures.commitFolder(repository, source, step.folder)
+    if (committed is Err(message)) {
+      return Err(message)
+    }
+    for (const tag of Arrays.values(step.tags)) {
+      const tagged = Fixtures.addTag(repository, tag, false)
+      if (tagged is Err(message)) {
+        return Err(message)
+      }
+    }
+    for (const tag of Arrays.values(step.annotatedTags)) {
+      const tagged = Fixtures.addTag(repository, tag, true)
+      if (tagged is Err(message)) {
+        return Err(message)
+      }
+    }
+  }
+  return Ok(true)
+}
+
+function runPackage(
+  context: Context,
+  scratch: Scratch,
+  extraEnvironment: Array<string>,
+  arguments: Array<string>,
+): CommandResult uses io, alloc {
+  let environment = [
+    `NARRA_CACHE=${scratch.root}/cache`,
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_NOSYSTEM=1",
+  ]
+  for (const assignment of Arrays.values(extraEnvironment)) {
+    Arrays.push(mutable environment, assignment)
+  }
+  let command = ["pkg"]
+  for (const argument of Arrays.values(arguments)) {
+    Arrays.push(mutable command, argument)
+  }
+  return Common.runNarracWith(context, scratch.work, environment, command)
+}
+
+function readField(output: string, key: string): string uses alloc {
+  for (const line of Arrays.values(splitString(output, "\n"))) {
+    if (Str.startsWith(line, `${key} `)) {
+      return Str.sliceFrom(line, Str.length(key) + 1)
+    }
+  }
+  return ""
+}
+
+function expectFailure(result: CommandResult, code: string): Result<bool, string> uses alloc {
+  if (result.code != 1 || result.output != "") {
+    return Err(`want exit code 1 and no stdout, got ${Common.describeRun(result)}`)
+  }
+  if (!Str.startsWith(result.errorOutput, `error ${code}: `)) {
+    return Err(`want error ${code}, got ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+function expectFetched(
+  repository: string,
+  tag: string,
+  result: CommandResult,
+): Result<string, string> uses io, alloc {
+  if (result.code != 0) {
+    return Err(`fetching ${tag}: ${Common.describeRun(result)}`)
+  }
+  const commit = Fixtures.readRevision(repository, `refs/tags/${tag}^{commit}`)
+  if (commit is Err(message)) {
+    return Err(message)
+  }
+  const tree = Fixtures.readRevision(repository, `refs/tags/${tag}^{tree}`)
+  if (tree is Err(message)) {
+    return Err(message)
+  }
+  if (readField(result.output, "commit") != commit.value) {
+    return Err(`${tag}: want commit ${commit.value}, got ${Common.describeRun(result)}`)
+  }
+  if (readField(result.output, "tree") != tree.value) {
+    return Err(`${tag}: want tree ${tree.value}, got ${Common.describeRun(result)}`)
+  }
+  const path = readField(result.output, "path")
+  if (!Fs.isDir(path) || Fs.exists(Path.join(path, ".git"))) {
+    return Err(`${tag}: ${path} is not a checkout without history`)
+  }
+  const writable = Shell.runScript("[ -n \"$(find \"$1/narra.toml\" -perm -u+w)\" ]", [path])
+  if (writable.code == 0) {
+    return Err(`${tag}: the checkout ${path} is writable`)
+  }
+  return Ok(path)
+}
+
+function runFetchTwice(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const first = runPackage(context, scratch, [], ["--fetch", url, "a/v1.0.0"])
+  const path = expectFetched(repository, "a/v1.0.0", first)
+  if (path is Err(message)) {
+    return Err(message)
+  }
+  // With PATH empty no program can start, so a second call that succeeds ran no git command.
+  const second = runPackage(context, scratch, [NO_GIT_PATH], ["--fetch", url, "a/v1.0.0"])
+  if (second.code != 0 || second.output != first.output) {
+    return Err(`the second fetch differs: ${Common.describeRun(second)}`)
+  }
+  return Ok(true)
+}
+
+function runTwoMembers(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const first = runPackage(context, scratch, [], ["--fetch", url, "a/v1.0.0"])
+  const firstPath = expectFetched(repository, "a/v1.0.0", first)
+  if (firstPath is Err(message)) {
+    return Err(message)
+  }
+  const second = runPackage(context, scratch, [], ["--fetch", url, "b/v1.0.0"])
+  const secondPath = expectFetched(repository, "b/v1.0.0", second)
+  if (secondPath is Err(message)) {
+    return Err(message)
+  }
+  if (firstPath.value == secondPath.value) {
+    return Err("both members are in one folder")
+  }
+  if (readField(first.output, "commit") == readField(second.output, "commit")) {
+    return Err("both members are one commit")
+  }
+  const firstNotes = Fs.readText(Path.join(firstPath.value, "notes.txt"))
+  if (firstNotes is Err(message)) {
+    return Err(message)
+  }
+  const secondNotes = Fs.readText(Path.join(secondPath.value, "notes.txt"))
+  if (secondNotes is Err(message)) {
+    return Err(message)
+  }
+  if (firstNotes.value != "member a at 1.0.0\n" || secondNotes.value != "member b at 1.0.0\n") {
+    return Err("a member folder holds the files of another commit")
+  }
+  return Ok(true)
+}
+
+function expectVersions(
+  context: Context,
+  scratch: Scratch,
+  url: string,
+  name: string,
+  want: string,
+): Result<bool, string> uses io, alloc {
+  const result = runPackage(context, scratch, [], ["--versions", url, name])
+  return Common.expectRun(result, 0, want)
+}
+
+function runVersions(
+  context: Context,
+  scratch: Scratch,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const names = ["a", "b", "c"]
+  const wanted = ["1.0.0\n1.2.0\n1.10.0\n", "1.0.0\n", "0.5.0\n1.9.0\n1.10.0\n"]
+  for (const index of Ranges.between(0, Arrays.length(names))) {
+    const name = names[index]
+    const checked = expectVersions(context, scratch, url, name, wanted[index])
+    if (checked is Err(message)) {
+      return Err(`versions of ${name}: ${message}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runTreeMismatch(
+  context: Context,
+  scratch: Scratch,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const wrongTree = "0000000000000000000000000000000000000000"
+  const mismatch = runPackage(context, scratch, [], ["--fetch", url, "a/v1.0.0", wrongTree])
+  return expectFailure(mismatch, "E0443")
+}
+
+function runCheckout(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  // A tag on a tree object lists as a tag but cannot be checked out.
+  const tree = Fixtures.readRevision(repository, "HEAD^{tree}")
+  if (tree is Err(message)) {
+    return Err(message)
+  }
+  const tagged = Shell.runScript("git -C \"$1\" tag treetag \"$2\"", [repository, tree.value])
+  if (tagged.code != 0) {
+    return Err(`cannot tag a tree: ${Str.trim(tagged.errorOutput)}`)
+  }
+  const result = runPackage(context, scratch, [], ["--fetch", url, "treetag"])
+  return expectFailure(result, "E0445")
+}
+
+function runTagBeatsBranch(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  // A branch with the name of a tag, on another commit, must not win.
+  const branched = Shell.runScript("git -C \"$1\" branch a/v1.0.0", [repository])
+  if (branched.code != 0) {
+    return Err(`cannot make a branch: ${Str.trim(branched.errorOutput)}`)
+  }
+  const result = runPackage(context, scratch, [], ["--fetch", url, "a/v1.0.0"])
+  const path = expectFetched(repository, "a/v1.0.0", result)
+  if (path is Err(message)) {
+    return Err(message)
+  }
+  return Ok(true)
+}
+
+function runLongTag(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const readable = repeatString("x", 64)
+  const tag = `${readable}${repeatString("y", 36)}`
+  const tagged = Fixtures.addTag(repository, tag, false)
+  if (tagged is Err(message)) {
+    return Err(message)
+  }
+  const result = runPackage(context, scratch, [], ["--fetch", url, tag])
+  const path = expectFetched(repository, tag, result)
+  if (path is Err(message)) {
+    return Err(message)
+  }
+  // The folder keeps 64 readable bytes, a dash and the 8 digits of the hash.
+  const folder = Path.basename(path.value)
+  if (!Str.startsWith(folder, `${readable}-`) || Str.length(folder) != 73) {
+    return Err(`want a folder of 64 readable bytes and a hash, got ${folder}`)
+  }
+  return Ok(true)
+}
+
+function runRelativeCache(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const result = runPackage(
+    context,
+    scratch,
+    ["NARRA_CACHE=relative-cache"],
+    ["--fetch", url, "a/v1.0.0"],
+  )
+  const path = expectFetched(repository, "a/v1.0.0", result)
+  if (path is Err(message)) {
+    return Err(message)
+  }
+  // The folder is made against the working directory of the command.
+  if (!Str.startsWith(path.value, "/") || !Str.contains(path.value, "/relative-cache/git/")) {
+    return Err(`want an absolute path in relative-cache, got ${path.value}`)
+  }
+  if (!Fs.isDir(Path.join(scratch.work, "relative-cache/git"))) {
+    return Err("the cache is not in the working directory of the command")
+  }
+  return Ok(true)
+}
+
+function runWithRepository(
+  context: Context,
+  scratch: Scratch,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  const repository = Path.join(scratch.root, "members")
+  const built = buildMembers(context, repository)
+  if (built is Err(message)) {
+    return Err(message)
+  }
+  const url = `file://${repository}`
+  if (variant == "fetch-twice") {
+    return runFetchTwice(context, scratch, repository, url)
+  }
+  if (variant == "two-members") {
+    return runTwoMembers(context, scratch, repository, url)
+  }
+  if (variant == "versions") {
+    return runVersions(context, scratch, url)
+  }
+  if (variant == "error-tag-missing") {
+    return expectFailure(runPackage(context, scratch, [], ["--fetch", url, "a/v9.9.9"]), "E0442")
+  }
+  if (variant == "error-tree-mismatch") {
+    return runTreeMismatch(context, scratch, url)
+  }
+  if (variant == "tag-beats-branch") {
+    return runTagBeatsBranch(context, scratch, repository, url)
+  }
+  if (variant == "long-tag") {
+    return runLongTag(context, scratch, repository, url)
+  }
+  if (variant == "relative-cache") {
+    return runRelativeCache(context, scratch, repository, url)
+  }
+  if (variant == "error-checkout") {
+    return runCheckout(context, scratch, repository, url)
+  }
+  return Err(`unknown case ${variant}`)
+}
+
+function runWithoutRepository(
+  context: Context,
+  scratch: Scratch,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  if (variant == "error-git-missing") {
+    const result = runPackage(
+      context,
+      scratch,
+      [NO_GIT_PATH],
+      ["--fetch", "file:///nonexistent", "v1.0.0"],
+    )
+    return expectFailure(result, "E0440")
+  }
+  if (variant == "error-no-cache") {
+    const result = runPackage(
+      context,
+      scratch,
+      ["NARRA_CACHE=", "HOME="],
+      ["--fetch", "file:///nonexistent", "v1.0.0"],
+    )
+    return expectFailure(result, "E0444")
+  }
+  const result = runPackage(context, scratch, [], [
+    "--fetch",
+    `file://${scratch.root}/missing`,
+    "v1.0.0",
+  ])
+  return expectFailure(result, "E0441")
+}
+
+export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (Str.startsWith(testCase.variant, "resolve-")) {
+    return runResolveCase(context, testCase)
+  }
+  if (Str.startsWith(testCase.variant, "build-")) {
+    return runBuildCase(context, testCase)
+  }
+  const needsRepository =
+    testCase.variant != "error-git-missing" &&
+      testCase.variant != "error-no-cache" &&
+      testCase.variant != "error-unreachable"
+  if (testCase.variant != "error-git-missing" && testCase.variant != "error-no-cache") {
+    if (!Fixtures.isGitAvailable()) {
+      print(`deps/${testCase.name}: skipped, git is not on PATH`)
+      return Ok(true)
+    }
+  }
+  const made = makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  let outcome: Result<bool, string> = Ok(true)
+  if (needsRepository) {
+    outcome = runWithRepository(context, made.value, testCase.variant)
+  } else {
+    outcome = runWithoutRepository(context, made.value, testCase.variant)
+  }
+  Fixtures.removeFixtures(made.value.root)
+  return outcome
+}

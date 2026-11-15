@@ -1,0 +1,449 @@
+// Self tail calls become jumps to the function start (Go: emit_call.go
+// findTailCalls, tailJump, returnMatch). A function with such a call owns the
+// parameters a jump replaces; each tail call evaluates its new arguments into owned
+// temporaries, releases everything the function holds, assigns the parameters
+// and jumps. The calls are found before the body is emitted and recorded by
+// node id in Emitter.tailCalls, so a call inside a closure never matches.
+// A large parameter is a pointer to the caller's value until the first jump,
+// and then to a variable of the function that holds the new value.
+import { filledArray } from "narrac/driver/textops"
+import { Stmt, Block, Expr, Arg, Param, FuncDecl, MatchArm } from "narrac/syntax/ast"
+import { Type } from "narrac/check/types"
+import {
+  Ref,
+  ProgramFunc,
+  Checker,
+  getExpressionId,
+  orderArguments,
+  findParameterIndexes,
+} from "narrac/check/check"
+import { cachedFunctionName, cachedCType } from "narrac/emit/cnames"
+import {
+  Emitter,
+  EmitWalker,
+  TempVar,
+  writeLine,
+  temp,
+  consume,
+  beginStatement,
+  addLocal,
+  unwindAll,
+  readNodeRef,
+  readLocal,
+  localName,
+  localRef,
+  isPointerParameter,
+  needsRc,
+  retainCode,
+  switchBody,
+} from "narrac/emit/emitstate"
+import * as ParamDefaults from "narrac/check/paramdefaults"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+function functionDeclaration(checker: Checker, program: ProgramFunc): FuncDecl from checker {
+  return match (program) {
+    ProgramFunc.PlainFunc(funcIndex) => checker.functions[funcIndex].declaration
+    ProgramFunc.InstanceFunc(instance) =>
+      checker.functions[checker.instanceList[instance].funcIndex].declaration
+    ProgramFunc.ImplFunc(block, index) =>
+      checker.implementations[block].functions[index].declaration
+  }
+}
+
+function parameterTypes(
+  checker: Checker,
+  program: ProgramFunc,
+): Array<Type> from checker uses alloc {
+  if (program is ProgramFunc.InstanceFunc(instance)) {
+    return checker.instanceList[instance].parameters
+  }
+  let types: Array<Type> = []
+  for (const parameter of Arrays.values(functionDeclaration(checker, program).parameters)) {
+    Arrays.push(mutable types, checker.paramTypes[parameter.id])
+  }
+  return types
+}
+
+function callTarget(emitter: Emitter, nodeId: int): Option<ProgramFunc> {
+  const ref = readNodeRef(emitter, nodeId)
+  if (ref is Ref.Implementation(block, index)) {
+    return Some(ProgramFunc.ImplFunc(block, index))
+  }
+  if (ref is Ref.Function(funcIndex)) {
+    if (emitter.checker.bodies[emitter.body].instanceRefs[nodeId] is Some(instance)) {
+      return Some(ProgramFunc.InstanceFunc(instance))
+    }
+    if (Arrays.length(emitter.checker.functions[funcIndex].typeParameters) == 0) {
+      return Some(ProgramFunc.PlainFunc(funcIndex))
+    }
+  }
+  return None
+}
+
+function passesParameter(emitter: Emitter, argument: Expr, index: int): bool {
+  if (argument is Expr.Ident(identId, _, _)) {
+    if (readNodeRef(emitter, identId) is Ref.Local(localIndex)) {
+      return localIndex == index
+    }
+  }
+  return false
+}
+
+function orderTailArguments(
+  checker: Checker,
+  nodeId: int,
+  written: Array<Arg>,
+  parameters: Array<Param>,
+): Array<Arg> uses alloc {
+  // Every argument in parameter order; a left-out default is passed too (D115).
+  if (ParamDefaults.leavesOutDefaults(parameters, written)) {
+    return ParamDefaults.fillArguments(parameters, written)
+  }
+  return copy(orderArguments(checker, nodeId, written))
+}
+
+function findTailParameterIndexes(
+  checker: Checker,
+  nodeId: int,
+  written: Array<Arg>,
+  parameters: Array<Param>,
+): Array<int> uses alloc {
+  // The parameter of each written argument.
+  if (!ParamDefaults.leavesOutDefaults(parameters, written)) {
+    return findParameterIndexes(checker, nodeId, Arrays.length(written))
+  }
+  let indexes = filledArray(-1, Arrays.length(written))
+  const writtenIndexes = ParamDefaults.findWrittenIndexes(parameters, written)
+  for (const parameter of Ranges.between(0, Arrays.length(parameters))) {
+    if (writtenIndexes[parameter] >= 0) {
+      indexes[writtenIndexes[parameter]] = parameter
+    }
+  }
+  return indexes
+}
+
+function isSelfCall(emitter: Emitter, program: ProgramFunc, expression: Expr): bool uses alloc {
+  // A function-type parameter keeps the plain call, because a closure made for
+  // the call may live on the stack of the iteration that ends at the jump. A
+  // mutable parameter must be passed on as it is.
+  if (expression is Expr.CallExpr(nodeId, _, _, _, written)) {
+    if (callTarget(emitter, nodeId) is Some(target)) {
+      if (cachedFunctionName(emitter.checker, emitter.typeNames, target) == emitter.owner) {
+        const parameters = functionDeclaration(emitter.checker, program).parameters
+        const arguments = orderTailArguments(emitter.checker, nodeId, written, parameters)
+        const types = parameterTypes(emitter.checker, program)
+        if (Arrays.length(arguments) != Arrays.length(parameters)) {
+          return false
+        }
+        for (const index of Ranges.between(0, Arrays.length(parameters))) {
+          if (types[index] is Type.TFunc(_, _, _, _, _)) {
+            return false
+          }
+          if (parameters[index].isMutable) {
+            if (!passesParameter(emitter, arguments[index].value, index)) {
+              return false
+            }
+          }
+        }
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function noteTailCall(
+  emitter: Emitter,
+  program: ProgramFunc,
+  expression: Expr,
+  mutable found: Array<Expr>,
+) uses alloc {
+  if (isSelfCall(emitter, program, expression)) {
+    Arrays.push(mutable found, expression)
+  }
+}
+
+export function collectCallIds(calls: Array<Expr>): Array<int> uses alloc {
+  let ids: Array<int> = []
+  for (const call of Arrays.values(calls)) {
+    Arrays.push(mutable ids, getExpressionId(call))
+  }
+  return ids
+}
+
+export function findTailCalls(
+  emitter: Emitter,
+  program: ProgramFunc,
+  block: Block,
+  isVoid: bool,
+): Array<Expr> from emitter uses alloc {
+  // Tail positions are the value of a `return`, an arm of a returned `match`,
+  // and the last statement of a void function, also at the end of an `if`
+  // branch or a `match` arm that is in tail position.
+  let found: Array<Expr> = []
+  scanBlock(emitter, program, block, isVoid, mutable found)
+  return copy(found)
+}
+
+function scanBlock(
+  emitter: Emitter,
+  program: ProgramFunc,
+  block: Block,
+  tail: bool,
+  mutable found: Array<Expr>,
+) uses alloc {
+  const last = Arrays.length(block.statements) - 1
+  for (const index of Ranges.between(0, last + 1)) {
+    scanStatement(emitter, program, block.statements[index], tail && index == last, mutable found)
+  }
+}
+
+function scanStatement(
+  emitter: Emitter,
+  program: ProgramFunc,
+  statement: Stmt,
+  tail: bool,
+  mutable found: Array<Expr>,
+) uses alloc {
+  if (statement is Stmt.BlockStmt(block)) {
+    scanBlock(emitter, program, block, tail, mutable found)
+  }
+  if (statement is Stmt.ReturnStmt(_, Some(value))) {
+    noteTailCall(emitter, program, value, mutable found)
+    if (value is Expr.MatchExpr(_, _, _, arms)) {
+      for (const arm of Arrays.values(arms)) {
+        if (arm.body is Some(armBody)) {
+          noteTailCall(emitter, program, armBody, mutable found)
+        }
+      }
+    }
+  }
+  if (statement is Stmt.IfStmt(_, _, then, orElse)) {
+    scanBlock(emitter, program, then, tail, mutable found)
+    if (orElse is Some(other)) {
+      scanStatement(emitter, program, other, tail, mutable found)
+    }
+  }
+  if (statement is Stmt.WhileStmt(_, _, _, whileBody)) {
+    scanBlock(emitter, program, whileBody, false, mutable found)
+  }
+  if (statement is Stmt.CForStmt(_, _, _, _, _, cForBody)) {
+    scanBlock(emitter, program, cForBody, false, mutable found)
+  }
+  if (statement is Stmt.ForStmt(_, _, _, _, _, forBody, _, _)) {
+    scanBlock(emitter, program, forBody, false, mutable found)
+  }
+  if (statement is Stmt.ExprStmt(_, expression)) {
+    if (tail) {
+      noteTailCall(emitter, program, expression, mutable found)
+    }
+    if (expression is Expr.MatchExpr(_, _, _, arms)) {
+      for (const arm of Arrays.values(arms)) {
+        if (arm.block is Some(armBlock)) {
+          scanBlock(emitter, program, armBlock, tail, mutable found)
+        } else if (tail) {
+          if (arm.body is Some(armBody)) {
+            noteTailCall(emitter, program, armBody, mutable found)
+          }
+        }
+      }
+    }
+  }
+}
+
+export function isTailCall(emitter: Emitter, expression: Expr): bool {
+  if (expression is Expr.CallExpr(nodeId, _, _, _, _)) {
+    for (const found of Arrays.values(emitter.tailCalls)) {
+      if (found == nodeId) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function tailCallArguments(expression: Expr): Array<Arg> from expression {
+  if (expression is Expr.CallExpr(_, _, _, _, arguments)) {
+    return arguments
+  }
+  return []
+}
+
+export function matchHasTailCall(emitter: Emitter, arms: Array<MatchArm>): bool {
+  for (const arm of Arrays.values(arms)) {
+    if (arm.body is Some(body)) {
+      if (isTailCall(emitter, body)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function findPassedThrough(
+  emitter: Emitter,
+  program: ProgramFunc,
+  calls: Array<Expr>,
+): Array<bool> uses alloc {
+  // A parameter is passed through when every tail call hands it back as it is.
+  const declaration = functionDeclaration(emitter.checker, program)
+  let passed = filledArray(true, Arrays.length(declaration.parameters))
+  for (const call of Arrays.values(calls)) {
+    if (call is Expr.CallExpr(nodeId, _, _, _, written)) {
+      const arguments = orderTailArguments(emitter.checker, nodeId, written, declaration.parameters)
+      for (const index of Ranges.between(0, Arrays.length(arguments))) {
+        if (!passesParameter(emitter, arguments[index].value, index)) {
+          passed[index] = false
+        }
+      }
+    }
+  }
+  return passed
+}
+
+export function openTailLoop(
+  mutable emitter: Emitter,
+  program: ProgramFunc,
+  calls: Array<Expr>,
+) uses alloc {
+  // The function owns the parameters a jump replaces. A counted parameter that
+  // every tail call passes through stays borrowed from the caller.
+  const parameters = copy(functionDeclaration(emitter.checker, program).parameters)
+  const passed = findPassedThrough(emitter, program, calls)
+  for (const index of Ranges.between(0, Arrays.length(parameters))) {
+    if (!parameters[index].isMutable) {
+      const local = copy(readLocal(emitter, index))
+      if (passed[index] && needsRc(emitter, local.localType)) {
+        continue
+      }
+      if (isPointerParameter(emitter, index)) {
+        const typeName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
+        writeLine(mutable emitter, `${typeName} ${localName(local)}_held;`)
+      }
+      const retainText = retainCode(emitter, local.localType, localRef(emitter, index))
+      if (retainText != "") {
+        writeLine(mutable emitter, retainText)
+        addLocal(mutable emitter, index)
+      }
+    }
+  }
+  writeLine(mutable emitter, "narra_tail:;")
+}
+
+function isBorrowedParameter(emitter: Emitter, index: int): bool {
+  // openTailLoop retains and registers every other counted parameter.
+  if (!needsRc(emitter, readLocal(emitter, index).localType)) {
+    return false
+  }
+  for (const scope of Arrays.values(emitter.scopes)) {
+    for (const owned of Arrays.values(scope.locals)) {
+      if (owned == index) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+export function withoutLastFrame(
+  frames: Array<Array<TempVar>>,
+): Array<Array<TempVar>> from frames uses alloc {
+  // unwindAll already released this frame.
+  let kept: Array<Array<TempVar>> = []
+  for (const index of Ranges.between(0, Arrays.length(frames) - 1)) {
+    Arrays.push(mutable kept, frames[index])
+  }
+  return kept
+}
+
+export function emitTailJump<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  call: Expr,
+) uses alloc {
+  const arguments = tailCallArguments(call)
+  beginStatement(mutable emitter)
+  if (emitter.tailProgram is Some(program)) {
+    const parameters = copy(functionDeclaration(emitter.checker, program).parameters)
+    const types = copy(parameterTypes(emitter.checker, program))
+    // Evaluate in written order; values is in parameter order.
+    const callId = getExpressionId(call)
+    const parameterIndexes = findTailParameterIndexes(
+      emitter.checker,
+      callId,
+      arguments,
+      parameters,
+    )
+    let values = filledArray("", Arrays.length(parameters))
+    for (const index of Ranges.between(0, Arrays.length(arguments))) {
+      const parameter = parameterIndexes[index]
+      if (!parameters[parameter].isMutable && !isBorrowedParameter(emitter, parameter)) {
+        const code = EmitWalker.emitExpression(walker, mutable emitter, arguments[index].value)
+        let value = consume(mutable emitter, code.text, code.owned, types[parameter])
+        if (!needsRc(emitter, types[parameter])) {
+          value = temp(mutable emitter, types[parameter], value)
+        }
+        values[parameter] = value
+      }
+    }
+    // A left-out default is built from the call's default body, after the written arguments.
+    for (const parameter of Arrays.values(
+      ParamDefaults.findFilledParameters(parameters, arguments),
+    )) {
+      if (parameters[parameter].default is Some(defaultValue)) {
+        const body = ParamDefaults.findCallDefaultBody(
+          emitter.checker,
+          emitter.body,
+          callId,
+          parameter,
+        )
+        if (body >= 0) {
+          const callerBody = switchBody(mutable emitter, body)
+          const code = EmitWalker.emitExpression(walker, mutable emitter, defaultValue)
+          emitter.body = callerBody
+          let value = consume(mutable emitter, code.text, code.owned, types[parameter])
+          if (!needsRc(emitter, types[parameter])) {
+            value = temp(mutable emitter, types[parameter], value)
+          }
+          values[parameter] = value
+        }
+      }
+    }
+    unwindAll(mutable emitter)
+    for (const index of Ranges.between(0, Arrays.length(parameters))) {
+      if (!parameters[index].isMutable && !isBorrowedParameter(emitter, index)) {
+        const parameterName = localName(readLocal(emitter, index))
+        if (isPointerParameter(emitter, index)) {
+          // Every new value is in a temporary by now, so no write here changes
+          // a value that another parameter still points at.
+          writeLine(mutable emitter, `${parameterName}_held = ${values[index]};`)
+          writeLine(mutable emitter, `${parameterName} = &${parameterName}_held;`)
+        } else {
+          writeLine(mutable emitter, `${parameterName} = ${values[index]};`)
+        }
+      }
+    }
+    writeLine(mutable emitter, "goto narra_tail;")
+  }
+  emitter.frames = withoutLastFrame(emitter.frames)
+}
+
+export function emitReturnArm<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  body: Expr,
+  type: Type,
+) uses alloc {
+  if (isTailCall(emitter, body)) {
+    emitTailJump(walker, mutable emitter, body)
+    return
+  }
+  beginStatement(mutable emitter)
+  const code = EmitWalker.emitExpression(walker, mutable emitter, body)
+  const value = consume(mutable emitter, code.text, code.owned, type)
+  const result = temp(mutable emitter, type, value)
+  unwindAll(mutable emitter)
+  writeLine(mutable emitter, `return ${result};`)
+  emitter.frames = withoutLastFrame(emitter.frames)
+}

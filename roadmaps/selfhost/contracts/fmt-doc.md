@@ -9,7 +9,7 @@ defined_by: fmt-doc
 
 ## Purpose
 
-The document IR and printer of `narrac fmt`, a pure library in `selfhost/src/fmtdoc.nra` (`import * as Doc from "narrac/fmtdoc"`). fmt-cli and fmt-exprs build documents with it; nothing else in the compiler uses it.
+The document IR and printer of `narrac fmt`, a pure library in `selfhost/src/tools/fmtdoc.nra` (`import * as Doc from "narrac/fmtdoc"`). fmt-cli and fmt-exprs build documents with it; nothing else in the compiler uses it.
 
 ## Interface
 

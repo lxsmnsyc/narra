@@ -1,0 +1,54 @@
+// Helpers shared by the checks of the std modules (stdarray, stdmap, stdresult, ...).
+// stdcalls.nra dispatches to the modules, so the helpers live here and not there.
+import { Type } from "narrac/check/types"
+import { Checker, Walker, reportError, getExpressionPos } from "narrac/check/check"
+import { instantiate } from "narrac/check/resolve"
+import { Pos, Expr, Arg } from "narrac/syntax/ast"
+import { checkExpression, expectType, checkArgumentsLoosely } from "narrac/check/exprs"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+export function checkArgumentCount<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  count: int,
+): bool uses alloc {
+  if (Arrays.length(arguments) != count) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0311",
+      `${name} takes ${Int.toString(count)} arguments, found ${Int.toString(Arrays.length(arguments))}`,
+    )
+    // Check the arguments loosely so their errors still show.
+    checkArgumentsLoosely(mutable checker, walker, arguments)
+    return false
+  }
+  return true
+}
+
+export function checkArgumentAgainst<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  argument: Expr,
+  expected: Type,
+) uses alloc {
+  const found = checkExpression(mutable checker, walker, argument, Some(expected))
+  checker.looseFunctions = true
+  expectType(mutable checker, getExpressionPos(argument), Some(expected), found)
+  checker.looseFunctions = false
+}
+
+export function makePreludeEnum(
+  mutable checker: Checker,
+  name: string,
+  typeArguments: Array<Type>,
+): Type from checker uses alloc {
+  if (checker.scopes[0].generics[name] is Some(generic)) {
+    return instantiate(mutable checker, generic, typeArguments)
+  }
+  return Type.TVoid
+}

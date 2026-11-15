@@ -22,7 +22,7 @@ selfhost-emit-program (cnames, hash), and every selfhost-emit-* node that calls 
 
 ## Workaround in place
 
-The code already follows the proposed change; `selfhost/src/cnames.nra` is a stub with the new signatures.
+The code already follows the proposed change; `selfhost/src/emit/cnames.nra` is a stub with the new signatures.
 
 ## Decision
 

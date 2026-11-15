@@ -49,16 +49,16 @@ const REPORTERS = [
   Reporter { name: "reportError", codeIndex: 2, gap: 1, localFile: "" },
   Reporter { name: "reportErrorIn", codeIndex: 3, gap: 1, localFile: "" },
   Reporter { name: "reportTypeError", codeIndex: 2, gap: 1, localFile: "" },
-  Reporter { name: "failAt", codeIndex: 2, gap: 1, localFile: "parser.nra" },
-  Reporter { name: "failHere", codeIndex: 1, gap: 1, localFile: "parser.nra" },
-  Reporter { name: "failFound", codeIndex: 1, gap: 1, localFile: "parser.nra" },
-  Reporter { name: "errorAt", codeIndex: 2, gap: 1, localFile: "lexer.nra" },
-  Reporter { name: "fail", codeIndex: 2, gap: 1, localFile: "lexer.nra" },
-  Reporter { name: "createError", codeIndex: 1, gap: 1, localFile: "manifest.nra" },
+  Reporter { name: "failAt", codeIndex: 2, gap: 1, localFile: "syntax/parser.nra" },
+  Reporter { name: "failHere", codeIndex: 1, gap: 1, localFile: "syntax/parser.nra" },
+  Reporter { name: "failFound", codeIndex: 1, gap: 1, localFile: "syntax/parser.nra" },
+  Reporter { name: "errorAt", codeIndex: 2, gap: 1, localFile: "syntax/lexer.nra" },
+  Reporter { name: "fail", codeIndex: 2, gap: 1, localFile: "syntax/lexer.nra" },
+  Reporter { name: "createError", codeIndex: 1, gap: 1, localFile: "driver/manifest.nra" },
   Reporter { name: "checkLoopExit", codeIndex: 4, gap: 1, localFile: "" },
   Reporter { name: "reportErrorFix", codeIndex: 2, gap: 2, localFile: "" },
-  Reporter { name: "failAtFix", codeIndex: 2, gap: 2, localFile: "parser.nra" },
-  Reporter { name: "errorWithFixesAt", codeIndex: 2, gap: 2, localFile: "lexer.nra" },
+  Reporter { name: "failAtFix", codeIndex: 2, gap: 2, localFile: "syntax/parser.nra" },
+  Reporter { name: "errorWithFixesAt", codeIndex: 2, gap: 2, localFile: "syntax/lexer.nra" },
 ]
 
 // One piece of a message format: kind 0 is literal text, 1 is a quoted
@@ -88,26 +88,25 @@ export function runCase(
   _context: Context,
   testCase: TestCase,
 ): Result<bool, string> uses io, alloc {
-  const table = Fs.readText(Path.join(testCase.path, "diagnostics.nra"))
+  const table = Fs.readText(Path.join(testCase.path, "driver/diagnostics.nra"))
   if (table is Err(message)) {
-    return Err(`cannot read diagnostics.nra: ${message}`)
+    return Err(`cannot read driver/diagnostics.nra: ${message}`)
   }
   const formats = readFormats(table.value)
   if (Arrays.length(formats) < MINIMUM_ROWS) {
     return Err(
-      `the table was not found in diagnostics.nra: ${Int.toString(Arrays.length(formats))} rows`,
+      `the table was not found in driver/diagnostics.nra: ${Int.toString(Arrays.length(formats))} rows`,
     )
   }
   let problems = checkTableOrder(table.value)
   let sites = 0
-  for (const name of Arrays.values(Files.listNames(testCase.path))) {
-    if (Str.endsWith(name, ".nra")) {
-      const source = Fs.readText(Path.join(testCase.path, name))
-      if (source is Err(message)) {
-        return Err(`cannot read ${name}: ${message}`)
-      }
-      sites += checkFile(mutable problems, formats, name, source.value)
+  for (const path of Arrays.values(Files.findSources(testCase.path))) {
+    const name = Files.relativePath(testCase.path, path)
+    const source = Fs.readText(path)
+    if (source is Err(message)) {
+      return Err(`cannot read ${name}: ${message}`)
     }
+    sites += checkFile(mutable problems, formats, name, source.value)
   }
   if (Arrays.length(problems) > 0) {
     return Err(
@@ -143,7 +142,7 @@ function checkTableOrder(table: string): Array<string> uses alloc {
     if (kind == "") {
       continue
     }
-    const where = `diagnostics.nra:${Int.toString(currentLine)}`
+    const where = `driver/diagnostics.nra:${Int.toString(currentLine)}`
     if (line == "]") {
       if (openLine > 0) {
         Arrays.push(
@@ -358,7 +357,6 @@ function matchPieces(
       return false
     }
   }
-  return false
 }
 
 function fittingCodes(formats: Array<CodeFormat>, text: string): Array<string> uses alloc {

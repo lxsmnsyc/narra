@@ -10,16 +10,87 @@
 // closure that never returns fails instead of hanging the run. This also
 // bounds a nested child that would keep the pipe open.
 //
+// On Windows there is no fork, so the closure runs in this process under a
+// jump buffer (the one Co.resume uses): a panic jumps back and its message is
+// what the closure said. Nothing stops a closure that never returns, so there
+// is no timeout, and what the closure changed in globals stays changed.
+//
 // The failure paths free what they built, except the final message, which
 // narra_panic prints before the process ends.
 #include <errno.h>
+#include <sys/types.h>
+#ifndef _WIN32
 #include <signal.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
-#include <sys/types.h>
 #include <sys/wait.h>
+#endif
 
+#ifdef _WIN32
+typedef struct narra_test_proc narra_test_proc;
+struct narra_test_proc {
+  jmp_buf here;
+  jmp_buf* outer;
+  narra_test_proc* previous;
+  int64_t live;
+  bool panicked;
+  char text[sizeof narra_panic_text];
+};
+
+static NARRA_PER_THREAD narra_test_proc* narra_test_current = NULL;
+
+static void narra_test_begin(narra_test_proc* t) {
+  fflush(stdout);
+  fflush(stderr);
+  t->outer = narra_panic_jmp;
+  t->previous = narra_test_current;
+  t->live = narra_live;
+  t->panicked = false;
+  t->text[0] = 0;
+  narra_test_current = t;
+  narra_panic_jmp = &t->here;
+}
+
+// narra_test_fork is true while the closure runs, and false again when it
+// panicked: setjmp returns twice, so the jump lands in the condition. The
+// closure's call and narra_test_returned follow in the emitted block.
+#define narra_test_fork(t, where) (narra_test_begin(t), setjmp((t)->here) == 0 ? true : (narra_test_caught(t), false))
+
+static void narra_test_caught(narra_test_proc* t) {
+  narra_panic_jmp = t->outer;
+  narra_test_current = t->previous;
+  // The count goes back to its value before the closure ran, as for a coroutine.
+  narra_live = t->live;
+  t->panicked = true;
+  memcpy(t->text, narra_panic_text, sizeof t->text);
+}
+
+// narra_test_returned ends the closure's run when it returned.
+static void narra_test_returned(void) {
+  narra_test_proc* t = narra_test_current;
+  narra_panic_jmp = t->outer;
+  narra_test_current = t->previous;
+}
+
+// narra_test_expect panics unless the closure panicked with a message that
+// contains want (any message when want is NULL).
+static void narra_test_expect(narra_test_proc* t, lstr* want, const char* where) {
+  if (!t->panicked) narra_panic(where, "expected a panic, but the function returned");
+  if (want && !strstr(t->text, want->data)) {
+    lstr* w = narra_show_string(want);
+    lstr* g = narra_quote(t->text, (int64_t)strlen(t->text), '"');
+    size_t n = (size_t)w->len + (size_t)g->len + 64;
+    char* out = malloc(n);
+    if (!out) narra_panic("runtime", "out of memory");
+    snprintf(out, n, "expected a panic containing %s, got %s", w->data, g->data);
+    lstr_release(w);
+    lstr_release(g);
+    narra_panic(where, out);
+  }
+}
+
+#else
 // While a call runs, SIGTERM, SIGINT and SIGHUP are passed on to its child, so
 // killing this process does not orphan the child. Several threads may call at
 // once: a count of active calls (under a mutex) installs the handlers for the
@@ -238,6 +309,7 @@ static void narra_test_expect(narra_test_proc* t, lstr* want, const char* where)
   }
   free(msg);
 }
+#endif
 
 // The failure of Test.eq. The shown values are owned and released here.
 static void narra_test_fail_eq(lstr* expected, lstr* actual, const char* where) {
@@ -284,11 +356,11 @@ static void narra_test_golden(lstr* name, lstr* actual, const char* where) {
   snprintf(path, cap, "%s/%s.golden", dir, name->data);
   if (update) {
     // Create the directories on the way.
-    mkdir(dir, 0777);
+    narra_mkdir(dir);
     for (char* p = path + strlen(dir) + 1; *p; p++) {
       if (*p == '/') {
         *p = 0;
-        mkdir(path, 0777);
+        narra_mkdir(path);
         *p = '/';
       }
     }

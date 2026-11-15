@@ -6,6 +6,12 @@ The name comes from the narra, the national tree of the Philippines, a hardwood 
 
 Status: specification draft. The compiler, `narrac`, is written in Narra (`selfhost/`). The checked-in C file `seed/narrac.c` builds it with `cc` alone: `sh selfhost/bootstrap.sh`. `sh scripts/test.sh` runs the test suites. There is no Go compiler.
 
+To build and install `narrac`, follow [docs/install.md](docs/install.md).
+
+`npm/` holds the packages of `narrac` for npm (a command, a typed API and a wasm fallback). `sh scripts/npm-package.sh` builds and checks them. Nothing is published from here.
+
+To have a coding agent write Narra with `narrac`, add the skill in [skills/narra](skills/narra/SKILL.md) to Claude Code: `/plugin marketplace add lxsmnsyc/narra`, then `/plugin install narra@narra`.
+
 ## Goals
 
 - **Simple.** One way to write each thing. A small grammar with no ambiguity.

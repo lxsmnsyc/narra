@@ -1,11 +1,13 @@
 // std/internal/host. The operating system and the machine the C compiler builds for.
 
-// 0 when the system is not one of the supported targets, else 1 for macOS and 2 for Linux.
+// 0 when the system is not one of the supported targets, else 1 for macOS, 2 for Linux and 3 for Windows.
 static int64_t narra_host_os(void) {
 #if defined(__APPLE__)
   return 1;
 #elif defined(__linux__)
   return 2;
+#elif defined(_WIN32)
+  return 3;
 #else
   return 0;
 #endif

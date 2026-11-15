@@ -27,29 +27,35 @@
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Str from "std/string"
-import * as Lexer from "narrac/lexer"
-import * as Parser from "narrac/parser"
-import * as AstDump from "narrac/astdump"
-import * as Modules from "narrac/modules"
-import { Package } from "narrac/modules"
-import * as Check from "narrac/check"
-import * as Declare from "narrac/declare"
-import * as DeclsDump from "narrac/declsdump"
-import * as Body from "narrac/body"
-import * as TypesDump from "narrac/typesdump"
-import * as Effects from "narrac/effects"
-import * as IdCheck from "narrac/idcheck"
-import * as Builtins from "narrac/builtins"
-import * as Stdlib from "narrac/stdlib"
-import * as Emitter from "narrac/emitter"
-import * as Hash from "narrac/hash"
-import * as FmtDoc from "narrac/fmtdoc"
-import * as Fmt from "narrac/fmt"
-import * as TriviaDump from "narrac/triviadump"
-import * as Query from "narrac/query"
-import * as Driver from "narrac/driver"
-import * as Lsp from "narrac/lsp"
-import * as Audit from "narrac/audit"
+import * as Lexer from "narrac/syntax/lexer"
+import * as Parser from "narrac/syntax/parser"
+import * as AstDump from "narrac/syntax/astdump"
+import * as Modules from "narrac/driver/modules"
+import { Package } from "narrac/driver/modules"
+import * as Check from "narrac/check/check"
+import * as Declare from "narrac/check/declare"
+import * as DeclsDump from "narrac/check/declsdump"
+import * as Body from "narrac/check/body"
+import * as TypesDump from "narrac/check/typesdump"
+import * as Effects from "narrac/check/effects"
+import * as IdCheck from "narrac/syntax/idcheck"
+import * as Builtins from "narrac/std/builtins"
+import * as Stdlib from "narrac/std/stdlib"
+import * as Emitter from "narrac/emit/emitter"
+import * as Hash from "narrac/driver/hash"
+import * as FmtDoc from "narrac/tools/fmtdoc"
+import * as Fmt from "narrac/tools/fmt"
+import * as TriviaDump from "narrac/syntax/triviadump"
+import * as Query from "narrac/tools/query"
+import * as Driver from "narrac/driver/driver"
+import * as Lsp from "narrac/tools/lsp"
+import * as Audit from "narrac/tools/audit"
+import * as Depcache from "narrac/driver/depcache"
+import * as Depresolve from "narrac/driver/depresolve"
+import * as Deplocked from "narrac/driver/deplocked"
+import { LoadError, parseManifest } from "narrac/driver/manifest"
+import { parseLock, formatLock } from "narrac/driver/lockfile"
+import { quoteGo } from "narrac/syntax/parser"
 import * as Arrays from "std/array"
 
 export function run(arguments: Array<string>): int uses io, alloc {
@@ -87,7 +93,34 @@ export function run(arguments: Array<string>): int uses io, alloc {
     return triviaFile(arguments[3], true)
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "pkg") {
-    return pkgDump(arguments[2])
+    return pkgDump(arguments[2], false)
+  }
+  if (Arrays.length(arguments) == 4 && arguments[1] == "pkg" && arguments[2] == "--codes") {
+    return pkgDump(arguments[3], true)
+  }
+  if (
+    Arrays.length(arguments) == 5 &&
+      arguments[1] == "pkg" &&
+      arguments[2] == "--codes" &&
+      arguments[3] == "--deps"
+  ) {
+    return depsDump(arguments[4], true)
+  }
+  if (Arrays.length(arguments) == 4 && arguments[1] == "pkg" && arguments[2] == "--deps") {
+    return depsDump(arguments[3], false)
+  }
+  if (
+    Arrays.length(arguments) >= 4 &&
+      arguments[1] == "pkg" &&
+      (arguments[2] == "--fetch" || arguments[2] == "--versions")
+  ) {
+    return Depcache.runDepsCommand(arguments)
+  }
+  if (Arrays.length(arguments) >= 4 && arguments[1] == "pkg" && arguments[2] == "--resolve") {
+    return Depresolve.runResolveCommand(arguments)
+  }
+  if (Arrays.length(arguments) == 4 && arguments[1] == "pkg" && arguments[2] == "--locked") {
+    return Deplocked.runLockedCommand(arguments)
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "decls") {
     return declsDump(arguments[2])
@@ -192,13 +225,61 @@ function writeStdout(text: string): int uses io, alloc {
   return 0
 }
 
-function pkgDump(path: string): int uses io, alloc {
+function pkgDump(path: string, withCodes: bool): int uses io, alloc {
   const loaded = Modules.load(path)
   if (loaded is Err(errors)) {
-    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errors))
+    const _ = Fs.writeText("/dev/stderr", formatLoadErrors(errors, withCodes))
     return 1
   }
   return writeStdout(Modules.dump(loaded.value))
+}
+
+function formatLoadErrors(errors: Array<LoadError>, withCodes: bool): string uses alloc {
+  if (withCodes) {
+    return Modules.errorTextWithCodes(errors)
+  }
+  return Modules.errorText(errors)
+}
+
+function depsDump(path: string, withCodes: bool): int uses io, alloc {
+  const text = Fs.readText(`${path}/narra.toml`)
+  if (text is Err(message)) {
+    printError(message)
+    return 1
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(error)) {
+    const _ = Fs.writeText("/dev/stderr", formatLoadErrors([error], withCodes))
+    return 1
+  }
+  let output = `version ${quoteGo(parsed.value.version)}\n`
+  for (const dependency of Arrays.values(parsed.value.dependencies)) {
+    output = `${output}dependency ${quoteGo(dependency.name)} git=${quoteGo(dependency.git)} version=${quoteGo(dependency.version)} line=${Int.toString(dependency.line)}\n`
+  }
+  if (Fs.exists(`${path}/narra.lock`)) {
+    const lockText = Fs.readText(`${path}/narra.lock`)
+    if (lockText is Err(message)) {
+      printError(message)
+      return 1
+    }
+    const entries = parseLock(lockText.value)
+    if (entries is Err(error)) {
+      const _ = Fs.writeText("/dev/stderr", formatLoadErrors([error], withCodes))
+      return 1
+    }
+    const formatted = formatLock(entries.value)
+    const again = parseLock(formatted)
+    if (again is Err(_)) {
+      printError("narra.lock does not round-trip")
+      return 1
+    }
+    if (formatLock(again.value) != formatted) {
+      printError("narra.lock does not round-trip")
+      return 1
+    }
+    output = `${output}---\n${formatted}`
+  }
+  return writeStdout(output)
 }
 
 function pkgIds(path: string, corrupt: bool): int uses io, alloc {
@@ -270,6 +351,7 @@ function builtinsDump(): int uses io, alloc {
     search: [],
     nextId: 0,
     single: true,
+    dependencyNames: [],
   }
   // The type texts are resolved in a checker that has declared only the prelude.
   let checker = Declare.newPackageChecker(empty)

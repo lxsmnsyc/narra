@@ -4,7 +4,7 @@ In this chapter you build the compiler, run a first program and fix your first c
 
 ## Build the compiler
 
-Narra programs compile to C, and a C compiler turns that C into an executable. The compiler, `narrac`, is written in Narra. The repository holds its C form, so you only need a C compiler (`cc`, `clang` or `gcc`) installed.
+Narra programs compile to C, and a C compiler turns that C into an executable. You need a C compiler (`cc`, `clang` or `gcc`) and `git`:
 
 ```sh
 git clone https://github.com/lxsmnsyc/narra
@@ -12,7 +12,7 @@ cd narra
 sh selfhost/bootstrap.sh out
 ```
 
-This builds the compiler twice, checks that both builds give the same C, and leaves a `narrac` executable in `narra/out`. Put that folder on your `PATH` so you can type `narrac` from anywhere, as the rest of the guide does.
+This leaves the compiler, `narrac`, in `narra/out`. The rest of the guide types `narrac` from any folder, so put it on your `PATH`. The [installation guide](../install.md) shows how, and explains the build output.
 
 ## Say hello
 
@@ -140,6 +140,6 @@ From inside the `shop` folder, `narrac run .` builds and runs the package and pr
 | `narrac check file.nra` | report errors without building |
 | `narrac test file.nra` | run the tests in the file (chapter 10) |
 
-For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`.
+For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`. Chapter 12 covers the other commands: formatting, explaining and fixing errors, questions about a package, and editor support.
 
 Next: [2. Values and types](02-values-and-types.md).

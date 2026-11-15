@@ -1,0 +1,1605 @@
+// Type resolution, ported from check_types.go (resolveType, resolveFields,
+// resolveVariants, buildGeneric, instantiate, substitute), check_patterns.go
+// (tupleType, tupleOf), check_closure.go (funcResult) and std_map.go
+// (userMap). Go interns arrays, boxes, maps and function types in tables
+// for the emitter; here they are plain values and the emitter collects them.
+//
+// qualifiedType resolves `Alias.Name` through the module scopes
+// (selfhost-check-imports, scopes.nra).
+import { importsPointers, resolvePointerType } from "narrac/check/unsafecode"
+import { isVectorName, resolveVectorType } from "narrac/check/simdtypes"
+import { splitString } from "narrac/driver/textops"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import {
+  TypeExpr,
+  FieldDecl,
+  VariantDecl,
+  Pos,
+  Decl,
+  FuncDecl,
+  ConstDecl,
+  Param,
+} from "narrac/syntax/ast"
+import { quoteGo } from "narrac/syntax/parser"
+import { createFix, createEdit, moveColumn } from "narrac/driver/fixes"
+import { Type, Field, Variant, StructInfo, EnumInfo, typeKey, typeKeys } from "narrac/check/types"
+import {
+  Checker,
+  internComposite,
+  noteAsyncUse,
+  checkMapKey,
+  noteTypeBounds,
+  reportError,
+  reportErrorFix,
+  enter,
+  lookupType,
+  lookupGeneric,
+  containsTypeParameter,
+  anyTypeParameter,
+  findSharedParameter,
+  findFromNamePos,
+  findLocal,
+  getLocal,
+  CONST_BUSY,
+  WrittenFunctionType,
+  checkMutableType,
+  typeString,
+  findFixedArraySize,
+  FIXED_ARRAY_SIZE_LIMIT,
+  DynamicTraitUse,
+  lookupTrait,
+} from "narrac/check/check"
+import { makeEnv, makeParameters, checkPolyRecursion } from "narrac/check/generics"
+import { sourceScope, exported } from "narrac/check/scopes"
+import { checkAtomicType } from "narrac/check/threadcheck"
+import {
+  rejectConstantType,
+  resolveConstantArgument,
+  findConstantParameter,
+} from "narrac/check/constgenerics"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function resolveOpt(
+  mutable checker: Checker,
+  typeExpr: Option<TypeExpr>,
+): Type from checker uses alloc {
+  if (typeExpr is Some(present)) {
+    return resolveType(mutable checker, present)
+  }
+  return Type.TVoid
+}
+
+// The resolved parameter and result types of a function.
+export struct Signature {
+  parameters: Array<Type>
+  result: Type
+}
+
+export function resolveSignature(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+  report: bool,
+): Signature from checker uses alloc {
+  // A function* must return Generator<T>, cannot take a `mutable` parameter, and takes its function-type parameters as `escaping`. A private function* gets a result type whose effects the effect pass infers.
+  const savedIndex = checker.functionIndex
+  checker.functionIndex = funcIndex
+  let parameters: Array<Type> = []
+  const savedNames = checker.signatureNames
+  checker.signatureNames = Map {}
+  for (const param of Arrays.values(funcDecl.parameters)) {
+    const resolvedType = resolveOpt(mutable checker, param.type)
+    Arrays.push(mutable parameters, resolvedType)
+    checker.signatureNames[param.name] = resolvedType
+    if (param.isMutable && report) {
+      checkMutableType(mutable checker, param.pos, resolvedType, -1)
+    }
+    if (funcDecl.isAsync && report) {
+      checkAsyncParameter(mutable checker, funcDecl, param)
+    }
+    // An async generator's parameters follow the async rules (D110 item 3).
+    if (!funcDecl.generator || funcDecl.isAsync || !report) {
+      continue
+    }
+    let isFunc = false
+    if (param.type is Some(paramType)) {
+      isFunc = paramType.isFunc
+    }
+    if (param.isMutable) {
+      reportError(
+        mutable checker,
+        param.pos,
+        "E0196",
+        `generator ${funcDecl.name} cannot take a mutable parameter ${quoteGo(param.name)}; a generator is a value that is resumed later`,
+      )
+    } else if (isFunc && !param.escaping) {
+      reportError(
+        mutable checker,
+        param.pos,
+        "E0615",
+        `parameter ${quoteGo(param.name)} of generator ${funcDecl.name} has a function type, so it must be \`escaping\`: the generator outlives the call`,
+      )
+    }
+  }
+  const result = resolveGeneratorResult(mutable checker, funcDecl, funcIndex, report)
+  if (report) {
+    checkResultFrom(mutable checker, funcDecl)
+  }
+  checker.functionIndex = savedIndex
+  checker.signatureNames = savedNames
+  return Signature { parameters, result }
+}
+
+function checkResultFrom(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
+  // `from` names a parameter of the function.
+  if (funcDecl.result is Some(resultType)) {
+    if (resultType.resultFrom != "" && findSharedParameter(funcDecl) < 0) {
+      const namePos = findFromNamePos(checker, resultType)
+      reportError(
+        mutable checker,
+        namePos,
+        "E0976",
+        `from names ${quoteGo(resultType.resultFrom)}, which is not a parameter of ${funcDecl.name}`,
+      )
+    }
+  }
+}
+
+function checkAsyncParameter(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  param: Param,
+) uses alloc {
+  // The task outlives the call, so it keeps no pointer into the caller and stores
+  // its function parameters.
+  let isFunc = false
+  if (param.type is Some(paramType)) {
+    isFunc = paramType.isFunc
+  }
+  if (param.isMutable) {
+    reportError(
+      mutable checker,
+      param.pos,
+      "E1104",
+      `async function ${funcDecl.name} cannot take a mutable parameter ${quoteGo(param.name)}; its task outlives the call`,
+    )
+  } else if (isFunc && !param.escaping) {
+    reportError(
+      mutable checker,
+      param.pos,
+      "E1111",
+      `parameter ${quoteGo(param.name)} of async function ${funcDecl.name} has a function type, so it must be \`escaping\`: the task outlives the call`,
+    )
+  }
+}
+
+function resolveGeneratorResult(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+  report: bool,
+): Type from checker uses alloc {
+  if (funcDecl.isAsync && funcDecl.generator) {
+    return resolveStreamResult(mutable checker, funcDecl, funcIndex, report)
+  }
+  if (funcDecl.isAsync) {
+    // An async function declares the value of its task; a call gives Async<T>.
+    const value = resolveOpt(mutable checker, funcDecl.result)
+    noteAsyncUse(mutable checker)
+    return internComposite(mutable checker, Type.TAsync(value))
+  }
+  if (!funcDecl.generator) {
+    return resolveOpt(mutable checker, funcDecl.result)
+  }
+  let pos = funcDecl.pos
+  let valid = false
+  if (funcDecl.result is Some(resultType)) {
+    pos = resultType.pos
+    valid =
+      resultType.name == "Generator" && Arrays.length(resultType.arguments) == 1 ||
+        resultType.name == "Coroutine" && Arrays.length(resultType.arguments) == 2
+  }
+  let writtenName = ""
+  if (funcDecl.result is Some(streamResult)) {
+    writtenName = streamResult.name
+  }
+  if (!valid && report) {
+    // AsyncGenerator<T> needs an async body (D110 item 3).
+    if (writtenName == "AsyncGenerator" && !userType(checker, "AsyncGenerator")) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1113",
+        `generator ${funcDecl.name} cannot return AsyncGenerator<T>, which needs an async body; declare it as \`async function* ${funcDecl.name}\``,
+      )
+      return Type.TVoid
+    }
+  }
+  if (!valid) {
+    if (report) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0195",
+        `generator ${funcDecl.name} must declare its return type as Generator<T> or Coroutine<In, Out>`,
+      )
+    }
+    return Type.TVoid
+  }
+  if (Arrays.length(funcDecl.effects) > 0 && report) {
+    reportError(
+      mutable checker,
+      funcDecl.pos,
+      "E0195",
+      `the effects of generator ${funcDecl.name} are written on its return type, as in \`Generator<T> uses io\``,
+    )
+  }
+  const resolved = resolveOpt(mutable checker, funcDecl.result)
+  if (resolved is Type.TGenerator(element, _effects, _binder, _, input)) {
+    if (!funcDecl.exported) {
+      return Type.TGenerator(element, [], -1, funcIndex, input)
+    }
+    return resolved
+  }
+  return Type.TVoid
+}
+
+function resolveStreamResult(
+  mutable checker: Checker,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+  report: bool,
+): Type from checker uses alloc {
+  // An async function* declares AsyncGenerator<T> (D110 item 3). A private one
+  // gets a result type whose effects the effect pass infers, as a function* does.
+  noteAsyncUse(mutable checker)
+  let pos = funcDecl.pos
+  let written = ""
+  if (funcDecl.result is Some(resultType)) {
+    pos = resultType.pos
+    written = resultType.name
+  }
+  if (written != "AsyncGenerator" || userType(checker, "AsyncGenerator")) {
+    if (!report) {
+      return Type.TVoid
+    }
+    if (written == "Generator" && !userType(checker, "Generator")) {
+      reportError(
+        mutable checker,
+        pos,
+        "E1112",
+        `async generator ${funcDecl.name} must declare its return type as AsyncGenerator<T>, not Generator<T>; write AsyncGenerator<T>`,
+      )
+    } else {
+      reportError(
+        mutable checker,
+        pos,
+        "E1112",
+        `async generator ${funcDecl.name} must declare its return type as AsyncGenerator<T>`,
+      )
+    }
+    return Type.TVoid
+  }
+  // The parser reads a `uses` list after AsyncGenerator<T> into the type.
+  const resolved = resolveOpt(mutable checker, funcDecl.result)
+  if (resolved is Type.TAsyncGenerator(element, _effects, _binder, _)) {
+    if (!funcDecl.exported) {
+      return Type.TAsyncGenerator(element, [], -1, funcIndex)
+    }
+    return resolved
+  }
+  return Type.TVoid
+}
+
+function resolveStreamType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
+  // AsyncGenerator<T> uses E, a builtin name like Generator (D110 item 1).
+  if (Arrays.length(typeExpr.arguments) != 1) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1114",
+      "AsyncGenerator takes one type argument, the type of the values it yields",
+    )
+    return Type.TVoid
+  }
+  const element = resolveType(mutable checker, typeExpr.arguments[0])
+  noteAsyncUse(mutable checker)
+  const sorted = sortEffects(typeExpr.effects)
+  return copy(Type.TAsyncGenerator(element, sorted, findEffectBinder(checker, sorted), -1))
+}
+
+export function funcResult(
+  mutable checker: Checker,
+  typeExpr: Option<Box<TypeExpr>>,
+): Type from checker uses alloc {
+  if (typeExpr is Some(boxed)) {
+    const resultExpr = boxed.value
+    if (
+      resultExpr.name == "void" && Arrays.length(resultExpr.arguments) == 0 && !resultExpr.isFunc
+    ) {
+      return Type.TVoid
+    }
+    return resolveType(mutable checker, resultExpr)
+  }
+  return Type.TVoid
+}
+
+function resolveTypeof(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
+  const name = typeExpr.typeofName
+  // A name being resolved by its own type is a cycle.
+  if (checker.busy[`typeof|${name}`] is Some(true)) {
+    return reportTypeofCycle(mutable checker, typeExpr)
+  }
+  // A parameter written earlier in the signature being resolved.
+  if (checker.signatureNames[name] is Some(parameterType)) {
+    return parameterType
+  }
+  // A local or parameter of the body being checked.
+  if (checker.body >= 0) {
+    const local = findLocal(checker, name)
+    if (local >= 0) {
+      checker.bodies[checker.body].locals[local].used = true
+      return getLocal(checker, local).localType
+    }
+  }
+  const scope = checker.current
+  if (checker.scopes[scope].consts[name] is Some(constIndex)) {
+    const constDecl = copy(checker.consts[constIndex].declaration)
+    return resolveConstTypeof(mutable checker, typeExpr, constDecl, constIndex)
+  }
+  if (checker.scopes[scope].functions[name] is Some(funcIndex)) {
+    const funcDecl = copy(checker.functions[funcIndex].declaration)
+    return resolveFunctionTypeof(mutable checker, typeExpr, funcDecl, funcIndex)
+  }
+  // A declaration of this module that the declaration pass has not reached yet.
+  for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
+    if (declaration is Decl.Const(constDecl)) {
+      if (constDecl.name == name) {
+        return resolveConstTypeof(mutable checker, typeExpr, constDecl, -1)
+      }
+    }
+    if (declaration is Decl.Func(funcDecl)) {
+      if (funcDecl.name == name) {
+        return resolveFunctionTypeof(mutable checker, typeExpr, funcDecl, -1)
+      }
+    }
+  }
+  const isType =
+    checker.scopes[scope].types[name] is Some(_) ||
+      checker.scopes[scope].generics[name] is Some(_) ||
+      checker.scopes[scope].aliases[name] is Some(_) ||
+      checker.environment[name] is Some(_)
+  if (isType) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof needs a value, but ${quoteGo(name)} is a type; write the type itself, or the name of a const, let, parameter or function`,
+    )
+    return Type.TVoid
+  }
+  if (checker.scopes[scope].modules[name] is Some(_)) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof needs a value, but ${quoteGo(name)} is a module; name a const, let, parameter or function`,
+    )
+    return Type.TVoid
+  }
+  reportError(mutable checker, typeExpr.pos, "E0203", `unknown name ${quoteGo(name)}`)
+  return Type.TVoid
+}
+
+const CHAIN_SEPARATOR = " -> "
+
+function reportTypeofCycle(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  const name = typeExpr.typeofName
+  // The names being resolved, from the first typeof that reached this one.
+  const haystack = `${CHAIN_SEPARATOR}${checker.typeofChain}${CHAIN_SEPARATOR}`
+  if (Str.indexOf(haystack, `${CHAIN_SEPARATOR}${name}${CHAIN_SEPARATOR}`) is Some(start)) {
+    const cycle = `${Str.sliceFrom(haystack, start + Str.length(CHAIN_SEPARATOR))}${name}`
+    if (cycle != `${name}${CHAIN_SEPARATOR}${name}`) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0981",
+        `typeof ${name} is part of the cycle ${cycle}; write one of the types out`,
+      )
+      return Type.TVoid
+    }
+  }
+  reportError(
+    mutable checker,
+    typeExpr.pos,
+    "E0981",
+    `typeof ${name} refers to its own declaration; write the type out`,
+  )
+  return Type.TVoid
+}
+
+export function enterTypeofChain(mutable checker: Checker, name: string): string uses alloc {
+  const saved = checker.typeofChain
+  if (saved == "") {
+    checker.typeofChain = name
+  } else {
+    checker.typeofChain = `${saved}${CHAIN_SEPARATOR}${name}`
+  }
+  return saved
+}
+
+function resolveConstTypeof(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+  constDecl: ConstDecl,
+  constIndex: int,
+): Type from checker uses alloc {
+  const name = typeExpr.typeofName
+  // A constant that has been checked has its type.
+  let scope = checker.current
+  if (constIndex >= 0) {
+    const info = copy(checker.consts[constIndex])
+    scope = info.scope
+    if (info.valueType is Some(valueType)) {
+      return valueType
+    }
+    if (info.state == CONST_BUSY) {
+      return reportTypeofCycle(mutable checker, typeExpr)
+    }
+    if (info.declaredType is Some(declaredType)) {
+      return declaredType
+    }
+  }
+  // Otherwise the written type is the only one known here.
+  if (constDecl.type is Some(written)) {
+    const busyKey = `typeof|${name}`
+    checker.busy[busyKey] = true
+    const savedChain = enterTypeofChain(mutable checker, name)
+    const savedScope = enter(mutable checker, scope)
+    const resolved = resolveType(mutable checker, written)
+    enter(mutable checker, savedScope)
+    checker.typeofChain = savedChain
+    checker.busy[busyKey] = false
+    return resolved
+  }
+  reportError(
+    mutable checker,
+    typeExpr.pos,
+    "E1003",
+    `the type of constant ${quoteGo(name)} is not known here; write it as \`const ${name}: Type = ...\``,
+  )
+  return Type.TVoid
+}
+
+function resolveFunctionTypeof(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+  funcDecl: FuncDecl,
+  funcIndex: int,
+): Type from checker uses alloc {
+  const name = typeExpr.typeofName
+  // A generic function, one with effect variables and one with a `mutable` parameter
+  // have no function type to write.
+  let mutableParameter = false
+  for (const parameter of Arrays.values(funcDecl.parameters)) {
+    if (parameter.isMutable) {
+      mutableParameter = true
+    }
+  }
+  if (
+    Arrays.length(funcDecl.typeParameters) > 0 ||
+      Arrays.length(funcDecl.effectParameters) > 0 ||
+      mutableParameter
+  ) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof ${name} has no function type to write: a generic function, one with effect variables and one with a mutable parameter cannot be used as a value`,
+    )
+    return Type.TVoid
+  }
+  if (Arrays.length(funcDecl.requires) > 0) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0982",
+      `typeof ${name} has no function type to write: a function with requires cannot be used as a value`,
+    )
+    return Type.TVoid
+  }
+  let parameters: Array<Type> = []
+  let result = Type.TVoid
+  if (funcIndex >= 0) {
+    // A declared function has its types.
+    for (const parameter of Arrays.values(funcDecl.parameters)) {
+      Arrays.push(mutable parameters, checker.paramTypes[parameter.id])
+    }
+    result = checker.functions[funcIndex].result
+  } else {
+    // The signature is resolved here, in this module, without the type parameters of the caller.
+    const busyKey = `typeof|${name}`
+    checker.busy[busyKey] = true
+    const savedChain = enterTypeofChain(mutable checker, name)
+    const savedEnvironment = checker.environment
+    checker.environment = Map {}
+    const signature = resolveSignature(mutable checker, funcDecl, -1, false)
+    checker.environment = savedEnvironment
+    checker.typeofChain = savedChain
+    checker.busy[busyKey] = false
+    parameters = signature.parameters
+    result = signature.result
+  }
+  return internComposite(
+    mutable checker,
+    Type.TFunc(
+      parameters,
+      result,
+      sortEffects(funcDecl.effects),
+      -1,
+      findSharedParameter(funcDecl),
+    ),
+  )
+}
+
+function sortEffects(effects: Array<string>): Array<string> uses alloc {
+  let sorted: Array<string> = []
+  for (const name of Arrays.values(effects)) {
+    let seen = false
+    for (const other of Arrays.values(sorted)) {
+      seen = seen || other == name
+    }
+    if (seen) {
+      continue
+    }
+    // Insert in byte order.
+    Arrays.push(mutable sorted, name)
+    for (
+      let index = Arrays.length(sorted) - 1;
+      index > 0 && sorted[index] < sorted[index - 1];
+      index--
+    ) {
+      const swap = sorted[index]
+      sorted[index] = sorted[index - 1]
+      sorted[index - 1] = swap
+    }
+  }
+  return sorted
+}
+
+function findEffectBinder(checker: Checker, effects: Array<string>): int {
+  if (checker.functionIndex < 0) {
+    return -1
+  }
+  for (const name of Arrays.values(effects)) {
+    for (const variable of Arrays.values(
+      checker.functions[checker.functionIndex].declaration.effectParameters,
+    )) {
+      if (variable == name) {
+        return checker.functionIndex
+      }
+    }
+  }
+  return -1
+}
+
+function makeGenerator(
+  checker: Checker,
+  element: Type,
+  input: Type,
+  effects: Array<string>,
+): Type from element uses alloc {
+  // Effect variables in the list belong to the function whose signature or body is being checked.
+  const sorted = sortEffects(effects)
+  return copy(Type.TGenerator(element, sorted, findEffectBinder(checker, sorted), -1, input))
+}
+
+function noteWrittenFunctionType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+  resolved: Type,
+) uses alloc {
+  // Each written type is noted once, however often it is resolved.
+  if (!checker.scopes[checker.current].isSource) {
+    return
+  }
+  const key = typeKey(resolved)
+  let written: Array<WrittenFunctionType> = []
+  if (checker.writtenFunctionTypes[key] is Some(known)) {
+    written = copy(known)
+  }
+  for (const site of Arrays.values(written)) {
+    if (site.scope == checker.current && site.type.pos == typeExpr.pos) {
+      return
+    }
+  }
+  Arrays.push(mutable written, WrittenFunctionType { scope: checker.current, type: typeExpr })
+  checker.writtenFunctionTypes[key] = written
+}
+
+function findTypeShared(mutable checker: Checker, typeExpr: TypeExpr): int uses alloc {
+  // The `from` of a function type names one of the parameter names it writes.
+  if (typeExpr.result is Some(boxed)) {
+    const name = boxed.value.resultFrom
+    if (name == "") {
+      return -1
+    }
+    for (const index of Ranges.upTo(Arrays.length(typeExpr.parameterNames))) {
+      if (typeExpr.parameterNames[index] == name) {
+        return index
+      }
+    }
+    const namePos = findFromNamePos(checker, boxed.value)
+    reportError(
+      mutable checker,
+      namePos,
+      "E0976",
+      `from names ${quoteGo(name)}, which is not a parameter of this function type; name the parameter, as in \`(${name}: T) => R from ${name}\``,
+    )
+  }
+  return -1
+}
+
+export function resolveType(
+  mutable checker: Checker,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
+  if (typeExpr.typeofName != "") {
+    return resolveTypeof(mutable checker, typeExpr)
+  }
+  if (reportEffectArgument(mutable checker, typeExpr.arguments)) {
+    return Type.TVoid
+  }
+  if (typeExpr.isFunc) {
+    // A parameter whose type is void (T bound by an Async<void>) takes no argument.
+    let parameters: Array<Type> = []
+    for (const argument of Arrays.values(typeExpr.arguments)) {
+      const parameter = resolveType(mutable checker, argument)
+      if (parameter != Type.TVoid) {
+        Arrays.push(mutable parameters, parameter)
+      }
+    }
+    const resultType = funcResult(mutable checker, typeExpr.result)
+    const sorted = sortEffects(typeExpr.effects)
+    const binder = findEffectBinder(checker, sorted)
+    const shared = findTypeShared(mutable checker, typeExpr)
+    const resolved = internComposite(
+      mutable checker,
+      Type.TFunc(parameters, resultType, sorted, binder, shared),
+    )
+    if (shared < 0) {
+      noteWrittenFunctionType(mutable checker, typeExpr, resolved)
+    }
+    return resolved
+  }
+  if (typeExpr.isTuple) {
+    return tupleType(mutable checker, typeExpr)
+  }
+  if (rejectConstantType(mutable checker, typeExpr)) {
+    return Type.TVoid
+  }
+  const argCount = Arrays.length(typeExpr.arguments)
+  if (checker.environment[typeExpr.name] is Some(paramType)) {
+    if (argCount == 0) {
+      return paramType
+    }
+  }
+  if (Str.contains(typeExpr.name, ".")) {
+    return qualifiedType(mutable checker, typeExpr)
+  }
+  if (checker.scopes[checker.current].aliases[typeExpr.name] is Some(alias)) {
+    return useAlias(mutable checker, alias, typeExpr)
+  }
+  if (typeExpr.name == "Ptr" && !userType(checker, "Ptr") && importsPointers(checker)) {
+    if (argCount != 1) {
+      reportError(mutable checker, typeExpr.pos, "E0998", "Ptr takes one type argument")
+      return Type.TVoid
+    }
+    const pointee = resolveType(mutable checker, typeExpr.arguments[0])
+    return resolvePointerType(mutable checker, typeExpr.pos, pointee)
+  }
+  if (isVectorName(typeExpr.name) && !userType(checker, typeExpr.name)) {
+    if (resolveVectorType(mutable checker, typeExpr) is Some(vector)) {
+      return vector
+    }
+  }
+  if (typeExpr.name == "Box" && !userType(checker, "Box")) {
+    if (argCount != 1) {
+      reportError(mutable checker, typeExpr.pos, "E0110", "Box takes one type argument")
+      return Type.TVoid
+    }
+    const boxed = resolveType(mutable checker, typeExpr.arguments[0])
+    return internComposite(mutable checker, Type.TBox(boxed))
+  }
+  if (typeExpr.name == "Dynamic" && !userType(checker, "Dynamic")) {
+    return resolveDynamicType(mutable checker, typeExpr)
+  }
+  if (typeExpr.name == "Map" && !userType(checker, "Map")) {
+    if (argCount != 2) {
+      reportError(mutable checker, typeExpr.pos, "E0111", "Map takes two type arguments")
+      return Type.TVoid
+    }
+    const keyType = resolveType(mutable checker, typeExpr.arguments[0])
+    const valueType = resolveType(mutable checker, typeExpr.arguments[1])
+    checkMapKey(mutable checker, typeExpr.pos, keyType)
+    return internComposite(mutable checker, Type.TMap(keyType, valueType))
+  }
+  if (typeExpr.name == "Generator" && !userType(checker, "Generator")) {
+    if (argCount != 1) {
+      reportError(mutable checker, typeExpr.pos, "E0195", "Generator takes one type argument")
+      return Type.TVoid
+    }
+    const element = resolveType(mutable checker, typeExpr.arguments[0])
+    return makeGenerator(checker, element, Type.TVoid, typeExpr.effects)
+  }
+  if (typeExpr.name == "AsyncGenerator" && !userType(checker, "AsyncGenerator")) {
+    return resolveStreamType(mutable checker, typeExpr)
+  }
+  if (typeExpr.name == "Async" && !userType(checker, "Async")) {
+    if (argCount != 1) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E1109",
+        "Async takes one type argument, the value of the task",
+      )
+      return Type.TVoid
+    }
+    // Async<void> is the handle of a task that gives no value.
+    const argument = typeExpr.arguments[0]
+    let value = Type.TVoid
+    if (argument.name != "void" || Arrays.length(argument.arguments) > 0 || argument.isFunc) {
+      value = resolveType(mutable checker, argument)
+    }
+    noteAsyncUse(mutable checker)
+    return internComposite(mutable checker, Type.TAsync(value))
+  }
+  if (typeExpr.name == "Coroutine" && !userType(checker, "Coroutine")) {
+    if (argCount != 2) {
+      reportError(mutable checker, typeExpr.pos, "E0197", "Coroutine takes two type arguments")
+      return Type.TVoid
+    }
+    const input = resolveType(mutable checker, typeExpr.arguments[0])
+    const element = resolveType(mutable checker, typeExpr.arguments[1])
+    return makeGenerator(checker, element, input, typeExpr.effects)
+  }
+  if (typeExpr.name == "FixedArray" && !userType(checker, "FixedArray")) {
+    if (argCount != 2) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0995",
+        "FixedArray takes an element type and a length, as in FixedArray<int, 4>",
+      )
+      return Type.TVoid
+    }
+    const element = resolveType(mutable checker, typeExpr.arguments[0])
+    const length = resolveFixedLength(mutable checker, typeExpr.arguments[1])
+    if (element == Type.TVoid || length == Type.TVoid) {
+      return Type.TVoid
+    }
+    const fixedType = Type.TFixedArray(element, length)
+    if (findFixedArraySize(checker, fixedType) > FIXED_ARRAY_SIZE_LIMIT) {
+      const shown = typeString(checker, fixedType)
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0995",
+        `${shown} takes more than ${Int.toString(FIXED_ARRAY_SIZE_LIMIT)} bytes, the limit for a FixedArray; use an Array`,
+      )
+      return Type.TVoid
+    }
+    return internComposite(mutable checker, fixedType)
+  }
+  if (typeExpr.name == "Array") {
+    if (argCount != 1) {
+      reportError(mutable checker, typeExpr.pos, "E0112", "Array takes one type argument")
+      return Type.TVoid
+    }
+    const element = resolveType(mutable checker, typeExpr.arguments[0])
+    return internComposite(mutable checker, Type.TArray(element))
+  }
+  if (typeExpr.name == "number") {
+    const end = moveColumn(typeExpr.pos, Str.charCount("number"))
+    reportErrorFix(
+      mutable checker,
+      typeExpr.pos,
+      "E0113",
+      [
+        createFix("use int", [createEdit(typeExpr.pos, end, "int")]),
+        createFix("use f64", [createEdit(typeExpr.pos, end, "f64")]),
+      ],
+      "there is no `number`; use `int` or `f64`",
+    )
+    return Type.TInt
+  }
+  if (typeExpr.name == "boolean") {
+    const end = moveColumn(typeExpr.pos, Str.charCount("boolean"))
+    reportErrorFix(
+      mutable checker,
+      typeExpr.pos,
+      "E0114",
+      [createFix("use bool", [createEdit(typeExpr.pos, end, "bool")])],
+      "use `bool`",
+    )
+    return Type.TBool
+  }
+  if (lookupGeneric(checker, typeExpr.name) is Some(generic)) {
+    const want = Arrays.length(checker.generics[generic].parameters)
+    if (argCount != want) {
+      reportError(
+        mutable checker,
+        typeExpr.pos,
+        "E0115",
+        `${typeExpr.name} takes ${Int.toString(want)} type arguments`,
+      )
+      return Type.TVoid
+    }
+    const parameters = copy(checker.generics[generic].parameters)
+    const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
+    noteTypeBounds(mutable checker, typeExpr.pos, generic, arguments)
+    checkAtomicType(mutable checker, typeExpr.pos, generic, arguments)
+    return instantiate(mutable checker, generic, arguments)
+  }
+  const named = copy(lookupType(checker, typeExpr.name))
+  if (named is None && typeExpr.name == "Range" && argCount == 0) {
+    return Type.TRange
+  }
+  if (named is None && typeExpr.name == "Tuple") {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0116",
+      "there is no Tuple type; write a tuple type as #[A, B]",
+    )
+    return Type.TVoid
+  }
+  if (argCount > 0) {
+    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
+    return Type.TVoid
+  }
+  if (named is Some(namedType)) {
+    return namedType
+  }
+  reportUnknownType(mutable checker, typeExpr)
+  return Type.TVoid
+}
+
+export function reportUnknownType(mutable checker: Checker, typeExpr: TypeExpr) uses alloc {
+  if (isEffectName(checker, typeExpr)) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E1241",
+      `\`${typeExpr.name}\` is an effect, not a type`,
+    )
+    return
+  }
+  reportError(mutable checker, typeExpr.pos, "E0118", `unknown type ${quoteGo(typeExpr.name)}`)
+}
+
+function reportEffectArgument(
+  mutable checker: Checker,
+  arguments: Array<TypeExpr>,
+): bool uses alloc {
+  // `Map<Generator<int> uses io, alloc>`: the `,` ended the generator's list, so the
+  // effect after it stands where a type belongs.
+  for (const index of Ranges.between(1, Arrays.length(arguments))) {
+    const argument = arguments[index]
+    if (isEffectName(checker, argument)) {
+      const before = findTrailingEffects(arguments[index - 1])
+      if (Arrays.length(before) > 0) {
+        let effects = copy(before)
+        Arrays.push(mutable effects, argument.name)
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E1241",
+          `\`${argument.name}\` is an effect, not a type; a type takes several effects in parentheses: write \`uses (${Str.join(effects, ", ")})\``,
+        )
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function findTrailingEffects(typeExpr: TypeExpr): Array<string> from typeExpr {
+  // The `uses` list a type ends with: its own, or that of a function type's result.
+  if (Arrays.length(typeExpr.effects) > 0) {
+    return typeExpr.effects
+  }
+  if (typeExpr.isFunc) {
+    if (typeExpr.result is Some(resultType)) {
+      return findTrailingEffects(resultType.value)
+    }
+  }
+  return []
+}
+
+function isEffectName(checker: Checker, typeExpr: TypeExpr): bool {
+  // `io`, `alloc`, `unsafe` or an effect variable of the function being checked, written alone.
+  if (
+    typeExpr.isFunc ||
+      typeExpr.isTuple ||
+      typeExpr.typeofName != "" ||
+      Arrays.length(typeExpr.arguments) > 0 ||
+      lookupType(checker, typeExpr.name) is Some(_)
+  ) {
+    return false
+  }
+  const name = typeExpr.name
+  if (name == "io" || name == "alloc" || name == "unsafe") {
+    return true
+  }
+  return findEffectBinder(checker, [name]) >= 0
+}
+
+export function resolveTypeArguments(
+  mutable checker: Checker,
+  written: Array<TypeExpr>,
+  parameters: Array<int>,
+): Array<Type> from checker uses alloc {
+  // Each argument is resolved for its parameter: a constant parameter takes a constant.
+  let arguments: Array<Type> = []
+  for (const index of Ranges.between(0, Arrays.length(written))) {
+    if (index < Arrays.length(parameters) && checker.parameters[parameters[index]].isConstant) {
+      Arrays.push(
+        mutable arguments,
+        resolveConstantArgument(mutable checker, written[index], parameters[index]),
+      )
+    } else {
+      Arrays.push(mutable arguments, resolveType(mutable checker, written[index]))
+    }
+  }
+  return arguments
+}
+
+function qualifiedType(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
+  const alias = splitString(typeExpr.name, ".")[0]
+  const name = Str.sliceFrom(typeExpr.name, Str.length(alias) + 1)
+  let scope = -1
+  if (checker.scopes[checker.current].modules[alias] is Some(path)) {
+    scope = sourceScope(checker, path)
+  }
+  if (scope < 0) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0403",
+      `unknown module ${quoteGo(alias)} in type ${typeExpr.name}; import it with \`import * as ${alias} from "..."\``,
+    )
+    return Type.TVoid
+  }
+  const found = exported(mutable checker, typeExpr.pos, scope, name)
+  if (found is None) {
+    return Type.TVoid
+  }
+  let isType = false
+  match (found) {
+    Some(declaration) => {
+      isType = match (declaration) {
+        Decl.Struct(_) | Decl.Enum(_) | Decl.Distinct(_) | Decl.Alias(_) => true
+        _ => false
+      }
+    }
+    None => {}
+  }
+  if (!isType) {
+    reportError(mutable checker, typeExpr.pos, "E0404", `${typeExpr.name} is not a type`)
+    return Type.TVoid
+  }
+  const argCount = Arrays.length(typeExpr.arguments)
+  if (checker.scopes[scope].aliases[name] is Some(aliasIndex)) {
+    return useAlias(mutable checker, aliasIndex, typeExpr)
+  }
+  if (checker.scopes[scope].generics[name] is Some(generic)) {
+    if (checker.scopes[scope].types[name] is None) {
+      const want = Arrays.length(checker.generics[generic].parameters)
+      if (argCount != want) {
+        reportError(
+          mutable checker,
+          typeExpr.pos,
+          "E0115",
+          `${typeExpr.name} takes ${Int.toString(want)} type arguments`,
+        )
+        return Type.TVoid
+      }
+      const parameters = copy(checker.generics[generic].parameters)
+      const arguments = resolveTypeArguments(mutable checker, typeExpr.arguments, parameters)
+      noteTypeBounds(mutable checker, typeExpr.pos, generic, arguments)
+      checkAtomicType(mutable checker, typeExpr.pos, generic, arguments)
+      return instantiate(mutable checker, generic, arguments)
+    }
+  }
+  if (argCount > 0) {
+    reportError(mutable checker, typeExpr.pos, "E0117", `type ${typeExpr.name} is not generic`)
+    return Type.TVoid
+  }
+  if (checker.scopes[scope].types[name] is Some(namedType)) {
+    return namedType
+  }
+  return Type.TVoid
+}
+
+function resolveDynamicType(mutable checker: Checker, typeExpr: TypeExpr): Type uses alloc {
+  // The trait rule needs the trait's functions, which a later declaration in
+  // this module may resolve, so it is queued for flushDynamicTraits.
+  if (Arrays.length(typeExpr.arguments) != 1) {
+    reportError(mutable checker, typeExpr.pos, "E1022", "Dynamic takes one trait argument")
+    return Type.TVoid
+  }
+  const argument = typeExpr.arguments[0]
+  let traitIndex = -1
+  if (Arrays.length(argument.arguments) == 0 && !argument.isFunc && !argument.isTuple) {
+    traitIndex = lookupTrait(checker, argument.name)
+  }
+  if (traitIndex < 0) {
+    const written = resolveType(mutable checker, argument)
+    if (written == Type.TVoid) {
+      return Type.TVoid
+    }
+    const message = `Dynamic takes a trait, and ${typeString(checker, written)} is not a trait`
+    reportError(mutable checker, argument.pos, "E1022", message)
+    return Type.TVoid
+  }
+  const file = checker.scopes[checker.current].file
+  Arrays.push(mutable checker.dynamicTraits, DynamicTraitUse {
+    pos: typeExpr.pos,
+    traitIndex,
+    file,
+  })
+  return Type.TDynamic(traitIndex)
+}
+
+function userType(checker: Checker, name: string): bool {
+  return lookupGeneric(checker, name) is Some(_) ||
+    lookupType(checker, name) is Some(_) ||
+    checker.scopes[checker.current].aliases[name] is Some(_)
+}
+
+export function resolveAlias(mutable checker: Checker, alias: int, usePos: Pos): bool uses alloc {
+  // Resolves the body once, in the scope of the alias, to report its errors.
+  const state = checker.aliases[alias].state
+  if (state == 2) {
+    return true
+  }
+  if (state == 3) {
+    return false
+  }
+  if (state == 1) {
+    checker.aliases[alias].state = 3
+    const aliasName = checker.aliases[alias].name
+    reportError(
+      mutable checker,
+      usePos,
+      "E0972",
+      `type alias ${aliasName} refers to itself; a recursive type needs an enum`,
+    )
+    return false
+  }
+  checker.aliases[alias].state = 1
+  const info = copy(checker.aliases[alias])
+  const savedScope = enter(mutable checker, info.scope)
+  // Save the environment after makeParameters, so nothing changes the checker while two names hold it.
+  const parameters = makeParameters(mutable checker, info.typeParameters)
+  const savedEnv = checker.environment
+  checker.environment = makeEnv(checker, parameters)
+  const body = resolveType(mutable checker, info.body)
+  checker.environment = copy(savedEnv)
+  enter(mutable checker, savedScope)
+  if (checker.aliases[alias].state == 1) {
+    checker.aliases[alias].state = 2
+    checker.aliases[alias].type = body
+    if (Arrays.length(info.typeParameters) == 0) {
+      checker.scopes[info.scope].types[info.name] = body
+    }
+  }
+  return checker.aliases[alias].state == 2
+}
+
+function useAlias(
+  mutable checker: Checker,
+  alias: int,
+  typeExpr: TypeExpr,
+): Type from checker uses alloc {
+  if (!resolveAlias(mutable checker, alias, typeExpr.pos)) {
+    return Type.TVoid
+  }
+  const info = copy(checker.aliases[alias])
+  const want = Arrays.length(info.typeParameters)
+  const argCount = Arrays.length(typeExpr.arguments)
+  if (argCount != want) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0973",
+      `type alias ${info.name} takes ${Int.toString(want)} type arguments, found ${Int.toString(argCount)}`,
+    )
+    return Type.TVoid
+  }
+  if (want == 0) {
+    noteAliasUse(mutable checker, info.name, info.type)
+    return info.type
+  }
+  let arguments: Array<Type> = []
+  for (const argument of Arrays.values(typeExpr.arguments)) {
+    Arrays.push(mutable arguments, resolveType(mutable checker, argument))
+  }
+  // The body is resolved again with the arguments in place of the parameters.
+  const savedScope = enter(mutable checker, info.scope)
+  const savedEnv = checker.environment
+  checker.environment = Map {}
+  for (const index of Ranges.between(0, want)) {
+    checker.environment[info.typeParameters[index]] = arguments[index]
+  }
+  const body = resolveType(mutable checker, info.body)
+  checker.environment = copy(savedEnv)
+  enter(mutable checker, savedScope)
+  noteAliasUse(mutable checker, info.name, body)
+  return body
+}
+
+function noteAliasUse(mutable checker: Checker, name: string, type: Type) uses alloc {
+  checker.aliasNames[typeKey(type)] = name
+}
+
+function tupleType(mutable checker: Checker, typeExpr: TypeExpr): Type from checker uses alloc {
+  const count = Arrays.length(typeExpr.arguments)
+  if (count < 2) {
+    reportError(
+      mutable checker,
+      typeExpr.pos,
+      "E0718",
+      `a tuple type needs at least two element types, found ${Int.toString(count)}`,
+    )
+    return Type.TVoid
+  }
+  let elements: Array<Type> = []
+  for (const argument of Arrays.values(typeExpr.arguments)) {
+    Arrays.push(mutable elements, resolveType(mutable checker, argument))
+  }
+  return findTupleType(mutable checker, elements)
+}
+
+export function findTupleType(
+  mutable checker: Checker,
+  elements: Array<Type>,
+): Type from checker uses alloc {
+  // A tuple type is a prelude struct named Tuple whose fields are "0", "1", ...
+  const key = `T|${typeKeys(elements)}`
+  if (checker.instances[key] is Some(type)) {
+    return type
+  }
+  let fields: Array<Field> = []
+  for (const index of Ranges.between(0, Arrays.length(elements))) {
+    Arrays.push(mutable fields, Field {
+      name: Int.toString(index),
+      fieldType: elements[index],
+      default: None,
+      pos: zeroPos(),
+    })
+  }
+  const type = Type.TStruct(Arrays.length(checker.structs))
+  Arrays.push(mutable checker.structs, StructInfo {
+    name: "Tuple",
+    module: "",
+    scope: 0,
+    pos: zeroPos(),
+    opaque: false,
+    tuple: true,
+    arguments: elements,
+    generic: -1,
+    fields,
+  })
+  checker.instances[key] = type
+  Arrays.push(mutable checker.instanceTypes, type)
+  // Tuples derive Show and Ordered: findTypeTraits (traits.nra) makes that
+  // entry on first use.
+  return type
+}
+
+function zeroPos(): Pos {
+  return Pos { line: 0, column: 0 }
+}
+
+export function resolveFields(
+  mutable checker: Checker,
+  declarations: Array<FieldDecl>,
+): Array<Field> from declarations uses alloc {
+  let fields: Array<Field> = []
+  let seen: Map<string, bool> = Map {}
+  for (const fieldDecl of Arrays.values(declarations)) {
+    if (seen[fieldDecl.name] is Some(_)) {
+      reportError(
+        mutable checker,
+        fieldDecl.pos,
+        "E0105",
+        `field ${quoteGo(fieldDecl.name)} is declared twice`,
+      )
+    }
+    seen[fieldDecl.name] = true
+    const fieldType = resolveType(mutable checker, fieldDecl.type)
+    Arrays.push(mutable fields, Field {
+      name: fieldDecl.name,
+      fieldType,
+      default: fieldDecl.default,
+      pos: fieldDecl.pos,
+    })
+  }
+  return copy(fields)
+}
+
+export function resolveVariants(
+  mutable checker: Checker,
+  declarations: Array<VariantDecl>,
+): Array<Variant> from declarations uses alloc {
+  let variants: Array<Variant> = []
+  for (const index of Ranges.between(0, Arrays.length(declarations))) {
+    const fields = resolveFields(mutable checker, declarations[index].fields)
+    Arrays.push(mutable variants, Variant {
+      name: declarations[index].name,
+      index,
+      fields,
+    })
+  }
+  return variants
+}
+
+export function buildGeneric(mutable checker: Checker, generic: int) uses alloc {
+  // Runs once. An instance made while the template is being built (a self-reference) is filled when the build ends.
+  if (checker.generics[generic].built) {
+    return
+  }
+  checker.generics[generic].built = true
+  checker.generics[generic].building = true
+  const info = copy(checker.generics[generic])
+  const savedScope = enter(mutable checker, info.scope)
+  const savedEnv = checker.environment
+  checker.environment = makeEnv(checker, info.parameters)
+  if (info.isStruct) {
+    const fields = copy(resolveFields(mutable checker, info.fieldDeclarations))
+    // Go checks the defaults here; the body checker (body.nra) checks the
+    // queued ones after the module's declarations.
+    if (checker.checkingBodies) {
+      Arrays.push(mutable checker.pendingDefaults, generic)
+    }
+    checker.generics[generic].fields = fields
+  } else {
+    const variants = resolveVariants(mutable checker, info.variantDeclarations)
+    checker.generics[generic].variants = copy(variants)
+  }
+  checker.environment = copy(savedEnv)
+  checkPolyRecursion(mutable checker, generic)
+  checker.generics[generic].building = false
+  const pending = checker.generics[generic].pending
+  checker.generics[generic].pending = []
+  for (const instance of Arrays.values(pending)) {
+    fillInstance(mutable checker, generic, instance)
+  }
+  enter(mutable checker, savedScope)
+}
+
+export function instantiate(
+  mutable checker: Checker,
+  generic: int,
+  arguments: Array<Type>,
+): Type from checker uses alloc {
+  // The instance is cached before its fields are substituted, so a template that holds itself (List<T> in Array<List<T>>) finds it; it joins instanceTypes after its fields.
+  buildGeneric(mutable checker, generic)
+  const key = `${Int.toString(generic)}|${typeKeys(arguments)}`
+  if (checker.instances[key] is Some(type)) {
+    return type
+  }
+  const info = copy(checker.generics[generic])
+  let pos = info.pos
+  if (info.module == "") {
+    pos = zeroPos()
+  }
+  let type = Type.TEnum(Arrays.length(checker.enums))
+  if (info.isStruct) {
+    type = Type.TStruct(Arrays.length(checker.structs))
+    Arrays.push(mutable checker.structs, StructInfo {
+      name: info.name,
+      module: info.module,
+      scope: info.scope,
+      pos,
+      opaque: info.opaque,
+      tuple: false,
+      arguments: copy(arguments),
+      generic,
+      fields: [],
+    })
+  } else {
+    Arrays.push(mutable checker.enums, EnumInfo {
+      name: info.name,
+      module: info.module,
+      scope: info.scope,
+      pos,
+      arguments: copy(arguments),
+      generic,
+      variants: [],
+    })
+  }
+  checker.instances[key] = type
+  if (info.building) {
+    Arrays.push(mutable checker.generics[generic].pending, type)
+    return type
+  }
+  fillInstance(mutable checker, generic, type)
+  return type
+}
+
+function fillInstance(mutable checker: Checker, generic: int, instance: Type) uses alloc {
+  const info = copy(checker.generics[generic])
+  let bindings: Map<int, Type> = Map {}
+  if (instance is Type.TStruct(index)) {
+    const arguments = copy(checker.structs[index].arguments)
+    for (const i of Ranges.between(0, Arrays.length(info.parameters))) {
+      bindings[info.parameters[i]] = arguments[i]
+    }
+    let fields: Array<Field> = []
+    for (const field of Arrays.values(info.fields)) {
+      const fieldType = substitute(mutable checker, field.fieldType, bindings)
+      Arrays.push(mutable fields, Field {
+        name: field.name,
+        fieldType,
+        default: field.default,
+        pos: field.pos,
+      })
+    }
+    checker.structs[index].fields = fields
+  } else if (instance is Type.TEnum(index)) {
+    const arguments = copy(checker.enums[index].arguments)
+    for (const i of Ranges.between(0, Arrays.length(info.parameters))) {
+      bindings[info.parameters[i]] = arguments[i]
+    }
+    let variants: Array<Variant> = []
+    for (const variant of Arrays.values(info.variants)) {
+      let fields: Array<Field> = []
+      for (const field of Arrays.values(variant.fields)) {
+        const fieldType = substitute(mutable checker, field.fieldType, bindings)
+        Arrays.push(mutable fields, Field {
+          name: field.name,
+          fieldType,
+          default: None,
+          pos: field.pos,
+        })
+      }
+      Arrays.push(mutable variants, Variant {
+        name: variant.name,
+        index: variant.index,
+        fields,
+      })
+    }
+    checker.enums[index].variants = variants
+  }
+  Arrays.push(mutable checker.instanceTypes, instance)
+  if (checker.checkingBodies) {
+    queueInstanceDefaults(mutable checker, info.fields, instance)
+  }
+}
+
+function queueInstanceDefaults(
+  mutable checker: Checker,
+  fields: Array<Field>,
+  instance: Type,
+) uses alloc {
+  // A default whose field type uses a parameter is checked again with the instance's types.
+  if (instance is Type.TStruct(index)) {
+    if (anyTypeParameter(checker, checker.structs[index].arguments)) {
+      return
+    }
+    for (const field of Arrays.values(fields)) {
+      if (field.default is Some(_) && containsTypeParameter(checker, field.fieldType)) {
+        Arrays.push(mutable checker.pendingInstanceDefaults, index)
+        return
+      }
+    }
+  }
+}
+
+function resolveFixedLength(
+  mutable checker: Checker,
+  argument: TypeExpr,
+): Type from checker uses alloc {
+  // The length is an integer literal or a constant parameter in scope, and never negative.
+  if (argument.isConstant) {
+    let digits = argument.name
+    let negative = false
+    if (Str.startsWith(digits, "-")) {
+      negative = true
+      digits = Str.sliceFrom(digits, 1)
+    }
+    if (parseLengthText(digits) is Some(value)) {
+      if (negative && value != 0) {
+        reportError(
+          mutable checker,
+          argument.pos,
+          "E0995",
+          `the length of a FixedArray cannot be negative, found ${argument.name}`,
+        )
+        return Type.TVoid
+      }
+      if (value >= 0) {
+        return Type.TConst(value)
+      }
+    }
+    reportError(
+      mutable checker,
+      argument.pos,
+      "E0995",
+      `the length ${argument.name} of a FixedArray does not fit an int`,
+    )
+    return Type.TVoid
+  }
+  const isName =
+    Arrays.length(argument.arguments) == 0 &&
+      !argument.isFunc &&
+      !argument.isTuple &&
+      argument.typeofName == "" &&
+      argument.name != ""
+  if (isName) {
+    if (copy(findConstantParameter(checker, argument.name)) is Some(bound)) {
+      if (bound is Type.TConst(value)) {
+        if (value < 0) {
+          reportError(
+            mutable checker,
+            argument.pos,
+            "E0995",
+            `the length of a FixedArray cannot be negative, found ${argument.name} = ${Int.toString(value)}`,
+          )
+          return Type.TVoid
+        }
+      }
+      return bound
+    }
+  }
+  let found = "a type"
+  if (isName) {
+    found = `\`${argument.name}\``
+  }
+  reportError(
+    mutable checker,
+    argument.pos,
+    "E0995",
+    `the length of a FixedArray is an integer literal or a constant parameter, found ${found}`,
+  )
+  return Type.TVoid
+}
+
+function parseLengthText(text: string): Option<int> uses alloc {
+  // A literal as the lexer read it, without its sign: a base prefix, underscores and a
+  // leading zero for octal.
+  let digits = Str.replace(text, "_", "")
+  let base = 10
+  if (Str.startsWith(digits, "0x") || Str.startsWith(digits, "0X")) {
+    base = 16
+  } else if (Str.startsWith(digits, "0b") || Str.startsWith(digits, "0B")) {
+    base = 2
+  } else if (Str.startsWith(digits, "0o") || Str.startsWith(digits, "0O")) {
+    base = 8
+  }
+  if (base != 10) {
+    digits = Str.sliceFrom(digits, 2)
+  } else if (Str.length(digits) >= 2 && Str.startsWith(digits, "0")) {
+    base = 8
+    digits = Str.sliceFrom(digits, 1)
+  }
+  if (Int.parse(digits, base) is Ok(value)) {
+    return Some(value)
+  }
+  return None
+}
+
+export function substitute(
+  mutable checker: Checker,
+  type: Type,
+  bindings: Map<int, Type>,
+): Type from bindings uses alloc {
+  match (type) {
+    Type.TParam(param) => {
+      if (bindings[param] is Some(bound)) {
+        return bound
+      }
+      return copy(type)
+    }
+    Type.TArray(element) => {
+      const newElement = substitute(mutable checker, element, bindings)
+      return internComposite(mutable checker, Type.TArray(newElement))
+    }
+    Type.TBox(element) => {
+      const newElement = substitute(mutable checker, element, bindings)
+      return internComposite(mutable checker, Type.TBox(newElement))
+    }
+    Type.TPtr(element) => {
+      const newElement = substitute(mutable checker, element, bindings)
+      return internComposite(mutable checker, Type.TPtr(newElement))
+    }
+    Type.TAsync(value) => {
+      const newValue = substitute(mutable checker, value, bindings)
+      return internComposite(mutable checker, Type.TAsync(newValue))
+    }
+    Type.TFixedArray(element, length) => {
+      const newElement = substitute(mutable checker, element, bindings)
+      const newLength = substitute(mutable checker, length, bindings)
+      return internComposite(mutable checker, Type.TFixedArray(newElement, newLength))
+    }
+    Type.TGenerator(element, effects, binder, origin, input) => {
+      if (!containsTypeParameter(checker, element) && !containsTypeParameter(checker, input)) {
+        return copy(type)
+      }
+      const newElement = substitute(mutable checker, element, bindings)
+      const newInput = substitute(mutable checker, input, bindings)
+      return copy(Type.TGenerator(newElement, effects, binder, origin, newInput))
+    }
+    Type.TAsyncGenerator(element, effects, binder, origin) => {
+      if (!containsTypeParameter(checker, element)) {
+        return copy(type)
+      }
+      const newElement = substitute(mutable checker, element, bindings)
+      return copy(Type.TAsyncGenerator(newElement, effects, binder, origin))
+    }
+    Type.TMap(key, value) => {
+      const newKey = substitute(mutable checker, key, bindings)
+      const newValue = substitute(mutable checker, value, bindings)
+      return internComposite(mutable checker, Type.TMap(newKey, newValue))
+    }
+    Type.TFunc(parameters, result, effects, binder, shared) => {
+      if (!containsTypeParameter(checker, type)) {
+        return copy(type)
+      }
+      // A parameter bound to void (the value of an Async<void>) takes no argument.
+      let newParams: Array<Type> = []
+      for (const parameter of Arrays.values(parameters)) {
+        const newParam = substitute(mutable checker, parameter, bindings)
+        if (newParam != Type.TVoid) {
+          Arrays.push(mutable newParams, newParam)
+        }
+      }
+      const newResult = substitute(mutable checker, result, bindings)
+      return copy(
+        internComposite(mutable checker, Type.TFunc(newParams, newResult, effects, binder, shared)),
+      )
+    }
+    Type.TStruct(index) => {
+      const info = copy(checker.structs[index])
+      if (Arrays.length(info.arguments) == 0) {
+        return copy(type)
+      }
+      const arguments = substituteAll(mutable checker, info.arguments, bindings)
+      if (info.tuple) {
+        return copy(findTupleType(mutable checker, arguments))
+      }
+      return copy(instantiate(mutable checker, info.generic, arguments))
+    }
+    Type.TEnum(index) => {
+      const info = copy(checker.enums[index])
+      if (Arrays.length(info.arguments) == 0) {
+        return copy(type)
+      }
+      const arguments = substituteAll(mutable checker, info.arguments, bindings)
+      return copy(instantiate(mutable checker, info.generic, arguments))
+    }
+    _ => {
+      return copy(type)
+    }
+  }
+}
+
+export function substituteAll(
+  mutable checker: Checker,
+  types: Array<Type>,
+  bindings: Map<int, Type>,
+): Array<Type> from bindings uses alloc {
+  let out: Array<Type> = []
+  for (const type of Arrays.values(types)) {
+    Arrays.push(mutable out, substitute(mutable checker, type, bindings))
+  }
+  return out
+}

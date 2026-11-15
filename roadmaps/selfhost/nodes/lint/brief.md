@@ -1,10 +1,10 @@
 ---
 id: lint
 title: narra lint
-status: todo
+status: dropped
 priority: could
 type: feature
-outline: true
+outline: false
 milestone: p6-docs
 target:
 from:
@@ -30,6 +30,10 @@ depends_on:
 ## Goal
 
 A linter for problems the checker accepts on purpose: unused imports, unreachable code, a `let` that is never reassigned (should be `const`), and style rules from the guide. JSON output like the compiler diagnostics, and the language service shows the findings.
+
+## Dropped (2026-11-14, batch-16 refinement)
+
+The rules the selfhost compiler needs and the checker does not enforce are two: unreachable statements and a `let` that is never reassigned. Unused imports, locals, parameters and private functions are already errors, and shadowing is already an error. Style is `narrac fmt`. Two rules do not justify a separate tool, so they become checker errors in nodes dead-code-check and let-never-reassigned. Reopen this node if a rule appears that the checker should not reject.
 
 ## Notes
 

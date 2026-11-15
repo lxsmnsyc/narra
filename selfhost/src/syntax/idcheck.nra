@@ -1,0 +1,328 @@
+// The node id walker: it visits every node that carries an id (every Expr,
+// Pattern and Param, every VarStmt and ForStmt) of a parsed file and checks
+// that the ids are unique and lie in the file's range [firstId, endId).
+// `narrac pkg --ids <path>` runs it on every module after modules.checkIds.
+//
+// When the AST gains a node type or a child slot, add it to this walker
+// too, or its ids go unchecked.
+import { filledArray } from "narrac/driver/textops"
+import * as Int from "std/int"
+import {
+  File,
+  Decl,
+  FuncDecl,
+  FieldDecl,
+  Block,
+  Stmt,
+  Expr,
+  Pattern,
+  Param,
+  MatchArm,
+} from "narrac/syntax/ast"
+import * as Arrays from "std/array"
+
+export function collectIds(file: File): Array<int> uses alloc {
+  let ids: Array<int> = []
+  for (const declaration of Arrays.values(file.declarations)) {
+    match (declaration) {
+      Decl.Func(funcDecl) => collectFuncIds(mutable ids, funcDecl)
+      Decl.Const(constDecl) => collectExpressionIds(mutable ids, constDecl.value)
+      Decl.Struct(structDecl) => collectFieldIds(mutable ids, structDecl.fields)
+      Decl.Enum(enumDecl) => {
+        for (const variant of Arrays.values(enumDecl.variants)) {
+          collectFieldIds(mutable ids, variant.fields)
+        }
+      }
+      Decl.Test(testDecl) => collectBlockIds(mutable ids, testDecl.body)
+      Decl.Trait(traitDecl) => {
+        for (const funcDecl of Arrays.values(traitDecl.functions)) {
+          collectFuncIds(mutable ids, funcDecl)
+        }
+      }
+      Decl.Impl(implDecl) => {
+        for (const funcDecl of Arrays.values(implDecl.functions)) {
+          collectFuncIds(mutable ids, funcDecl)
+        }
+      }
+      Decl.Distinct(_) | Decl.Alias(_) => {}
+    }
+  }
+  return ids
+}
+
+export function checkIdList(ids: Array<int>, first: int, end: int): Result<int, string> uses alloc {
+  if (end < first) {
+    return Err(`ids bad: range ${Int.toString(first)}..${Int.toString(end)}`)
+  }
+  let seen = filledArray(false, end - first)
+  for (const nodeId of Arrays.values(ids)) {
+    if (nodeId < first || nodeId >= end) {
+      return Err(
+        `ids bad: id ${Int.toString(nodeId)} is outside ${Int.toString(first)}..${Int.toString(end)}`,
+      )
+    }
+    if (seen[nodeId - first]) {
+      return Err(`ids bad: id ${Int.toString(nodeId)} is used twice`)
+    }
+    seen[nodeId - first] = true
+  }
+  return Ok(Arrays.length(ids))
+}
+
+export function collectFuncIds(mutable ids: Array<int>, funcDecl: FuncDecl) uses alloc {
+  collectParameterIds(mutable ids, funcDecl.parameters)
+  for (const condition of Arrays.values(funcDecl.requires)) {
+    collectExpressionIds(mutable ids, condition)
+  }
+  for (const pattern of Arrays.values(funcDecl.ensures)) {
+    collectPatternIds(mutable ids, pattern)
+  }
+  if (funcDecl.body is Some(body)) {
+    collectBlockIds(mutable ids, body)
+  }
+}
+
+function collectParameterIds(mutable ids: Array<int>, parameters: Array<Param>) uses alloc {
+  for (const parameter of Arrays.values(parameters)) {
+    Arrays.push(mutable ids, parameter.id)
+  }
+}
+
+function collectFieldIds(mutable ids: Array<int>, fields: Array<FieldDecl>) uses alloc {
+  for (const field of Arrays.values(fields)) {
+    if (field.default is Some(value)) {
+      collectExpressionIds(mutable ids, value)
+    }
+  }
+}
+
+export function collectBlockIds(mutable ids: Array<int>, block: Block) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    collectStatementIds(mutable ids, statement)
+  }
+}
+
+function collectStatementIds(mutable ids: Array<int>, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectBlockIds(mutable ids, block)
+    Stmt.VarStmt(nodeId, _, _, _, pattern, _, value) => {
+      Arrays.push(mutable ids, nodeId)
+      if (pattern is Some(destructured)) {
+        collectPatternIds(mutable ids, destructured)
+      }
+      collectExpressionIds(mutable ids, value)
+    }
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      collectExpressionIds(mutable ids, target)
+      collectExpressionIds(mutable ids, value)
+    }
+    Stmt.ExprStmt(_, expression) => collectExpressionIds(mutable ids, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectExpressionIds(mutable ids, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, thenBlock, orElse) => {
+      collectExpressionIds(mutable ids, condition)
+      collectBlockIds(mutable ids, thenBlock)
+      if (orElse is Some(elseStatement)) {
+        collectStatementIds(mutable ids, elseStatement)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collectExpressionIds(mutable ids, condition)
+      collectBlockIds(mutable ids, body)
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        collectStatementIds(mutable ids, declaration)
+      }
+      if (condition is Some(loopCondition)) {
+        collectExpressionIds(mutable ids, loopCondition)
+      }
+      if (step is Some(stepStatement)) {
+        collectStatementIds(mutable ids, stepStatement)
+      }
+      collectBlockIds(mutable ids, body)
+    }
+    Stmt.ForStmt(nodeId, _, _, _, iterable, body, reference, _) => {
+      Arrays.push(mutable ids, nodeId)
+      if (reference is Some(marker)) {
+        if (marker.indexName != "") {
+          Arrays.push(mutable ids, marker.indexId)
+        }
+      }
+      collectExpressionIds(mutable ids, iterable)
+      collectBlockIds(mutable ids, body)
+    }
+    Stmt.YieldStmt(_, value, _, binding) => {
+      if (binding is Some(bound)) {
+        Arrays.push(mutable ids, bound.id)
+      }
+      collectExpressionIds(mutable ids, value)
+    }
+    Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => {}
+  }
+}
+
+export function collectExpressionIds(mutable ids: Array<int>, expression: Expr) uses alloc {
+  match (expression) {
+    Expr.IntLit(nodeId, _, _)
+      | Expr.FloatLit(nodeId, _, _)
+      | Expr.StringLit(nodeId, _, _, _)
+      | Expr.CharLit(nodeId, _, _)
+      | Expr.BoolLit(nodeId, _, _) => Arrays.push(mutable ids, nodeId)
+    Expr.TemplateParts(nodeId, _, _) => Arrays.push(mutable ids, nodeId)
+    Expr.TemplateLit(nodeId, _, parts) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionListIds(mutable ids, parts)
+    }
+    Expr.Ident(nodeId, _, _) => Arrays.push(mutable ids, nodeId)
+    Expr.FieldExpr(nodeId, _, target, _) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, target)
+    }
+    Expr.IsExpr(nodeId, _, subject, pattern) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, subject)
+      collectPatternIds(mutable ids, pattern)
+    }
+    Expr.IndexExpr(nodeId, _, target, index) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, target)
+      collectExpressionIds(mutable ids, index)
+    }
+    Expr.MapLit(nodeId, _, _, keys, values) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionListIds(mutable ids, keys)
+      collectExpressionListIds(mutable ids, values)
+    }
+    Expr.CallExpr(nodeId, _, callee, _, arguments) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, callee)
+      for (const argument of Arrays.values(arguments)) {
+        collectExpressionIds(mutable ids, argument.value)
+      }
+    }
+    Expr.UnaryExpr(nodeId, _, _, operand) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, operand)
+    }
+    Expr.BinaryExpr(nodeId, _, _, left, right) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, left)
+      collectExpressionIds(mutable ids, right)
+    }
+    Expr.StructLit(nodeId, _, _, _, fields, spread) => {
+      Arrays.push(mutable ids, nodeId)
+      for (const field of Arrays.values(fields)) {
+        collectExpressionIds(mutable ids, field.value)
+      }
+      if (spread is Some(spreadValue)) {
+        collectExpressionIds(mutable ids, spreadValue)
+      }
+    }
+    Expr.ArrayLit(nodeId, _, elements, _) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionListIds(mutable ids, elements)
+    }
+    Expr.MatchExpr(nodeId, _, subject, arms) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, subject)
+      for (const arm of Arrays.values(arms)) {
+        collectArmIds(mutable ids, arm)
+      }
+    }
+    Expr.BlockExpr(nodeId, _, block) => {
+      Arrays.push(mutable ids, nodeId)
+      collectBlockIds(mutable ids, block)
+    }
+    Expr.ArrowExpr(nodeId, _, parameters, _, body, block) => {
+      Arrays.push(mutable ids, nodeId)
+      collectParameterIds(mutable ids, parameters)
+      if (body is Some(bodyExpression)) {
+        collectExpressionIds(mutable ids, bodyExpression)
+      }
+      if (block is Some(bodyBlock)) {
+        collectBlockIds(mutable ids, bodyBlock)
+      }
+    }
+    Expr.AwaitExpr(nodeId, _, operand) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, operand)
+    }
+    Expr.AsyncExpr(nodeId, _, body) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, body)
+    }
+  }
+}
+
+function collectExpressionListIds(mutable ids: Array<int>, expressions: Array<Expr>) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    collectExpressionIds(mutable ids, expression)
+  }
+}
+
+function collectArmIds(mutable ids: Array<int>, arm: MatchArm) uses alloc {
+  collectPatternIds(mutable ids, arm.pattern)
+  if (arm.guard is Some(guard)) {
+    collectExpressionIds(mutable ids, guard)
+  }
+  if (arm.body is Some(body)) {
+    collectExpressionIds(mutable ids, body)
+  }
+  if (arm.block is Some(block)) {
+    collectBlockIds(mutable ids, block)
+  }
+}
+
+function collectPatternIds(mutable ids: Array<int>, pattern: Pattern) uses alloc {
+  match (pattern) {
+    Pattern.PatWildcard(nodeId, _) | Pattern.PatName(nodeId, _, _) => Arrays.push(
+      mutable ids,
+      nodeId,
+    )
+    Pattern.PatCtor(nodeId, _, _, _, arguments, _) => {
+      Arrays.push(mutable ids, nodeId)
+      for (const argument of Arrays.values(arguments)) {
+        collectPatternIds(mutable ids, argument)
+      }
+    }
+    Pattern.PatStruct(nodeId, _, fields) => {
+      Arrays.push(mutable ids, nodeId)
+      for (const field of Arrays.values(fields)) {
+        collectPatternIds(mutable ids, field.pattern)
+      }
+    }
+    Pattern.PatTuple(nodeId, _, arguments) => {
+      Arrays.push(mutable ids, nodeId)
+      for (const argument of Arrays.values(arguments)) {
+        collectPatternIds(mutable ids, argument)
+      }
+    }
+    Pattern.PatArray(nodeId, _, elements, rest) => {
+      Arrays.push(mutable ids, nodeId)
+      for (const element of Arrays.values(elements)) {
+        collectPatternIds(mutable ids, element)
+      }
+      if (rest is Some(restPattern)) {
+        collectPatternIds(mutable ids, restPattern)
+      }
+    }
+    Pattern.PatLit(nodeId, _, literal) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, literal)
+    }
+    Pattern.PatOr(nodeId, _, alternatives) => {
+      Arrays.push(mutable ids, nodeId)
+      for (const alternative of Arrays.values(alternatives)) {
+        collectPatternIds(mutable ids, alternative)
+      }
+    }
+    Pattern.PatCompare(nodeId, _, _, bound) => {
+      Arrays.push(mutable ids, nodeId)
+      collectExpressionIds(mutable ids, bound)
+    }
+  }
+}

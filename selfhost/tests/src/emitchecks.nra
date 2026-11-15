@@ -34,6 +34,14 @@
 //                      fails `check --all-targets` in the release builds
 //   build-targets/extern-outside-branch   the same for a function of a `@target`
 //                      extern block
+//   build-targets/cross-flag   `build --target` passes `-target <triple>` first to $CC,
+//                      and nothing for the host target
+//   build-targets/cross-errors   E1600 (unknown name), E1601 (-sanitize), `check --target`
+//   wasi/left-out      Process.run and Terminal.columns are E0991 on Wasi-Wasm32 outside a
+//                      branch that drops it, found by check --all-targets
+//   wasi/left-out-plain   the same for a program that does not import std/build, found by
+//                      check --target Wasi-Wasm32
+//   build-targets/cross-list   `narrac targets` prints the eight rows
 //   audit/basic        `narrac audit` lists the unsafe blocks and @trusted
 //                      functions of testdata/audit/basic
 //   const-generics/distinct-instances   in the C of testdata/const_generics.nra,
@@ -130,6 +138,23 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Path.join(buildTargets, "extern_outside_branch.nra"),
       "extern-outside-branch",
     ),
+    makeCase(
+      "wasi/left-out",
+      Path.join(Path.join(context.testdata, "wasi_cases"), "left_out.nra"),
+      "wasi-left-out",
+    ),
+    makeCase(
+      "wasi/left-out-plain",
+      Path.join(Path.join(context.testdata, "wasi_cases"), "left_out_plain.nra"),
+      "wasi-left-out-plain",
+    ),
+    makeCase("build-targets/cross-flag", Path.join(buildTargets, "cross_hello.nra"), "cross-flag"),
+    makeCase(
+      "build-targets/cross-errors",
+      Path.join(buildTargets, "cross_hello.nra"),
+      "cross-errors",
+    ),
+    makeCase("build-targets/cross-list", Path.join(buildTargets, "cross_hello.nra"), "cross-list"),
     makeCase("audit/basic", Path.join(Path.join(context.testdata, "audit"), "basic"), "audit"),
     makeCase(
       "const-generics/distinct-instances",
@@ -220,6 +245,26 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "extern-outside-branch") {
     return checkAllTargets(context, testCase.path, "extern_outside_branch.err", false)
+  }
+  if (testCase.variant == "wasi-left-out") {
+    return checkAllTargets(context, testCase.path, "left_out.err", true)
+  }
+  if (testCase.variant == "wasi-left-out-plain") {
+    return expectEmitError(
+      context,
+      ["check", "--target", "Wasi-Wasm32", testCase.path],
+      testCase.path,
+      "left_out_plain.err",
+    )
+  }
+  if (testCase.variant == "cross-flag") {
+    return checkCrossFlag(context, testCase.path)
+  }
+  if (testCase.variant == "cross-errors") {
+    return checkCrossErrors(context, testCase.path)
+  }
+  if (testCase.variant == "cross-list") {
+    return checkCrossList(context)
   }
   if (testCase.variant == "audit") {
     return checkAudit(context, testCase.path)
@@ -548,6 +593,138 @@ function checkAllTargets(
     }
   }
   return expectEmitError(context, ["check", "--all-targets", source], source, goldenName)
+}
+
+function checkCrossFlag(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  let outcome: Result<bool, string> = Ok(true)
+  // A C compiler that records its arguments and creates the output file.
+  const compiler = Path.join(scratch.work, "logging-cc.sh")
+  const logPath = Path.join(scratch.work, "cc.log")
+  const script = [
+    "#!/bin/sh",
+    "echo \"$@\" > \"$LOG\"",
+    "while [ $# -gt 0 ]; do",
+    "  if [ \"$1\" = -o ]; then out=$2; fi",
+    "  shift",
+    "done",
+    ": > \"$out\"",
+    "",
+  ]
+  const written = Scratch.writeFile(compiler, Str.join(script, "\n"))
+  if (written is Err(message)) {
+    Scratch.removeScratch(scratch)
+    return Err(message)
+  }
+  const madeExecutable = Shell.runScript("chmod +x \"$1\"", [compiler])
+  if (madeExecutable.code != 0) {
+    Scratch.removeScratch(scratch)
+    return Err(`chmod failed: ${Common.describeRun(madeExecutable)}`)
+  }
+  const environment = [`CC=${compiler}`, `LOG=${logPath}`, "NARRA_HOST_TARGET=Linux-X86_64"]
+  const output = Path.join(scratch.work, "program")
+  // A target other than the host passes -target and its triple before the other flags.
+  const wanted = [
+    #["Linux-X86_64-musl", "-target x86_64-linux-musl -O0"],
+    #["Windows-X86_64", "-target x86_64-windows-gnu -O0"],
+    #[
+      "Wasi-Wasm32",
+      "-target wasm32-wasi -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -lsetjmp -O0",
+    ],
+    #["Linux-X86_64", "-O0"],
+  ]
+  for (const #[name, start] of Arrays.values(wanted)) {
+    if (outcome is Ok(_)) {
+      const result = Common.runNarracWith(context, "", environment, [
+        "build",
+        "--target",
+        name,
+        "-o",
+        output,
+        source,
+      ])
+      const logged = Scratch.readFile(logPath)
+      if (result.code != 0) {
+        outcome = Err(`build --target ${name} failed: ${Common.describeRun(result)}`)
+      } else if (logged is Err(message)) {
+        outcome = Err(message)
+      } else if (!Str.startsWith(logged.value, start)) {
+        outcome = Err(
+          `build --target ${name}: want C compiler arguments starting "${start}", got "${Str.trim(logged.value)}"`,
+        )
+      }
+    }
+  }
+  Scratch.removeScratch(scratch)
+  return outcome
+}
+
+function checkCrossErrors(context: Context, source: string): Result<bool, string> uses io, alloc {
+  const environment = ["NARRA_HOST_TARGET=Linux-X86_64"]
+  const unknown = Common.runNarracWith(context, "", environment, [
+    "build",
+    "--target",
+    "Plan9-Mips",
+    source,
+  ])
+  const names = "Linux-Arm64-musl, Windows-X86_64, Wasi-Wasm32"
+  if (
+    unknown.code != 2 ||
+      !Str.contains(unknown.errorOutput, "E1600: unknown target Plan9-Mips; the targets are ") ||
+      !Str.contains(unknown.errorOutput, names)
+  ) {
+    return Err(`want E1600 with the names, exit 2, got ${Common.describeRun(unknown)}`)
+  }
+  const checked = Common.runNarracWith(context, "", environment, [
+    "check",
+    "--target",
+    "Plan9-Mips",
+    source,
+  ])
+  if (checked.code != 2 || !Str.contains(checked.errorOutput, "E1600:")) {
+    return Err(`want E1600 from check, exit 2, got ${Common.describeRun(checked)}`)
+  }
+  const sanitized = Common.runNarracWith(context, "", environment, [
+    "build",
+    "-sanitize",
+    "--target",
+    "Windows-X86_64",
+    source,
+  ])
+  const sanitizeText = "E1601: -sanitize cannot build for Windows-X86_64"
+  if (sanitized.code != 2 || !Str.contains(sanitized.errorOutput, sanitizeText)) {
+    return Err(`want E1601, exit 2, got ${Common.describeRun(sanitized)}`)
+  }
+  const passing = Common.runNarracWith(context, "", environment, [
+    "check",
+    "--target",
+    "Wasi-Wasm32",
+    source,
+  ])
+  if (passing.code != 0) {
+    return Err(`want check --target Wasi-Wasm32 to pass, got ${Common.describeRun(passing)}`)
+  }
+  return Ok(true)
+}
+
+function checkCrossList(context: Context): Result<bool, string> uses io, alloc {
+  const result = Common.runNarrac(context, ["targets"])
+  const want = [
+    "MacOS-Arm64 aarch64-macos",
+    "MacOS-X86_64 x86_64-macos",
+    "Linux-X86_64 x86_64-linux-gnu",
+    "Linux-Arm64 aarch64-linux-gnu",
+    "Linux-X86_64-musl x86_64-linux-musl",
+    "Linux-Arm64-musl aarch64-linux-musl",
+    "Windows-X86_64 x86_64-windows-gnu",
+    "Wasi-Wasm32 wasm32-wasi",
+    "",
+  ]
+  return Common.compareText("stdout", Str.join(want, "\n"), result.output)
 }
 
 function checkAudit(context: Context, folder: string): Result<bool, string> uses io, alloc {

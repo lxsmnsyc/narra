@@ -136,6 +136,22 @@ static bool narra_fs_read_bytes(lstr* path, lstr** out, lstr** err) {
 
 static bool narra_fs_write(lstr* path, lstr* text, int64_t* written, lstr** err) {
   if (!narra_io_no_nul(path, err)) return false;
+#if defined(__wasi__) || defined(_WIN32)
+  // WASI and Windows have no /dev: the two standard output paths write descriptors 1 and 2.
+  FILE* standard = NULL;
+  if (strcmp(path->data, "/dev/stdout") == 0) standard = stdout;
+  if (strcmp(path->data, "/dev/stderr") == 0) standard = stderr;
+  if (standard) {
+    errno = 0;
+    size_t sent = fwrite(text->data, 1, (size_t)text->len, standard);
+    if (sent != (size_t)text->len || fflush(standard) != 0) {
+      *err = narra_io_fail(path->data, path->len, strerror(errno ? errno : EIO));
+      return false;
+    }
+    *written = text->len;
+    return true;
+  }
+#endif
   FILE* f = fopen(path->data, "wb");
   if (!f) {
     *err = narra_io_fail(path->data, path->len, strerror(errno));
@@ -165,10 +181,10 @@ static bool narra_fs_is_dir(lstr* path) {
   return stat(path->data, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-// Creates one directory (mode 0777 before the umask).
+// Creates one directory (mode 0777 before the umask; Windows has no mode).
 static bool narra_fs_mkdir(lstr* path, lstr** err) {
   if (!narra_io_no_nul(path, err)) return false;
-  if (mkdir(path->data, 0777) != 0) {
+  if (narra_mkdir(path->data) != 0) {
     *err = narra_io_fail(path->data, path->len, strerror(errno));
     return false;
   }
@@ -188,14 +204,17 @@ static bool narra_fs_mkdir_all(lstr* path, bool* created, lstr** err) {
   memcpy(buf, path->data, (size_t)path->len + 1);
   int failed = 0;
   for (int64_t i = 1; i < path->len && !failed; i++) {
-    if (buf[i] != '/') continue;
+    char separator = buf[i];
+    if (separator != '/' && !(NARRA_PATH_WINDOWS && separator == '\\')) continue;
+    // A drive such as "C:" is not a directory to create.
+    if (NARRA_PATH_WINDOWS && buf[i - 1] == ':') continue;
     buf[i] = 0;
-    if (mkdir(buf, 0777) == 0) *created = true;
+    if (narra_mkdir(buf) == 0) *created = true;
     else if (errno != EEXIST) failed = errno;
-    buf[i] = '/';
+    buf[i] = separator;
   }
   if (!failed) {
-    if (mkdir(buf, 0777) == 0) *created = true;
+    if (narra_mkdir(buf) == 0) *created = true;
     else if (errno != EEXIST) failed = errno;
     else {
       struct stat st;

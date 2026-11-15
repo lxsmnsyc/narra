@@ -9,7 +9,7 @@ defined_by: selfhost-emit-core
 
 ## Purpose
 
-How the Narra C emitter (selfhost/src/emit*.nra) reads the checker's results, names C, holds its state, and which module emits which part of the C. Used by every selfhost-emit-* node and by selfhost-bootstrap.
+How the Narra C emitter (selfhost/src/emit/emit*.nra) reads the checker's results, names C, holds its state, and which module emits which part of the C. Used by every selfhost-emit-* node and by selfhost-bootstrap.
 
 ## Interface
 

@@ -16,7 +16,7 @@ Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` function
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
-```ts
+```narra
 import * as Float from "std/float"
 
 export enum Shape {
@@ -67,6 +67,8 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Compound assignment (D76).** `x += e` and the forms `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` mean `x = x op e` with the target place evaluated once: `items[next()] += 1` calls `next` once. They are statements with no value, valid on every target `=` accepts (a `let`, a field or element of a changeable value, the contents of a `mutable` parameter). `x++` and `x--` are statements for an integer of any width; the prefix `++x` is a compile error (E0964). The value must have the type of the target (E0962), and `++` on a non-integer is E0963. Wrapping, divisor proofs and shift count proofs are those of the binary operator: `x /= d` needs a proven `d`. The wrapping operators `+%=`, `-%=` and `*%=` do not exist. On a `string` target only `+=` exists and it joins strings (`+` alone is still an error). A Map index target (`counts[key] += 1`) is a compile error, since a missing key has no old value (reading `counts[key]` gives an `Option`); write `Maps.update(mutable counts, key, 0, (count) => count + 1)`, which starts from the initial value when the key is missing (D92).
 - **No shadowing inside a function.** A name cannot be declared again while an earlier binding with that name is in scope.
 - **Unused names are errors.** An unused local, parameter, import or private function is a compile error. Name it `_` or start it with `_` to mark it as unused on purpose.
+- **A `let` that is never reassigned is an error.** A `let` declared with a plain name that nothing writes after its declaration is a compile error (E1510); declare it with `const`. A write is `x = e`, a compound assignment, `x++`, a write through a field or element (`x.f = e`, `x[i] = e`), passing `mutable x` and a closure that does any of these. The fix rewrites `let` to `const`. A `let` that is also never read is reported as unused instead.
+- **Unreachable statements are errors.** A statement that follows `return`, `break`, `continue`, a call to `panic` or `Process.exit`, an `if` with an `else` whose branches all leave, a `match` whose arms all leave, or a `while (true)` loop with no `break` is a compile error (E1500). Only the first dead statement is reported.
 - **Destructuring:** `const { host, port: serverPort } = config` for structs (section 4), and `const #[quotient, remainder] = Int.divmod(a, b)` for tuples.
 - **Array destructuring (D103).** A destructuring must match every value, so on an `Array<T>` only `const [...rest] = items` works: it binds a new Array with every element, a copy. `const [a, b] = items` and `for (const [a, b] of rows)` over an Array are compile errors (E0715), since the length is not known; test it with `match` or `is` (section 4, Pattern matching). On a `FixedArray<T, N>` with a known `N`, a pattern of exactly `N` elements, or `..._` after at most `N` elements, works in `const`, `let`, `for ... of` and nested in tuple and struct patterns: `const [x, y, z] = point`. Another length is E0723. In a generic body where `N` is a constant parameter, only `[..._]` matches every value (E0723).
 
@@ -98,7 +100,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
 - **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narra query recursion MODULE` lists them.
 
-```ts
+```narra
 function gcd(a: int, b: int): int {
   if (b == 0) {
     return a
@@ -121,7 +123,7 @@ function each(items: Array<int>, f: (item: int) => void) {
 ---
 const numbers = [1, 2]
 -->
-```ts
+```narra
 let total = 0
 each(numbers, (item) => { total = total + item })
 ```
@@ -155,7 +157,7 @@ struct Player {
 ---
 let players: Array<Player> = []
 -->
-```ts
+```narra
 for (mutable player of players) {
   player.hp = 0                // changes players
 }
@@ -171,7 +173,7 @@ import * as Ranges from "std/range"
 ---
 const items = ["a", "b"]
 -->
-```ts
+```narra
 for (const i of Ranges.upTo(Arrays.length(items))) {
   print(items[i])
 }
@@ -184,7 +186,7 @@ for (const i of Ranges.upTo(Arrays.length(items))) {
 const limit = 3
 let total = 0
 -->
-```ts
+```narra
 for (let i = 0; i < limit; i = i + 1) {
   total = total + i
 }
@@ -210,7 +212,7 @@ function lookup(code: int): string {
 ---
 const code = 1
 -->
-```ts
+```narra
 const label = {
   const name = lookup(code)
   if (name == "") {
@@ -231,7 +233,7 @@ const label = {
 <!-- context
 const n = 1
 -->
-```ts
+```narra
 const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" } else { return "positive" }
 ```
 
@@ -248,7 +250,7 @@ const name = "ada"
 const digits = "[0-9]+"
 -->
 
-```ts
+```narra
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
@@ -340,6 +342,14 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
 - **Standard modules.** `std/arena`, `std/args`, `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/iterator`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/regex`, `std/result`, `std/shape`, `std/simd` (section 4), `std/string`, `std/template` (section 2, Literals), `std/terminal`, `std/test`, `std/time`, `std/toml` and `std/unicode`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
+- **`std/path` and Windows.** `Path.join`, `dirname`, `basename` and `extname` follow Node's `path.posix` on every system. A program built for Windows (`--target Windows-X86_64`) also reads `\` as a separator, and a leading drive such as `C:` is kept in front of the result and is not a segment: `Path.join("C:\\a", "..\\b")` is `C:/b`, and `Path.join("C:/a", "..")` is `C:/`. `join` always writes `/`, which the Windows file functions accept; `dirname` returns the text of the input up to the last separator, so `Path.dirname("C:\\a\\b")` is `C:\a`, and `Path.dirname("C:a")` is `C:`. UNC paths (`\\\\server\\share`) are not supported. On other systems `\` is an ordinary name character. `std/fs` opens every file in binary mode on Windows and stdin, stdout and stderr are binary too, so `\n` is never rewritten (`print` writes `\n`, not `\r\n`), and `std/fs` creates a directory without a mode there. Samples: `testdata/windows_path.nra`, `testdata/windows_runtime.nra`.
+- **`std/process`, `std/test` and `std/async` on Windows.** A program built for `Windows-X86_64` runs all three. Known gaps against the other systems:
+  - `Process.run` starts the program with `CreateProcessW`, searching `PATH` itself (never the current directory or the folder of the program) and trying the name (only when it ends in `.exe`, `.com`, `.bat` or `.cmd`), then the name with `.exe` and `.com`; it does not start a shell, so `echo` and `dir` need `cmd /c`. The arguments are joined into one command line with the quoting `CommandLineToArgvW` reverses, and they must be valid UTF-8. The exit code is the value the process ended with: a crash gives a number such as `3221225477` (`0xC0000005`), not 128 plus a signal. The child, and any process it left running, ends when the call returns or this process ends (a job object). A `.bat` or `.cmd` program runs through `cmd.exe`, which reads `%`, `&`, `|` and `^` in the arguments as its own syntax, so do not pass untrusted text to one. SIGTERM and SIGHUP do not exist, so nothing is forwarded; a console sends Ctrl-C to the child itself.
+  - `narrac test` starts the test binary again for each test instead of forking, so a test sees a fresh process. A test that runs past the time limit (10 seconds, or `NARRA_TEST_TIMEOUT`) is ended with the processes it started. A test that crashes reports `crashed with status 0x...` where the other systems report the signal.
+  - `Test.panics` and `Test.panicsWith` run the closure in the same process and catch the panic with a jump, as `Co.resume` does. They have no timeout, so a closure that never returns hangs the test until the test's own time limit; what the closure changed in globals stays changed; and only the first 255 bytes of the panic message are compared.
+  - `std/async` waits for sockets with `WSAPoll`. Only sockets are waited on, as on the other systems. A refused connect shows as an error only on Windows 10 version 2004 or later; before that `WSAPoll` never reports it. Winsock errors are mapped to the errno names the std code tests (`EWOULDBLOCK`, `EINPROGRESS`, `ECONNREFUSED`, ...), and an error with no name there shows as `EIO`. `SO_REUSEADDR` is not set, because on Windows it lets a second socket take a port in use. The build links `ws2_32`, and `shell32` for the argument list.
+  - `Env.args()` reads the arguments as UTF-8 from the wide command line. The `args` given to the entry function still come from the C `main` and use the ANSI code page, so a non-ASCII argument reads correctly only through `Env.args()`.
+  - Samples: `testdata/windows_process.nra`, `testdata/windows_async.nra`.
 - **Narra parts of builtin modules.** A builtin std module may have functions and constants written in Narra, in `std/src/ext__<name>.nra` (module path `std/ext/<name>`). The compiler loads that module whenever a program imports `std/<name>`, and `Alias.name` and `import { name } from "std/<name>"` find it after the builtins. So far: `Float.PI`; `Int.compare`, `Int.divmod`, `Int.floorDiv`; `Str.find(text, needle)`, the same as `Str.indexOf`; `Arrays.map(items, f)` (the callback takes an effect variable), `Arrays.slice(items, start, finish)` (an `Option`: `None` when the range is outside the array; it copies) and `Arrays.withCapacity(count)` (an empty array that has room for `count` elements; the element type comes from the expected type).
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
@@ -348,7 +358,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
   - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns `Some(n)` with `n` in `[low, high)` without modulo bias, and `None` when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
   - `std/hash` has `Hash.of(x)`, the `Hashable` hash of any value (it may change between builds), and `fnv1a(text)`, FNV-1a 64 over the UTF-8 bytes of a string as a `u64`, which never changes. `of` is a keyword, and is accepted as a function name and after `.`, like `from`.
 - **`std/process`** (alias `Process`) is builtin: `run(command: string, arguments: Array<string>): Result<#[int, string, string], string>` and `exit(code: int): void`. `exit` has the `io` effect and ends the process with `code` (the operating system keeps the low 8 bits). It flushes pending standard output first, then leaves at once: live values are not released, so the leak check (`NARRA_CHECK_LEAKS`) reports nothing for them, and the code after the call does not run. Like `panic`, a call to `exit` ends a path, so a function that returns a value may end with it. While `run` waits, it forwards SIGTERM, SIGINT and SIGHUP to the child (the child stays in the caller's process group, so Ctrl-C still reaches it). The caller keeps running: `run` returns and reports the child's end as exit code 128 plus the signal number, so a program that calls `Process.run` in a loop must check for it. `narrac run`, `narrac test` and `Test.panics` use the same forwarding for the processes they start, so killing narrac does not orphan the program or a test.
-- **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0426): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
+- **`std/internal/` is for the standard library.** A std module written in Narra reaches the C primitives it needs through modules under `std/internal/<name>`. Only a module whose path starts with `std/` may import them. Any other import is an error (E0474): `std/internal/<name> is internal to the standard library`. The error list of unknown modules does not name them.
 - **Std modules for tools (D118).** Seven modules: `std/iterator`, `std/arena`, `std/unicode`, `std/args`, `std/toml`, `std/regex` and `std/terminal`. Each is Narra source; only `std/terminal` has runtime C (`std/internal/terminal`). None panics on bad input.
 - **`std/iterator`** (alias `Iterators`, D118) is Narra source. Lazy operators are generator functions: `map`, `filter`, `flatMap` (its callback returns a `Generator`), `take`, `drop`, `takeWhile`, `dropWhile`, `enumerate` (yields `#[int, T]`), `zip` (yields `#[A, B]` and ends with the shorter source) and `concat`. Their callbacks are `escaping`, so a closure passed to one cannot capture a `let` (E0612). `chunk(source, size)` and `window(source, size)` return `Option<Generator<Array<T>> uses (E, alloc)>`, `None` for a size below 1; the last chunk may be shorter, and a source shorter than the window yields no window. `take` and `drop` treat a negative count as 0. Eager operators run the source to its end or to the first answer, with callbacks that are not escaping: `reduce(source, combine, initial)`, `toArray`, `forEach`, `some`, `every`, `find` (an `Option`) and `count`. One effect variable covers the source and the callbacks, so `Iterators.map` over a source with `uses io` is a `Generator` with `uses io`, and a pure source and callback give a pure one. `flatMap`, `zip`, `chunk` and `window` add `alloc`. The effect variable of `chunk` and `window` sits inside the `Option` of the result and is bound at the call too, so chunks of a source with `uses io` run `io` when they are read. An operator takes its source by value: a loop or a resume inside it works on its own copy, so after `Iterators.take(lines, 2)` a loop over `lines` starts from the first item again and redoes its work. `Co.resume(mutable lines)` moves `lines` itself.
 - **`std/arena`** (alias `Arenas`, D118) is Narra source over `Array`. `Arena<T>` and `Handle<T>` are opaque structs (section 6, Cycles), so code outside the module cannot read a handle's fields. A handle is a slot index and a generation, and derives `Equatable`, `Hashable` and `Show`, so it works as a map key. `create<T>()` makes an empty arena (the element type comes from the expected type or `Arenas.create<Node>()`). `insert(mutable arena, value)` returns a `Handle<T>`. `get(arena, handle)` returns `Option<T> from arena`. `set(mutable arena, handle, value)` and `update(mutable arena, handle, change)` return `bool`, false for a stale handle. `remove(mutable arena, handle)` returns the value as an `Option` and drops it from the slot at once. A removed slot goes on a free list, and reusing it adds 1 to its generation, so an old handle gets `None` and `false`. `contains` and `size` read the arena. `clear(mutable arena)` keeps the slots and raises every generation. `entries(arena)` is a `Generator<#[Handle<T>, T]>` in slot order. A handle from another arena is not detected: it reads whatever the same slot of this arena holds. Copying an arena copies its slots on the first write, like an array.
@@ -371,7 +381,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **`std/terminal`** (alias `Terminal`, D118) is Narra source over `std/internal/terminal`. `isTerminal(stream)`, `columns(stream): Option<int>` (`None` when the stream is not a terminal) and `useColor(stream)` (which honors `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb`) have the `io` effect; `Stream` is `Stdin`, `Stdout` or `Stderr`. Style functions (`bold`, `red`, `bgRed`, `style(text, Style)` and the rest) always add the codes and nest; `stripStyles` removes them. `Style` holds `foreground` and `background` as a `Color` (default `Color.Default`, which adds no code) and the flags `bold`, `dim`, `italic`, `underline`, `inverse` and `strikethrough`. `Color` has `Default`, the eight names, their bright forms, `Ansi256(index: u8)` and `Rgb(red, green, blue)`.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
-```ts
+```narra
 import * as Str from "std/string"            // namespace import
 import * as Arrays from "std/array"          // plural alias for a prelude type's module
 import { classify, Token } from "app/text"   // named imports
@@ -380,7 +390,7 @@ import { map as mapArray } from "std/array"  // a named import with a new name
 
 There is no re-export statement. To expose an imported name, import it and export a new declaration:
 
-```ts
+```narra
 import * as Text from "app/text"
 
 export const classify = Text.classify        // a function
@@ -420,7 +430,7 @@ Rules:
 - **Structs.** Declared with `struct`. The full rules are in "Structs" below.
 - **Enums.** Declared with `enum`. Each constructor can carry named fields, and is written with its enum's name: `Token.Word("hi")`, `Token.Space` (section 3).
 
-```ts
+```narra
 export enum Token {
   Word(text: string)
   Number(value: int)
@@ -432,7 +442,7 @@ export enum Token {
 - **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `N` is an integer literal or a constant type parameter, and never negative (E0995). One `FixedArray` value takes at most 1 MiB (1048576 bytes), so a local fits well inside a thread's stack; a larger one is E0995, and an `Array` holds more. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`, and gives all `N` elements. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
 - **Fixed-size array indexes are proven.** Indexing a `FixedArray` never panics and has no runtime check. A constant index must be from 0 to `N - 1`, and any other index must be a name that a check proves to be in that range (E0994): an `if` or `while` condition such as `i >= 0 && i < N`, the condition of `for (let i = 0; i < N; i++)` when nothing in the loop assigns `i`, or `for (const i of Ranges.upTo(N))`. An assignment to the name ends the proof. In a generic body the proof is made in each instance, where `N` is a constant. `FixedArrays.get(values, i)` (`std/fixedarray`) returns an `Option<T>` for any index, and `FixedArrays.length(values)` returns `N`. `for (const v of values)` reads a copy of the elements. Equality, hashing, ordering and `Show` follow the element type, as for `Array`.
 
-```ts
+```narra
 import * as FixedArrays from "std/fixedarray"
 
 function sum<const N: int>(values: FixedArray<f64, N>): f64 {
@@ -479,7 +489,7 @@ function last(values: FixedArray<f64, 4>): Option<f64> {
 
 A struct is a fixed set of named fields, stored inline like a C struct.
 
-```ts
+```narra
 export struct ServerConfig {
   host: string
   port: int = 8080
@@ -515,7 +525,7 @@ struct ServerConfig {
 }
 ---
 -->
-```ts
+```narra
 const config = ServerConfig { host: "localhost" }            // port is 8080, tags is []
 const loopback: ServerConfig = { host: "127.0.0.1", port: 3000 }
 ```
@@ -526,7 +536,7 @@ struct Entry<K, V> {
   value: V
 }
 -->
-```ts
+```narra
 function makeEntry(key: string, value: int): Entry<string, int> {
   return { key: key, value: value }                          // type taken from the return type
 }
@@ -548,7 +558,7 @@ struct ServerConfig {
 ---
 const config = ServerConfig { host: "localhost" }
 -->
-```ts
+```narra
 const moved = { ...config, port: 9000 }
 
 let current = copy(config)
@@ -577,7 +587,7 @@ struct Point {
 const config = ServerConfig { host: "localhost" }
 const point = Point { x: 1.0, y: 2.0 }
 -->
-```ts
+```narra
 const { host, port: serverPort } = config
 
 match (point) {
@@ -603,7 +613,7 @@ match (point) {
 <!-- context
 import * as Boxes from "std/box"
 -->
-```ts
+```narra
 struct ListNode {
   value: int
   next: Option<Box<ListNode>> = None
@@ -616,7 +626,7 @@ const list = ListNode { value: 1, next: Some(Boxes.new(ListNode { value: 2 })) }
 
 `export opaque struct` exports a struct's name but not its fields.
 
-```ts
+```narra
 // module "app/range"
 export opaque struct Range {
   start: int
@@ -660,7 +670,7 @@ export type Token = Text.Token
 
 `typeof name` in a type position stands for the type of a value in scope: a `const`, `let`, a parameter, a top-level constant or a function (D96). Its use is to keep a type in step with a value, without writing the type twice.
 
-```ts
+```narra
 export const table: Map<string, Array<int>> = Map {}
 
 function fill(mutable target: typeof table, key: string) {
@@ -678,7 +688,7 @@ struct Response {
   status: int
 }
 -->
-```ts
+```narra
 export function handle(request: Request): Response uses io {
   return Response { status: 200 }
 }
@@ -696,7 +706,7 @@ export type Handler = typeof handle // (request: Request) => Response uses io
 
 `distinct type` declares a new type with the same representation as an existing one.
 
-```ts
+```narra
 export distinct type UserId = int
 export distinct type OrderId = int
 ```
@@ -708,7 +718,7 @@ function loadUser(id: UserId) {}
 ---
 -->
 <!-- error: E0119 -->
-```ts
+```narra
 const user = UserId.from(42)
 const raw: int = UserId.toInt(user)
 
@@ -726,7 +736,7 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 A distinct type may restrict its values with `requires` and a list of patterns joined by `&&` (D116). The list follows the base and the trait lists and may start on the next line.
 
-```ts
+```narra
 export distinct type Port = int derives Show requires >= 1 && <= 65535
 export distinct type Method = string requires "GET" | "POST"
 distinct type Bit = u8
@@ -751,7 +761,7 @@ distinct type Port = int requires >= 1 && <= 65535
 ---
 -->
 <!-- error: E1223 -->
-```ts
+```narra
 const port = Port.from(70000)     // compile error: 70000 does not satisfy Port (<= 65535)
 ```
 
@@ -791,7 +801,7 @@ enum Status {
 const token = Token.Space
 const status = Status.Active
 -->
-```ts
+```narra
 match (token) {
   Token.Word(text) => print(text)
   Token.Number(n) if (n < 0) => print("negative")
@@ -828,7 +838,7 @@ const label = match (status) {
 <!-- context
 import * as Arrays from "std/array"
 -->
-```ts
+```narra
 export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
   for (const item of Arrays.values(items)) {
     if (item == wanted) {
@@ -839,7 +849,7 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
 }
 ```
 
-```ts
+```narra
 struct Vector<const N: int> {
   values: Array<f64>
 }
@@ -860,7 +870,7 @@ A trait is a named set of functions that a type implements. A type's traits are 
 <!-- context
 import * as Int from "std/int"
 -->
-```ts
+```narra
 export trait Label {
   function label(value: Self): string
 }
@@ -899,7 +909,7 @@ implement Label for Money {
 ---
 const price = Money { cents: 1250 }
 -->
-```ts
+```narra
 const text = Label.label(price)
 ```
 
@@ -992,7 +1002,7 @@ const text = Label.label(price)
 <!-- context
 import * as Str from "std/string"
 -->
-```ts
+```narra
 export struct Pair {
   key: string
   value: string
@@ -1050,7 +1060,7 @@ enum ConfigError {
   IoFailed(message: string)
 }
 -->
-```ts
+```narra
 export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc {
   const text = File.readText(path)
   if (text is Err(e)) {
@@ -1090,7 +1100,7 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 -->
-```ts
+```narra
 let squares: Array<int> = []
 if (Arrays.filled(0, 1000) is Some(zeros)) {
   squares = zeros
@@ -1115,7 +1125,7 @@ When an update targets a value whose reference count is greater than 1, the valu
 <!-- context
 import * as Arrays from "std/array"
 -->
-```ts
+```narra
 const scores = [[1, 2], [3, 4]]
 let other = copy(scores)
 other[1][0] = 30            // copies the outer array and one row; scores is unchanged
@@ -1134,7 +1144,7 @@ enum Slot {
 }
 ---
 -->
-```ts
+```narra
 const found: Option<Array<int>> = Some([1, 2])
 const kept = copy(found)
 if (kept is Some(items)) {
@@ -1153,7 +1163,7 @@ if (other is Slot.Filled(row)) {
 An enum whose payloads hold only scalars and strings has nothing to copy:
 
 <!-- error: E0975 -->
-```ts
+```narra
 const count: Option<int> = Some(3)
 const same = copy(count)      // E0975: remove the call
 ```
@@ -1170,7 +1180,7 @@ struct Bag {
 ---
 -->
 <!-- error: E0978 -->
-```ts
+```narra
 let bag = Bag { items: [1, 2], count: 0 }
 const items = bag.items
 bag.items[0] = 9              // E0978: items still shares bag.items
@@ -1186,7 +1196,7 @@ struct Bag {
 }
 ---
 -->
-```ts
+```narra
 let bag = Bag { items: [1, 2], count: 0 }
 const items = copy(bag.items)
 bag.items[0] = 9
@@ -1208,7 +1218,7 @@ struct Row {
 }
 ---
 -->
-```ts
+```narra
 let rows = [Row { cells: [1] }, Row { cells: [2] }]
 const first = rows[0]
 rows[1].cells[0] = 4          // accepted: rows[0] and rows[1] are different places
@@ -1225,7 +1235,7 @@ struct SortItem {
   key: int
 }
 -->
-```ts
+```narra
 function firstItem(items: Array<SortItem>): SortItem from items {
   return items[0]
 }
@@ -1249,7 +1259,7 @@ struct Grid {
   rows: Array<Array<int>>
 }
 -->
-```ts
+```narra
 struct Picker {
   pick: (grid: Grid) => Array<int> from grid uses alloc
 }
@@ -1285,7 +1295,7 @@ struct Player {
 }
 -->
 <!-- error: E0949 -->
-```ts
+```narra
 function damage(mutable player: Player, amount: int) {
   player.hp = player.hp - amount     // ok: changes a field
   player = { ...player, hp: 0 }      // compile error: a mutable parameter cannot be replaced
@@ -1307,13 +1317,13 @@ function damage(mutable player: Player, amount: int) {
 }
 ---
 -->
-```ts
+```narra
 const hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
 damage(mutable hero, 10)      // hero.hp is now 90
 ```
 
 <!-- error: E0948 -->
-```ts
+```narra
 function bump(mutable n: int) {  // compile error: int has no contents to change
   n = n + 1
 }
@@ -1381,7 +1391,7 @@ Rules:
 
 A function that calls a function it receives has that function's effects. An effect variable states this in a signature.
 
-```ts
+```narra
 export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): Array<U> uses alloc, E
 ```
 
@@ -1410,7 +1420,7 @@ A generator is a function that can suspend itself with `yield` and be resumed la
 <!-- context
 import * as Ranges from "std/range"
 -->
-```ts
+```narra
 function* counter(limit: int): Generator<int> {
   for (const i of Ranges.upTo(limit)) {
     yield i
@@ -1438,7 +1448,7 @@ function* both(): Generator<int> {
 }
 ---
 -->
-```ts
+```narra
 for (const n of both()) {
   print(Int.toString(n))
 }
@@ -1460,7 +1470,7 @@ for (const n of both()) {
 
 Threads run in a scope. Every thread started in a scope finishes before the scope returns.
 
-```ts
+```narra
 import * as Thread from "std/thread"
 
 const total = Thread.scope((scope) => {
@@ -1482,7 +1492,7 @@ const total = Thread.scope((scope) => {
 
 ### Channels
 
-```ts
+```narra
 const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
 Thread.start(scope, () => {
@@ -1514,7 +1524,7 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 <!-- context
 import * as Cells from "std/cell"
 -->
-```ts
+```narra
 const count = Cells.create(0)
 const next = (): int => {
   Cells.update(count, (value) => value + 1)
@@ -1544,7 +1554,7 @@ A few types have identity: copying one copies a handle to the same object. They 
 <!-- context
 import * as Shared from "std/shared"
 -->
-```ts
+```narra
 const hits = Shared.create(0)
 
 Shared.update(hits, (count) => count + 1)
@@ -1565,7 +1575,7 @@ const now = Shared.read(hits, (count) => count)
 
 An async function runs as a task on the event loop of its thread. A task suspends at an `await` that has to wait, and the loop resumes it when the awaited task has finished, a timer has fired or I/O is ready. The syntax is TypeScript's (D93, D95, D109).
 
-```ts
+```narra
 import * as Async from "std/async"
 import * as Bytes from "std/bytes"
 import * as Net from "std/async/net"
@@ -1647,7 +1657,7 @@ The loop:
 
 An async generator produces values one at a time and may wait between them (D110). The syntax is TypeScript's `async function*` and `for await`.
 
-```ts
+```narra
 import * as Bytes from "std/bytes"
 import * as Net from "std/async/net"
 import { Connection } from "std/async/net"
@@ -1690,7 +1700,7 @@ async function total(connection: Connection): int uses io, alloc {
 - **Pointer values are ordinary data.** A `Ptr` can be stored in a struct, an array or a tuple, copied, passed to and returned from any function, `@trusted` or not, and held across calls. Copying one copies the address. A `Ptr` is not `Equatable`, `Hashable` or printable: `==` and `!=` on it are compile errors, it cannot be a `Map` key, and a struct that holds one cannot derive those traits. Test for null with `Ptr.isNull`.
 - **std/ptr.** `Ptr.alloc(count: int): Ptr<T>` allocates `count` zeroed elements (`uses alloc`); `Ptr.free(pointer)` frees what `Ptr.alloc` returned and does nothing for a null pointer; `Ptr.read(pointer): T` and `Ptr.write(pointer, value: T)` read and write one element; `Ptr.offset(pointer, count: int): Ptr<T>` moves by `count` elements. `Ptr.cast(pointer: Ptr<T>): Ptr<U>` reinterprets the address as a pointer to another element type, as a C cast does, with no check (`const bytes: Ptr<u8> = Ptr.cast(words)`); `Ptr.element(pointer: Ptr<FixedArray<T, N>>, index: int): Ptr<T>` is the address of one item of a FixedArray. `Ptr.element` proves its index like a FixedArray read does (E0994 for a constant outside 0 to N - 1 or an unproven index), and a pointer to anything else is E0998. These seven have the `unsafe` effect. `Ptr.null(): Ptr<T>` and `Ptr.isNull(pointer): bool` touch no memory and are safe. `Ptr.alloc`, `Ptr.null` and `Ptr.cast` take the result's element type from the expected type (`const items: Ptr<int> = Ptr.alloc(4)`). There is no `Ptr<void>`, since `void` is not a type that can be written; `Ptr<u8>` stands for C's `void*`. Nothing is checked at run time: a read past the allocation, a use after `Ptr.free` or a double free is undefined behavior, and so is reading or writing through a `Ptr.cast` pointer whose element type does not match the stored data, except through `u8` and `i8`, because programs are built with strict aliasing. Memory from `Ptr.alloc` counts toward the debug leak check (section 13) until it is freed.
 
-```ts
+```narra
 import * as Ptr from "std/ptr"
 
 @trusted
@@ -1712,7 +1722,7 @@ function sumSquares(count: int): int uses alloc {
 
 - **`extern { ... } from "library"`** declares C functions, like an import names a module. The block stands at the top level and holds one or more function signatures, each on its own line, with no type parameters, no `uses` and no body (E1000). `from` names the library as `cc` takes it after `-l` (letters, digits, `_`, `.`, `+` and `-`, not starting with `-`): `"m"` for libm, `"z"` for zlib; `"c"` is libc and needs no `-l`. A member may be written `export`, and is then called from other modules like any exported function.
 
-```ts
+```narra
 import * as Float from "std/float"
 
 extern {
@@ -1745,7 +1755,7 @@ export function cubeRootOfMagnitude(value: i32): f64 {
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Red = 1` in an enum without `@repr` is a compile error whose fix adds `@repr(i32)` (D73). `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
 
-```ts
+```narra
 @repr(u8)
 export enum Color {
   Red = 1
@@ -1811,7 +1821,7 @@ export enum Color {
 
 Code that differs by platform branches on constants from `std/build`. The compiler keeps only the matching branch.
 
-```ts
+```narra
 import * as Build from "std/build"
 import { Os } from "std/build"
 import * as Env from "std/env"
@@ -1829,15 +1839,15 @@ export function configDir(): string uses io, alloc {
 }
 ```
 
-- **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. `std/build` also exports their types, the enums `Os` (`MacOS`, `Linux`, `Windows`) and `Arch` (`Arm64`, `X86_64`). `Build.debug` is `false` in a `-release` build and `true` otherwise.
-- **The host is the target.** The compiler takes `Build.os` and `Build.arch` from the target the C compiler built the compiler itself for (its `Build.hostTarget()`), and only when the package imports `std/build`. The supported targets are `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64` and `Linux-Arm64`. The environment variable `NARRA_HOST_TARGET`, when set, names the target as `<os>-<arch>` in place of the host; it is the only input besides the host that sets the target. A host, or a `NARRA_HOST_TARGET`, with no supported target is a compile error at the module's import of `std/build`.
+- **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. `std/build` also exports their types, the enums `Os` (`MacOS`, `Linux`, `Windows`, `Wasi`) and `Arch` (`Arm64`, `X86_64`, `Wasm32`). `Build.debug` is `false` in a `-release` build and `true` otherwise.
+- **The host is the target.** The compiler takes `Build.os` and `Build.arch` from the target the C compiler built the compiler itself for (its `Build.hostTarget()`), and only when the package imports `std/build`. A compiler can run on `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64` and `Windows-X86_64`; the other rows of the table below (the musl rows and `Wasi-Wasm32`) are targets only. The environment variable `NARRA_HOST_TARGET`, when set, names the target as `<os>-<arch>` in place of the host; it is the only input besides the host that sets the target. A host, or a `NARRA_HOST_TARGET`, with no supported target is a compile error at the module's import of `std/build`.
 - **`Build.hostTarget()`** returns `Option<Target>`, where `Target` is a struct of `os: Os` and `arch: Arch`: the target the C compiler builds the program for, read from its predefined macros (`__APPLE__`, `__linux__`, `__aarch64__`, `__x86_64__`) when the program runs. It is `None` for any other combination. It does not run `uname`.
 - **`narra emit` writes the C of a debug build.** The C of a release build comes from `narra build -release -emit-c file.c`.
 - **An `if` that tests only these constants is resolved at compile time.** The output contains no runtime check, only the matching branch, or nothing when no branch matches. The condition may combine the constants with `==`, `!=`, `is` (a variant without fields), `!`, `&&` and `||`, and each `else if` of a chain is resolved on its own. A condition that mixes the constants with any other value, or a `match` on them, is an ordinary runtime test.
 - **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed. The effects of every branch count toward the function's effects, the dropped ones included, so a function has the same signature on every target.
 - **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Narra functions and `extern { } from` blocks take `@target`; other declarations do not.
 
-```ts
+```narra
 import * as Build from "std/build"
 import { Os } from "std/build"
 
@@ -1868,9 +1878,12 @@ export function opener(): string {
   So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
 - **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
+- **The targets are one table of eight rows,** named `<Os>-<Arch>` or, for a Linux row that links musl, `<Os>-<Arch>-musl`: `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64`, `Linux-X86_64-musl`, `Linux-Arm64-musl`, `Windows-X86_64` and `Wasi-Wasm32`. `Os` has the variants `MacOS`, `Linux`, `Windows` and `Wasi`; `Arch` has `Arm64`, `X86_64` and `Wasm32`. `Build.os` and `Build.arch` do not tell musl from glibc.
+- **`Wasi-Wasm32` runs under a WASI preview 1 host such as `wasmtime run -W exceptions=y`.** The build passes `-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false` and links `-lsetjmp`, because the panic handler uses `setjmp`; the runtime defines the `__c_longjmp` exception tag that the wasm `setjmp` lowering needs. Programs read their arguments from `args_get` and write `/dev/stdout` and `/dev/stderr` to descriptors 1 and 2. The std items WASI cannot back are E0991 on this target, like a `@target` function that does not exist there: `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/async/net`, and `Terminal.columns`. A use inside an `if` that drops `Os.Wasi` (`if (Build.os != Os.Wasi)`) is accepted. Their signatures are the same on every target. The async loop on this target has timers and no descriptor waits: a turn with nothing ready sleeps until the nearest timer. `narra test --target Wasi-Wasm32` is not supported: `test` rejects `--target` on every row.
+- **`narra build --target <name>` and `narra check --target <name>` use another target's row** for the build conditions. `build` also passes `-target <triple>` to the C compiler, before its other flags, when the row is not the host's (the triple is the `zig cc -target` form, for example `x86_64-linux-musl`), so `CC` must be a cross compiler such as `zig cc`. An unknown name is E1600 and lists the names; `-sanitize` with a target other than the host is E1601. `narra targets` prints one line per row: the name and the triple.
 - **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
-```ts
+```narra
 import { Os } from "std/build"
 
 @target(os = Os.Windows)
@@ -1908,7 +1921,7 @@ function divide(a: int, b: int): int {
   return a / b
 }
 -->
-```ts
+```narra
 import * as Test from "std/test"
 
 test "parse" {
@@ -1920,7 +1933,7 @@ test "parse" {
 
 - **Contracts.** `requires` lines between a function's signature and its body state what each caller must prove (D95). They are proven at compile time; nothing is checked at run time.
 
-```ts
+```narra
 export function pick(index: int, count: int): int
   requires index >= 0 && index < 64
   requires count != 0
@@ -1942,7 +1955,7 @@ function pickChecked(n: int): int {
 - **A function with `requires` cannot be used as a value** (E0986), and `typeof` of it is E0982: a function type carries no condition, so a call through the value could pass an unproven argument. Functions of an `implement` block cannot have `requires` (E0984), since a call through the trait proves nothing.
 - **`ensures` lines** follow the `requires` lines. Each is a pattern every result must match, with no named subject. Every `return` value is proven against each line; in a generator, every `yield` value, and `yield*` is E0988. A pattern holds one bound per place, with no `&&`: write two lines, `ensures Some(>= 0) | None` and `ensures Some(< 64) | None`, and a caller learns both.
 
-```ts
+```narra
 import * as Arrays from "std/array"
 
 function findIndex(items: Array<int>, wanted: int): Option<int>
@@ -2051,12 +2064,24 @@ search = ["/opt/homebrew/lib"]
 
 ```
 
+- **`narra build --target <name>` builds for another target** (section 12). `narra targets` lists the names and their C compiler triples.
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`, or `export async function run(args: Array<string>): int`. The result is the process exit code; for an async entry, the value of its `Async<int>`. It has every effect. Tasks still running when it finishes are cancelled (section 8).
 - **`[link]`** has one key, `search`: directories `cc` searches for libraries (`-L`), relative to the package directory unless absolute. The libraries come from the `from` of extern blocks (section 9); any other key in `[link]` is E1000.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
 - **`narra.lock`** records the commit hash and content hash of every dependency. `narra build` fails when a fetched dependency does not match its hash.
+- **`[dependencies]`** holds one inline table per dependency: `name = { git = "...", version = "1.2.0" }`. `git` is a URL or a local path; `version` is the minimum version as `MAJOR.MINOR.PATCH`, and its tag is `v` plus the version. `[package] version` has the same form. The name is the import path prefix and follows the rules of a package name.
+- **`narra.lock` shape.** A TOML file with a comment line, then one `[[package]]` table per dependency, sorted by name, with the keys `name`, `git`, `version` (the selected version), `tag` (the git tag the version was fetched from: `v<version>`, or `<name>/v<version>` in a repository that tags by package), `commit` (the full commit hash of the tag) and `content` (the git tree hash of that commit), in that order. The reader checks that `name` is a package name, `git` is not empty, `version` is `MAJOR.MINOR.PATCH` with each part in the range of `int`, `tag` is one of the two tags of the version, and `commit` and `content` are 40 or 64 lowercase hex digits. A value may hold the escapes `\n`, `\t`, `\r`, `\"`, `\\` and `\uXXXX`, and the writer escapes every control character. The tag is what lets a build use the cached checkout of exactly that tag again: a checkout of another tag of the same repository is never taken for it, and the `narra.toml` of a checkout must name the package that asked for it (E0453).
+- **Manifest and lock errors:** E0430 a dependency without `git` or `version`; E0431 a version that is not `MAJOR.MINOR.PATCH`; E0432 an unknown or repeated key in a dependency; E0433 a dependency named `std` or like the package; E0434 two dependencies with one name; E0435 a dependency that is not a valid inline table, such as one with a trailing comma; E0436 an invalid dependency name; E0437 a malformed `narra.lock` line or a value that is not well formed; E0438 a lock entry with an unknown, missing or repeated key, or a tag that is not the tag of its version; E0439 two lock entries with one name.
+- **The cache and the checkouts are trusted.** The cache folder is `$NARRA_CACHE` (a relative path is made absolute against the working directory), or `$HOME/.cache/narra`. A fetch records the commit hash and the tree hash of the tag beside the checkout (`<checkout>.hash`) and removes the history. A build compares the recorded tree hash with `narra.lock`, and the language service compares it with the `content` of the lock. Neither re-hashes the files of a checkout, so a file changed in the cache after the fetch is built as it is. A symbolic link inside a checkout is followed. The folder names in the cache keep at most 64 bytes of the readable name of the URL or tag, followed by a hash of the whole name. Anyone who can write to the cache can change what a build compiles; keep it writable by the user who builds. A checkout is read-only; remove one with `chmod -R u+w` first.
+- **A lock URL that changed.** When `narra.lock` records a package from one URL and the manifests now resolve it from another, the build prints `notice: <name> was locked from <old URL> and now resolves from <new URL>` on stderr and rewrites the lock. It is not an error.
+- **Building with dependencies.** Every command that loads a package (`build`, `run`, `test`, `check`, `query` and the dump commands) on a package with `[dependencies]` or `[overrides]` resolves the manifests, compares the result with `narra.lock`, fetches each selected tag into the cache, writes the lock when its text changes (before the sources load, so a later load error leaves the new lock), and loads the sources of every dependency in `src/` as modules `<name>/<path>` of the same program. The package being built comes first in the node numbering. The C names of a dependency's modules hash the package name, a colon and the rest of the path (`json:text`), and those of the package being built hash the path without the package name, so the emitted C of a package with no dependencies is unchanged. `narrac test` runs the test blocks of the package being built only. A diagnostic in a dependency names the file as `<name>/src/<path>`.
+- **Imports between packages.** A package may import itself, `std` and the packages in its own `[dependencies]`. Importing a package that is in the build only because another package needs it is E0463.
+- **`[exports]`** maps import paths to module files: `"json/stream" = "src/streaming/reader.nra"`. A key is the package name (the bare name stands for one module, such as `"json" = "src/index.nra"`) or starts with `<name>/`; a value is a path under `src/` that ends in `.nra`. Without the table, every module is exposed by its path. With it, another package may import only the keys; any other path is E0473, and the message lists the keys. The importer writes the key, and the compiler loads the module the value names. Modules of the package itself import each other by their real paths. Errors: E0470 a key that does not start with the package name; E0471 a value that is not a module file, or names a file the package does not have; E0472 two entries with one key (so the bare name cannot map twice).
+- **std exposes** every module except those under `std/internal/` and `std/ext/`. Another package that imports one of them gets E0474. std has no `narra.toml`; the list is built into the compiler.
+- **The language service** (`narrac lsp`) loads the same program from `narra.lock` and the cache. It never fetches and never writes the lock, and it publishes no diagnostics for dependency files. A lock with no entry for a dependency of the manifest is E0461; an entry whose checkout is not in the cache is E0460.
+- **Build errors:** E0460 a locked dependency that is not in the cache (language service); E0461 `narra.lock` has no entry for a dependency (language service); E0462 a dependency with no `.nra` file in `src/`; E0463 an import of a package the importing package does not list. Resolution and fetch errors are E0440 to E0458.
 
 ## 16. Deferred
 

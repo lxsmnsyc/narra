@@ -97,6 +97,87 @@ static lstr* narra_env_arg(int64_t i) {
   const char* a = (*_NSGetArgv())[i];
   return narra_io_lossy(a, strlen(a));
 }
+#elif defined(_WIN32)
+#include <winsock2.h>
+#include <windows.h>
+#include <shellapi.h>
+// The arguments come from the wide command line, split by CommandLineToArgvW
+// and converted to UTF-8, so a non-ASCII argument survives. The C runtime's
+// __argv is in the ANSI code page. Read once; INIT_ONCE keeps two threads from racing.
+static char** narra_env_list;
+static int64_t narra_env_n;
+static INIT_ONCE narra_env_once = INIT_ONCE_STATIC_INIT;
+
+static char* narra_env_utf8(const wchar_t* wide) {
+  int size = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+  if (size <= 0) return NULL;
+  char* text = malloc((size_t)size);
+  if (!text) return NULL;
+  if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, text, size, NULL, NULL) <= 0) {
+    free(text);
+    return NULL;
+  }
+  return text;
+}
+
+static BOOL CALLBACK narra_env_read(PINIT_ONCE once, PVOID parameter, PVOID* context) {
+  (void)once; (void)parameter; (void)context;
+  int count = 0;
+  wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count);
+  char** list = wide ? calloc((size_t)count + 1, sizeof(char*)) : NULL;
+  bool converted = list != NULL;
+  for (int i = 0; converted && i < count; i++) {
+    list[i] = narra_env_utf8(wide[i]);
+    if (!list[i]) converted = false;
+  }
+  if (wide) LocalFree(wide);
+  if (converted) {
+    narra_env_list = list;
+    narra_env_n = count;
+    return TRUE;
+  }
+  // Fall back to the C runtime's arguments when the wide ones cannot be read.
+  if (list) {
+    for (int i = 0; i < count; i++) free(list[i]);
+    free(list);
+  }
+  narra_env_list = __argv;
+  narra_env_n = __argc;
+  return TRUE;
+}
+static void narra_env_load(void) { InitOnceExecuteOnce(&narra_env_once, narra_env_read, NULL, NULL); }
+static int64_t narra_env_argc(void) { narra_env_load(); return narra_env_n; }
+static lstr* narra_env_arg(int64_t i) {
+  narra_env_load();
+  const char* a = narra_env_list[i];
+  return narra_io_lossy(a, strlen(a));
+}
+#elif defined(__wasi__)
+#include <wasi/api.h>
+// WASI has no /proc: the arguments come from args_sizes_get and args_get, read once.
+// Threads do not exist in preview 1, so no lock is needed.
+static char* narra_env_buf;
+static char** narra_env_list;
+static int64_t narra_env_n = -1;
+
+static void narra_env_load(void) {
+  if (narra_env_n >= 0) return;
+  narra_env_n = 0;
+  __wasi_size_t count = 0;
+  __wasi_size_t size = 0;
+  if (__wasi_args_sizes_get(&count, &size) != 0 || count == 0) return;
+  narra_env_buf = malloc(size ? size : 1);
+  narra_env_list = malloc(sizeof(char*) * count);
+  if (!narra_env_buf || !narra_env_list) return;
+  if (__wasi_args_get((uint8_t**)narra_env_list, (uint8_t*)narra_env_buf) != 0) return;
+  narra_env_n = (int64_t)count;
+}
+static int64_t narra_env_argc(void) { narra_env_load(); return narra_env_n; }
+static lstr* narra_env_arg(int64_t i) {
+  narra_env_load();
+  const char* a = narra_env_list[i];
+  return narra_io_lossy(a, strlen(a));
+}
 #else
 // Elsewhere the arguments are read once from /proc/self/cmdline.
 static char* narra_env_buf;

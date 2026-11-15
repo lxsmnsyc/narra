@@ -35,6 +35,20 @@ total: 820
 
 A function declaration names each parameter with its type, then gives the type of the result after the parentheses. `return` ends the function and hands back the value. `printLine` has no result type, so it returns nothing and is called as a statement.
 
+Code after a `return` can never run, and the compiler rejects it the same way it rejects an unused name. The same holds after `break`, `continue`, a call to `panic`, an `if` and `else` that both leave, and a `while (true)` loop with no `break`:
+
+```narra error
+// error: 4:3: this statement is unreachable: the statement before it always leaves the block
+function lineTotal(priceCents: int, quantity: int): int {
+  return priceCents * quantity
+  return 0
+}
+
+export function run(args: Array<string>): int {
+  return lineTotal(250, 2)
+}
+```
+
 A named function writes the type of every parameter, and its result type when it returns a value. The compiler does not guess them, because they are what a caller reads to learn how to use the function. Without `export`, a function is visible only in its own file.
 
 A call passes exactly the arguments the function declares:

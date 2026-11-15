@@ -3,7 +3,7 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && apt-get install -y --no-install-recommends gcc libc6-dev git \
  && rm -rf /var/lib/apt/lists/*
 
 ENV CC=cc

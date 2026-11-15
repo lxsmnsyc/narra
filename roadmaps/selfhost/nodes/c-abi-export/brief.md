@@ -1,48 +1,73 @@
 ---
 id: c-abi-export
-title: Shared library output with stable C ABI exports
+title: "Shared and static library output with a C header"
 status: todo
 priority: could
 type: feature
 story:
 early: false
-outline: true
+outline: false
 milestone: p5-distribution
 target:
 ship: auto
+land: auto
 from:
-size: L
+size: M
 spike: false
 hypothesis:
-verify:
+verify: sh scripts/test.sh
 exclusive: []
 fulfilled_by:
-gate: true
+gate: false
 added: 2026-11-06
 spent:
-owns: []
-shared: []
-reserves: []
+owns:
+  - roadmaps/selfhost/nodes/c-abi-export/**
+  - selfhost/src/cheader.nra
+  - testdata/library/**
+shared:
+  - selfhost/src/driver.nra
+  - selfhost/src/manifest.nra
+  - selfhost/src/emit.nra
+  - selfhost/src/diagnostics.nra
+  - selfhost/tests/src/*.nra
+  - SPEC.md
+  - compiler/README.md
+reserves: [diag E1630-E1632]
 provides: []
 depends_on:
-  - on: c-interop
+  - on: c-export-functions
     kind: hard
-    why: builds on `@export(C)`, `@repr(C)`, `Ptr<T>` and `CString` from c-interop
-  - on: cross-targets
-    kind: hard
-    why: a library is built per target, through the same target and C compiler handling
+    why: a library is its exported functions; the output needs them to exist; D123 builds on it
+  - on: target-table
+    kind: contract
+    via: targets
+  - on: wasi-runtime
+    kind: behavior
+    via: targets
 ---
-
-# Shared library output with stable C ABI exports
+# Shared and static library output with a C header
 
 ## Goal
 
-`narra build --emit=shared-lib` (and `static-lib`) builds a `.so`, `.dylib`, `.dll` or wasm module whose `@export(C)` functions have a stable C ABI, like Rust's `cdylib` with `extern "C"`. It also writes a C header for the exports. A C test program links the library, calls the exports and runs clean under AddressSanitizer and the leak check.
+`narrac build --emit shared-lib` and `--emit static-lib` (flags only, no `[[library]]` table; the name must be a C identifier, E1630; file names are in D122 item 5) build a `.dylib`, `.so`, `.dll` or `.a` whose only visible symbols are the `@export(C)` functions, plus a C header declaring them and the types they use. Like Rust's `cdylib` with `extern "C"`. Per target through `--target` (contract `targets`). `--emit shared-lib --target Wasi-Wasm32` writes a reactor module whose only exports are the `@export(C)` functions plus the allocator calls D122 names, with no `main`.
 
-## Notes
+## Context
 
-Outline. Break into full briefs when `plan.py refine` lists it.
+The old outline depended on cross-targets (the run script); only the target table is needed, so the edge is a contract on target-table. The wasm reactor module is a required output (D123 item 2): it is built and run through wasi-runtime's flags.
 
-- Gate: the ownership rule for values that cross the boundary needs a decision record before the code. It covers strings and byte buffers passed in (borrowed for the call, or copied) and returned (the library allocates, and the host frees through an exported `narra_free`-style function), plus what reference-counted values may appear in an exported signature at all. A host must never free memory it cannot free, and nothing may leak.
-- Runtime state a library needs that a binary does not: initialization without `main`, thread-local state per calling thread, and panics that must not unwind into the host (abort, or return an error code).
-- Export names are not hashed (see c-interop), so they need the clash check against the name table.
+The header has `narra_buffer`, status macros, one prototype per entry, the three support functions, `NARRA_API` and a C++ guard. Codes: E1630-E1632.
+
+## Acceptance
+
+- [ ] A C test program links the shared library and the static library, calls each export, and runs clean under AddressSanitizer and the leak check, in the test harness with `cc` alone.
+- [ ] `nm` shows only the entries and the support functions, nothing else, in the shared library.
+- [ ] A reactor module built with `--target Wasi-Wasm32` runs one export under wasmtime.
+- [ ] `static-lib` with `--target Wasi-Wasm32` is E1631. A program with no export is E1632.
+- [ ] The reactor test uses the wasm flags of D122 item 5. wasmtime runs it with `-W exceptions=y`.
+- [ ] The header compiles with `cc -std=c11 -Wall -Werror`.
+- [ ] `sh scripts/test.sh` passes.
+
+## Sizing
+
+M: driver flags, a header writer, visibility.

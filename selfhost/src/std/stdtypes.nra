@@ -1,0 +1,116 @@
+// Resolves the type texts of the std registry rows.
+import { substring } from "narrac/driver/textops"
+import { Type } from "narrac/check/types"
+import { Checker, internComposite } from "narrac/check/check"
+import { instantiate, findTupleType } from "narrac/check/resolve"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+export function stdType(mutable checker: Checker, text: string): Type from checker uses alloc {
+  const length = Str.length(text)
+  if (Str.startsWith(text, "#[")) {
+    let elements: Array<Type> = []
+    for (const part of Arrays.values(splitTop(substring(text, 2, length - 1)))) {
+      Arrays.push(mutable elements, stdType(mutable checker, part))
+    }
+    return findTupleType(mutable checker, elements)
+  }
+  const open = Str.indexOf(text, "<")
+  if (open is Some(index)) {
+    const head = substring(text, 0, index)
+    let arguments: Array<Type> = []
+    for (const part of Arrays.values(splitTop(substring(text, index + 1, length - 1)))) {
+      Arrays.push(mutable arguments, stdType(mutable checker, part))
+    }
+    if (head == "Array") {
+      return internComposite(mutable checker, Type.TArray(arguments[0]))
+    }
+    if (head == "Ptr") {
+      return internComposite(mutable checker, Type.TPtr(arguments[0]))
+    }
+    if (head == "Box") {
+      return internComposite(mutable checker, Type.TBox(arguments[0]))
+    }
+    if (head == "Async") {
+      return internComposite(mutable checker, Type.TAsync(arguments[0]))
+    }
+    if (head == "Map") {
+      return internComposite(mutable checker, Type.TMap(arguments[0], arguments[1]))
+    }
+    // Option and Result are the prelude's generics, so an instance is made on first use. The
+    // body checker calls this at the call site, never during the declaration passes.
+    if (checker.scopes[0].generics[head] is Some(generic)) {
+      return instantiate(mutable checker, generic, arguments)
+    }
+    panic(`stdType: unknown generic ${head}`)
+  }
+  const prims = [
+    "int",
+    "f64",
+    "bool",
+    "char",
+    "string",
+    "bytes",
+    "void",
+    "StringBuilder",
+    "Handle",
+    "Sync",
+    "i8",
+    "i16",
+    "i32",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "f32",
+    "Range",
+  ]
+  const types = [
+    Type.TInt,
+    Type.TF64,
+    Type.TBool,
+    Type.TChar,
+    Type.TStr,
+    Type.TBytes,
+    Type.TVoid,
+    Type.TStringBuilder,
+    Type.THandle,
+    Type.TSync,
+    Type.TI8,
+    Type.TI16,
+    Type.TI32,
+    Type.TU8,
+    Type.TU16,
+    Type.TU32,
+    Type.TU64,
+    Type.TF32,
+    Type.TRange,
+  ]
+  for (const index of Ranges.between(0, Arrays.length(prims))) {
+    if (prims[index] == text) {
+      return types[index]
+    }
+  }
+  panic(`stdType: unknown type ${text}`)
+}
+
+function splitTop(text: string): Array<string> uses alloc {
+  let parts: Array<string> = []
+  let depth = 0
+  let start = 0
+  const length = Str.length(text)
+  for (const index of Ranges.between(0, length)) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 60 || byte == 91) {
+      depth++
+    } else if (byte == 62 || byte == 93) {
+      depth--
+    } else if (byte == 44 && depth == 0) {
+      Arrays.push(mutable parts, Str.trim(substring(text, start, index)))
+      start = index + 1
+    }
+  }
+  Arrays.push(mutable parts, Str.trim(Str.sliceFrom(text, start)))
+  return parts
+}

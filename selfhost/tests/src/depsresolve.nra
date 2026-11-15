@@ -1,0 +1,403 @@
+// The cases of the deps suite that resolve a dependency graph (`narrac pkg --resolve`). Each folder
+// of testdata/deps/resolve holds `roots/` (the root manifests, the first is the root of the build),
+// `repos/<repo>/<tag folder>/` (one commit per folder, a `+` in the folder name stands for the `/`
+// of a member tag) and `expected.txt` (name, version and URL of each locked package) or `error.txt`
+// (the code of the error). `@REPOS@` in a manifest or in `expected.txt` is the folder of the
+// fixture repositories as a file:// URL, so no case reaches the network.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import { splitString, substring } from "testrunner/textops"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Files from "testrunner/files"
+import * as Fixtures from "testrunner/gitfixtures"
+import { Scratch, makeScratch, writeFile } from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+const CASE_NAMES = [
+  "resolve-diamond",
+  "resolve-chain",
+  "resolve-cycle",
+  "resolve-override",
+  "resolve-roots",
+  "resolve-lock-twice",
+  "resolve-url-changed",
+  "resolve-error-two-urls",
+  "resolve-error-no-tag",
+  "resolve-error-lock-mismatch",
+  "resolve-error-wrong-name",
+  "resolve-error-overrides-in-dependency",
+  "resolve-error-overrides-in-second-root",
+  "resolve-error-override-unused",
+  "resolve-error-override-tag",
+]
+
+const NO_GIT_PATH = "PATH=/nonexistent"
+
+// $1 is the folder, $2 the text that replaces @REPOS@.
+export const SUBSTITUTE_SCRIPT = "find \"$1\" -type f \\( -name narra.toml -o -name expected.txt \\) | while read -r file; do sed \"s|@REPOS@|$2|g\" \"$file\" > \"$file.new\" && mv \"$file.new\" \"$file\"; done"
+
+// $1 is the lock file; every content hash becomes zeros.
+const BREAK_LOCK_SCRIPT = "sed 's|^content = .*|content = \"0000000000000000000000000000000000000000\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\""
+
+export function collectResolveCases(context: Context): Array<TestCase> uses alloc {
+  let cases: Array<TestCase> = []
+  for (const name of Arrays.values(CASE_NAMES)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "deps",
+      name: name,
+      path: Path.join(context.testdata, "deps/resolve"),
+      variant: name,
+    })
+  }
+  return cases
+}
+
+function chooseFixture(variant: string): string {
+  if (variant == "resolve-lock-twice" || variant == "resolve-error-lock-mismatch") {
+    return "chain"
+  }
+  return Str.sliceFrom(variant, Str.length("resolve-"))
+}
+
+export function buildRepositories(
+  caseFolder: string,
+  repositoriesFolder: string,
+): Result<bool, string> uses io, alloc {
+  const reposSource = Path.join(caseFolder, "repos")
+  for (const repoName of Arrays.values(Files.listNames(reposSource))) {
+    const repository = Path.join(repositoriesFolder, repoName)
+    const created = Fixtures.createRepository(repository)
+    if (created is Err(message)) {
+      return Err(message)
+    }
+    const repoSource = Path.join(reposSource, repoName)
+    for (const folderName of Arrays.values(Files.listNames(repoSource))) {
+      const committed = Fixtures.commitFolder(
+        repository,
+        Path.join(repoSource, folderName),
+        folderName,
+      )
+      if (committed is Err(message)) {
+        return Err(message)
+      }
+      const parts = splitString(folderName, "+")
+      let tag = folderName
+      if (Arrays.length(parts) == 2) {
+        tag = `${parts[0]}/${parts[1]}`
+      }
+      const tagged = Fixtures.addTag(repository, tag, false)
+      if (tagged is Err(message)) {
+        return Err(message)
+      }
+    }
+  }
+  return Ok(true)
+}
+
+function listRootArguments(caseFolder: string): Array<string> uses io, alloc {
+  let arguments = ["--resolve"]
+  for (const name of Arrays.values(Files.listNames(Path.join(caseFolder, "roots")))) {
+    Arrays.push(mutable arguments, Path.join(caseFolder, `roots/${name}`))
+  }
+  return arguments
+}
+
+function runResolve(
+  context: Context,
+  scratch: Scratch,
+  extraEnvironment: Array<string>,
+  arguments: Array<string>,
+): CommandResult uses io, alloc {
+  let environment = [
+    `NARRA_CACHE=${scratch.root}/cache`,
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_NOSYSTEM=1",
+  ]
+  for (const assignment of Arrays.values(extraEnvironment)) {
+    Arrays.push(mutable environment, assignment)
+  }
+  let command = ["pkg"]
+  for (const argument of Arrays.values(arguments)) {
+    Arrays.push(mutable command, argument)
+  }
+  return Common.runNarracWith(context, scratch.work, environment, command)
+}
+
+function expectFailure(result: CommandResult, code: string): Result<bool, string> uses alloc {
+  if (result.code != 1 || result.output != "") {
+    return Err(`want exit code 1 and no stdout, got ${Common.describeRun(result)}`)
+  }
+  if (!Str.startsWith(result.errorOutput, `error ${code}: `)) {
+    return Err(`want error ${code}, got ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+function dropQuote(text: string): string uses alloc {
+  return substring(text, 0, Str.length(text) - 1)
+}
+
+function summarizeLock(text: string): string uses alloc {
+  let summary = ""
+  let name = ""
+  let git = ""
+  for (const line of Arrays.values(splitString(text, "\n"))) {
+    if (Str.startsWith(line, "name = \"")) {
+      name = Str.sliceFrom(line, 8)
+    } else if (Str.startsWith(line, "git = \"")) {
+      git = Str.sliceFrom(line, 7)
+    } else if (Str.startsWith(line, "version = \"")) {
+      const version = Str.sliceFrom(line, 11)
+      summary = `${summary}${dropQuote(name)} ${dropQuote(version)} ${dropQuote(git)}\n`
+    }
+  }
+  return summary
+}
+
+function expectLock(
+  caseFolder: string,
+  result: CommandResult,
+): Result<bool, string> uses io, alloc {
+  if (result.code != 0) {
+    return Err(`resolving: ${Common.describeRun(result)}`)
+  }
+  const want = Common.readExpected(Path.join(caseFolder, "expected.txt"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("locked packages", want.value, summarizeLock(result.output))
+}
+
+function expectCommitAndTree(
+  scratch: Scratch,
+  lockText: string,
+  repoName: string,
+  tag: string,
+): Result<bool, string> uses io, alloc {
+  const repository = Path.join(scratch.root, `repos/${repoName}`)
+  const commit = Fixtures.readRevision(repository, `refs/tags/${tag}^{commit}`)
+  if (commit is Err(message)) {
+    return Err(message)
+  }
+  const tree = Fixtures.readRevision(repository, `refs/tags/${tag}^{tree}`)
+  if (tree is Err(message)) {
+    return Err(message)
+  }
+  if (!Str.contains(lockText, `commit = "${commit.value}"`)) {
+    return Err(`the lock has no commit ${commit.value} of ${repoName} ${tag}:\n${lockText}`)
+  }
+  if (!Str.contains(lockText, `content = "${tree.value}"`)) {
+    return Err(`the lock has no tree ${tree.value} of ${repoName} ${tag}:\n${lockText}`)
+  }
+  return Ok(true)
+}
+
+function expectNotFetched(scratch: Scratch, tag: string): Result<bool, string> uses io, alloc {
+  const found = Shell.runScript(
+    "find \"$1/cache/git\" -maxdepth 2 -name \"$2-*\"",
+    [scratch.root, tag],
+  )
+  if (found.code != 0 || Str.trim(found.output) != "") {
+    return Err(`${tag} was fetched, but no manifest names it:\n${found.output}`)
+  }
+  return Ok(true)
+}
+
+function runDiamond(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const result = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  const checked = expectLock(caseFolder, result)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  // The higher minimum wins, and the version nobody asks for is not fetched.
+  const commitChecked = expectCommitAndTree(scratch, result.output, "c", "v1.2.0")
+  if (commitChecked is Err(message)) {
+    return Err(message)
+  }
+  return expectNotFetched(scratch, "v1.1.0")
+}
+
+function runLockTwice(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const rootFolder = Path.join(caseFolder, "roots/root")
+  const lockPath = Path.join(rootFolder, "narra.lock")
+  // An entry that no manifest needs is dropped on the next write.
+  const stale = "# narra.lock: written by narrac. Do not edit.\n\n[[package]]\nname = \"gone\"\ngit = \"file:///nowhere\"\nversion = \"1.0.0\"\ntag = \"v1.0.0\"\ncommit = \"1111111111111111111111111111111111111111\"\ncontent = \"2222222222222222222222222222222222222222\"\n"
+  const wrote = writeFile(lockPath, stale)
+  if (wrote is Err(message)) {
+    return Err(message)
+  }
+  const first = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  const checked = expectLock(caseFolder, first)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  const firstLock = Fs.readText(lockPath)
+  if (firstLock is Err(message)) {
+    return Err(message)
+  }
+  if (Str.contains(firstLock.value, "gone") || firstLock.value != first.output) {
+    return Err(`the written lock is not the resolved one:\n${firstLock.value}`)
+  }
+  // The second run starts no process: the lock and the cache are enough.
+  const second = runResolve(context, scratch, [NO_GIT_PATH], listRootArguments(caseFolder))
+  const secondLock = Fs.readText(lockPath)
+  if (secondLock is Err(message)) {
+    return Err(message)
+  }
+  if (second.code != 0 || second.output != first.output || secondLock.value != firstLock.value) {
+    return Err(`the second run differs: ${Common.describeRun(second)}`)
+  }
+  return Ok(true)
+}
+
+function runLockMismatch(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const first = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  if (first.code != 0) {
+    return Err(`resolving: ${Common.describeRun(first)}`)
+  }
+  const lockPath = Path.join(caseFolder, "roots/root/narra.lock")
+  const broken = Shell.runScript(BREAK_LOCK_SCRIPT, [lockPath])
+  if (broken.code != 0) {
+    return Err(`cannot change the lock: ${Str.trim(broken.errorOutput)}`)
+  }
+  const second = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  return expectFailure(second, "E0452")
+}
+
+function runUrlChanged(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const first = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  if (first.code != 0) {
+    return Err(`resolving: ${Common.describeRun(first)}`)
+  }
+  if (Str.contains(first.errorOutput, "notice")) {
+    return Err(`a first resolve printed a notice: ${Common.describeRun(first)}`)
+  }
+  const manifestPath = Path.join(caseFolder, "roots/root/narra.toml")
+  const changed = Shell.runScript(
+    "sed 's|/a1\"|/a2\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"",
+    [manifestPath],
+  )
+  if (changed.code != 0) {
+    return Err(`cannot change the manifest: ${Str.trim(changed.errorOutput)}`)
+  }
+  const second = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  if (second.code != 0) {
+    return Err(`resolving again: ${Common.describeRun(second)}`)
+  }
+  const repositories = Path.join(scratch.root, "repos")
+  const notice = `notice: a was locked from file://${repositories}/a1 and now resolves from file://${repositories}/a2`
+  if (!Str.contains(second.errorOutput, notice)) {
+    return Err(`want the notice ${notice}, got ${Common.describeRun(second)}`)
+  }
+  return expectLock(caseFolder, second)
+}
+
+function runOverride(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const result = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  const checked = expectLock(caseFolder, result)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  // The lock shows the fork, and the original repositories of c are never read.
+  const commitChecked = expectCommitAndTree(scratch, result.output, "fork", "v1.0.0")
+  if (commitChecked is Err(message)) {
+    return Err(message)
+  }
+  return expectNotFetched(scratch, "v1.2.0")
+}
+
+export function runResolveCase(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  if (!Fixtures.isGitAvailable()) {
+    print(`deps/${testCase.name}: skipped, git is not on PATH`)
+    return Ok(true)
+  }
+  const made = makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const caseFolder = Path.join(scratch.root, "case")
+  const fixture = Path.join(testCase.path, chooseFixture(testCase.variant))
+  const repositoriesFolder = Path.join(scratch.root, "repos")
+  const copied = Shell.runScript("cp -R \"$1\" \"$2\"", [fixture, caseFolder])
+  let outcome: Result<bool, string> = Ok(true)
+  if (copied.code != 0) {
+    outcome = Err(`cannot copy ${fixture}: ${Str.trim(copied.errorOutput)}`)
+  } else {
+    const substituted = Shell.runScript(SUBSTITUTE_SCRIPT, [
+      caseFolder,
+      `file://${repositoriesFolder}`,
+    ])
+    if (substituted.code != 0) {
+      outcome = Err(`cannot fill in the URLs: ${Str.trim(substituted.errorOutput)}`)
+    } else {
+      outcome = runBuilt(context, scratch, caseFolder, repositoriesFolder, testCase.variant)
+    }
+  }
+  Fixtures.removeFixtures(scratch.root)
+  return outcome
+}
+
+function runBuilt(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+  repositoriesFolder: string,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  const built = buildRepositories(caseFolder, repositoriesFolder)
+  if (built is Err(message)) {
+    return Err(message)
+  }
+  if (variant == "resolve-diamond") {
+    return runDiamond(context, scratch, caseFolder)
+  }
+  if (variant == "resolve-url-changed") {
+    return runUrlChanged(context, scratch, caseFolder)
+  }
+  if (variant == "resolve-override") {
+    return runOverride(context, scratch, caseFolder)
+  }
+  if (variant == "resolve-lock-twice") {
+    return runLockTwice(context, scratch, caseFolder)
+  }
+  if (variant == "resolve-error-lock-mismatch") {
+    return runLockMismatch(context, scratch, caseFolder)
+  }
+  const result = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  if (Str.startsWith(variant, "resolve-error-")) {
+    const want = Common.readExpected(Path.join(caseFolder, "error.txt"))
+    if (want is Err(message)) {
+      return Err(message)
+    }
+    return expectFailure(result, Str.trim(want.value))
+  }
+  return expectLock(caseFolder, result)
+}

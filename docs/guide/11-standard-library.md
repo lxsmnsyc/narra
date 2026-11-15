@@ -469,4 +469,4 @@ NFC composes: a letter and its accents become one code point where Unicode has o
 
 `isNormalized` tells whether `normalize` would change the text. Both look up each code point first and stop early, so text already in the form, ASCII text among it, costs one pass and no allocation: `normalize` gives back the same string. Hangul syllables are composed and decomposed by arithmetic, as Unicode defines them, not from the tables.
 
-Next: [12. Narra for TypeScript programmers](12-narra-for-typescript-programmers.md), optional reading for TypeScript programmers.
+Next: [12. Tools](12-tools.md).

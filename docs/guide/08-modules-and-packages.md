@@ -302,4 +302,60 @@ src/report.nra:3:1: import cycle: words/count -> words/report -> words/count
 
 To break a cycle, find the declarations both files need and move them into a new module that both import.
 
+## Using a package from git
+
+A package can use code that someone else published. A dependency is a git repository with a `narra.toml` of its own. It is pinned to a version tag, so the same tag gives the same code on every machine. There is no central registry.
+
+Suppose the repository `https://example.com/narra-json` holds a package named `json` with the file `src/parse.nra`, and a tag `v1.2.0` marks version 1.2.0. List it in the `[dependencies]` table of your `narra.toml`:
+
+```toml
+[package]
+name = "words"
+version = "0.1.0"
+
+[dependencies]
+json = { git = "https://example.com/narra-json", version = "1.2.0" }
+```
+
+Each entry is one line. The key is the package name, and it is also the first part of the import path: `src/parse.nra` of `json` is the module `"json/parse"`. The version is the lowest version your package accepts, and its tag is `v` followed by the version. A repository that holds several packages tags each one as `<name>/v<version>`, for example `json/v1.2.0`.
+
+```narra fragment
+import { parse } from "json/parse"
+```
+
+The first `narrac build`, `narrac run` or `narrac test` does three things:
+
+1. It reads the `[dependencies]` of your package and of each dependency, and picks one version of every package. When two packages ask for different versions of the same one, the higher version wins. Your package never gets two versions of one package. A new major version is a new package name, such as `json2`.
+2. It downloads each chosen tag with `git` into a cache folder (`$NARRA_CACHE`, or `~/.cache/narra`) and makes it read-only. A version that is already in the cache is not downloaded again.
+3. It writes `narra.lock` next to `narra.toml`.
+
+`narra.lock` records, for each package, the repository, the chosen version, the tag it was fetched from, the commit of the tag and a hash of its files. Commit this file. When the lock and the repository disagree, for example because someone moved a tag, the build stops with an error instead of using different code. A build that changes nothing leaves the file as it was.
+
+A package may import only itself, `std` and the packages in its own `[dependencies]`. If `json` itself depends on `util`, your package still needs its own entry for `util` before it can import `"util/text"`. Without it the build reports that the package has no `[dependencies]` entry for `util`.
+
+A package can choose which modules other packages may import. Add an `[exports]` table to its `narra.toml`. Each key is an import path and each value is the file it stands for:
+
+```toml
+[exports]
+"json" = "src/index.nra"
+"json/stream" = "src/streaming/reader.nra"
+```
+
+A key is the package name or starts with `json/`. The bare name `"json"` stands for one module, so `import * as Json from "json"` works. A package that uses `json` can import `"json"` and `"json/stream"`, and nothing else: importing `"json/streaming/reader"` is an error that lists the two paths. Inside `json`, its own files still import each other by their real paths, such as `"json/streaming/reader"`. Without an `[exports]` table, every file is open to importers.
+
+The standard library works the same way. Modules under `std/internal/` and `std/ext/` are not open to your code.
+
+The tests of a dependency belong to its author. `narrac test` runs the tests of your package only.
+
+To use a fork or to pin a version, add an `[overrides]` table to the `narra.toml` of the package you build. An override has the same form as a dependency and replaces the repository and the version wherever any package asks for that name:
+
+```toml
+[overrides]
+json = { git = "https://example.com/my-fork/narra-json", version = "1.2.1" }
+```
+
+Narra trusts the folder where it keeps downloaded packages. The default is `.cache/narra` in your home folder, and `NARRA_CACHE` names another one. When Narra downloads a package, it computes the hash of the files once and writes it next to the copy. Each build compares that hash with `narra.lock`. It does not read the files again, so a file that you or another program changes inside the cache afterwards is built as it is now. If a package contains a symbolic link, Narra follows it. Keep the cache folder writable only by you, and make a package's folder writable with `chmod -R u+w` and delete it if you suspect a change. The next build downloads it again and compares it with the lock.
+
+The editor support (`narrac lsp`) never downloads anything and never changes `narra.lock`. It reads the lock and the cache. Run `narrac build` once after adding a dependency so the editor can find it.
+
 Next: [9. Memory and `mutable`](09-memory-and-mutable.md).

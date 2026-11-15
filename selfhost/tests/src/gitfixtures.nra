@@ -1,0 +1,98 @@
+// Fixture repositories for the deps suite: made with `git init`, commits and tags in a scratch
+// folder, with a fixed author and date so a fixture is the same on every run. Nothing here
+// reaches the network.
+import * as Fs from "std/fs"
+import * as Str from "std/string"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+const FIXTURE_ENVIRONMENT = [
+  "GIT_AUTHOR_NAME=Fixture",
+  "GIT_AUTHOR_EMAIL=fixture@example.invalid",
+  "GIT_COMMITTER_NAME=Fixture",
+  "GIT_COMMITTER_EMAIL=fixture@example.invalid",
+  "GIT_AUTHOR_DATE=2026-01-01T00:00:00Z",
+  "GIT_COMMITTER_DATE=2026-01-01T00:00:00Z",
+  "GIT_CONFIG_GLOBAL=/dev/null",
+  "GIT_CONFIG_NOSYSTEM=1",
+]
+
+// $1 is the repository, $2 the folder whose files become the new tree, $3 the commit message.
+const COMMIT_SCRIPT = "cd \"$1\" && find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} + && cp -R \"$2\"/. . && git add -A && git commit -q --allow-empty -m \"$3\""
+
+function runFixtureGit(directory: string, arguments: Array<string>): CommandResult uses io, alloc {
+  let command = copy(Shell.newCommand("git", arguments))
+  command.directory = directory
+  command.environment = FIXTURE_ENVIRONMENT
+  return Shell.runCommand(command)
+}
+
+function describeFailure(what: string, result: CommandResult): string uses alloc {
+  return `${what} failed: ${Str.trim(result.errorOutput)}`
+}
+
+export function isGitAvailable(): bool uses io, alloc {
+  const result = Shell.runScript("git --version", [])
+  return result.code == 0
+}
+
+export function createRepository(path: string): Result<bool, string> uses io, alloc {
+  const created = Fs.createDirAll(path)
+  if (created is Err(message)) {
+    return Err(message)
+  }
+  const result = runFixtureGit(path, ["init", "-q"])
+  if (result.code != 0) {
+    return Err(describeFailure("git init", result))
+  }
+  return Ok(true)
+}
+
+export function commitFolder(
+  repository: string,
+  sourceFolder: string,
+  message: string,
+): Result<bool, string> uses io, alloc {
+  let command = copy(
+    Shell.newCommand("sh", ["-c", COMMIT_SCRIPT, "sh", repository, sourceFolder, message]),
+  )
+  command.environment = FIXTURE_ENVIRONMENT
+  const result = Shell.runCommand(command)
+  if (result.code != 0) {
+    return Err(describeFailure("commit", result))
+  }
+  return Ok(true)
+}
+
+export function addTag(
+  repository: string,
+  tag: string,
+  annotated: bool,
+): Result<bool, string> uses io, alloc {
+  let arguments = ["tag", tag]
+  if (annotated) {
+    arguments = ["tag", "-a", "-m", tag, tag]
+  }
+  const result = runFixtureGit(repository, arguments)
+  if (result.code != 0) {
+    return Err(describeFailure("git tag", result))
+  }
+  return Ok(true)
+}
+
+export function readRevision(
+  repository: string,
+  revision: string,
+): Result<string, string> uses io, alloc {
+  const result = runFixtureGit(repository, ["rev-parse", revision])
+  if (result.code != 0) {
+    return Err(describeFailure("git rev-parse", result))
+  }
+  return Ok(Str.trim(result.output))
+}
+
+export function removeFixtures(root: string) uses io, alloc {
+  // The cache holds read-only checkouts, which rm cannot delete until they are writable.
+  const _ = Shell.runScript("chmod -R u+w \"$1\" 2>/dev/null", [root])
+  Shell.removeTree(root)
+}

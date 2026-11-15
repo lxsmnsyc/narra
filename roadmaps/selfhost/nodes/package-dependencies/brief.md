@@ -1,7 +1,7 @@
 ---
 id: package-dependencies
 title: "Package dependencies: load dependency modules in build, check, test and the language service"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

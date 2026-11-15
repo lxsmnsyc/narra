@@ -1,4 +1,4 @@
-# 12. Narra for TypeScript programmers
+# 13. Narra for TypeScript programmers
 
 This chapter is optional. It is for readers who already write TypeScript and want to know which habits carry over to Narra and which ones the compiler stops. Each topic shows the Narra form, with the error the TypeScript habit produces, and links to the chapter that teaches it.
 
@@ -1072,6 +1072,19 @@ test "double doubles" {
 | `expect(a).toEqual(b)` | `Test.eq(a, b)` |
 | `expect(a).not.toEqual(b)` | `Test.ne(a, b)` |
 | `expect(f).toThrow(message)` | `Test.panicsWith(f, message)` |
+
+## Tools
+
+The compiler carries the tools a TypeScript project installs as separate packages ([chapter 12](12-tools.md)):
+
+| TypeScript | Narra |
+| --- | --- |
+| `tsc --noEmit` | `narrac check` |
+| Prettier | `narrac fmt`, with its options in the `[fmt]` table of `narra.toml` instead of `.prettierrc` |
+| Jest or Vitest | `narrac test` |
+| the TypeScript language server | `narrac lsp` |
+
+`narrac fmt` has four options, `printWidth`, `tabWidth`, `useTabs` and `trailingComma`, with the same names and defaults as Prettier's, except that `printWidth` is 100. There is no `semi` option, because Narra has no semicolons.
 
 ## If you also know Rust or Go
 

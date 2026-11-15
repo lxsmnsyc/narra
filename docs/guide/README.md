@@ -17,7 +17,8 @@ A test compiles and runs every program in the guide. Each one works with the com
 9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, writes to shared values, `mutable` parameters and their rules.
 10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narrac test`.
 11. [The standard library](11-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
-12. [Narra for TypeScript programmers](12-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
+12. [Tools](12-tools.md): `narrac check` and its JSON output, `narrac explain`, `narrac apply-fix`, `narrac fmt` and its options, `narrac query`, `narrac test`, and `narrac lsp` for editors.
+13. [Narra for TypeScript programmers](13-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 
 ## Reading the samples
 
@@ -49,7 +50,14 @@ Save a sample to a file and run it with `narrac run file.nra` to try your own ch
 
 The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
+- Dependencies on other packages, and workspaces of several packages.
+- Functions that C programs can call, and `@layout` for structs shared with C.
+- Building for Windows and WebAssembly.
+
+Some features are built but not taught in the guide yet:
+
 - `async` and `await`, threads, channels and shared state.
-- Regions and SIMD vectors.
-- `@const` functions.
-- Dependencies on other packages.
+- SIMD vectors and fixed-size arrays.
+- `@const` functions, `ensures` lines and refinement types.
+- `typeof` in types and `Dynamic` trait values.
+- Unsafe code, C interop and build conditions.

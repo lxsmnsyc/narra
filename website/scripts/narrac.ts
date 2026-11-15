@@ -64,7 +64,7 @@ function guessType(initializer: string): string {
   if (/^(true|false)\b/.test(text)) {
     return 'bool';
   }
-  return 'unknown';
+  return '';
 }
 
 function maskText(line: string): string {
@@ -109,7 +109,8 @@ function readHovers(lines: string[]): Hover[] {
     for (const match of text.matchAll(/[A-Za-z_]\w*/gu)) {
       const name = match[0];
       const type = types.get(name);
-      if (KEYWORDS.has(name) || type === undefined) {
+      // A type the stand-in cannot work out gets no hover, never a placeholder.
+      if (KEYWORDS.has(name) || !type) {
         continue;
       }
       const column = Array.from(text.slice(0, match.index)).length + 1;

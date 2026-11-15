@@ -1,7 +1,7 @@
 ---
 id: textmate-grammar
 title: "TextMate grammar for Narra, and narra fences in SPEC.md"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-16

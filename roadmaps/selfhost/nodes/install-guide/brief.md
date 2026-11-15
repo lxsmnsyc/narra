@@ -1,7 +1,7 @@
 ---
 id: install-guide
 title: Installation guide
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-16

@@ -1,7 +1,7 @@
 ---
 id: let-never-reassigned
 title: "A `let` that is never reassigned is a compile error"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 271940
 owns:
   - roadmaps/selfhost/nodes/let-never-reassigned/**
   - testdata/let_const*

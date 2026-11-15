@@ -1869,6 +1869,8 @@ export function opener(): string {
   So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
 - **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
+- **The targets are one table of eight rows,** named `<Os>-<Arch>` or, for a Linux row that links musl, `<Os>-<Arch>-musl`: `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64`, `Linux-X86_64-musl`, `Linux-Arm64-musl`, `Windows-X86_64` and `Wasi-Wasm32`. `Os` has the variants `MacOS`, `Linux`, `Windows` and `Wasi`; `Arch` has `Arm64`, `X86_64` and `Wasm32`. `Build.os` and `Build.arch` do not tell musl from glibc.
+- **`narra build --target <name>` and `narra check --target <name>` use another target's row** for the build conditions. `build` also passes `-target <triple>` to the C compiler, before its other flags, when the row is not the host's (the triple is the `zig cc -target` form, for example `x86_64-linux-musl`), so `CC` must be a cross compiler such as `zig cc`. An unknown name is E1600 and lists the names; `-sanitize` with a target other than the host is E1601. `narra targets` prints one line per row: the name and the triple.
 - **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
 ```narra
@@ -2052,6 +2054,7 @@ search = ["/opt/homebrew/lib"]
 
 ```
 
+- **`narra build --target <name>` builds for another target** (section 12). `narra targets` lists the names and their C compiler triples.
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`, or `export async function run(args: Array<string>): int`. The result is the process exit code; for an async entry, the value of its `Async<int>`. It has every effect. Tasks still running when it finishes are cancelled (section 8).
 - **`[link]`** has one key, `search`: directories `cc` searches for libraries (`-L`), relative to the package directory unless absolute. The libraries come from the `from` of extern blocks (section 9); any other key in `[link]` is E1000.

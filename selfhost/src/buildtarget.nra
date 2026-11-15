@@ -18,21 +18,84 @@ export struct BuildTarget {
   debug: bool
   unsupportedHost: string
   hostError: string = ""
+  libc: string = ""
 }
 
 // One supported target.
 export struct TargetRow {
   os: string
   arch: string
-  hostOs: Os
-  hostArch: Arch
+  hostOs: Option<Os>
+  hostArch: Option<Arch>
+  triple: string
+  libc: string
 }
 
 export const TARGETS: Array<TargetRow> = [
-  TargetRow { os: "MacOS", arch: "Arm64", hostOs: Os.MacOS, hostArch: Arch.Arm64 },
-  TargetRow { os: "MacOS", arch: "X86_64", hostOs: Os.MacOS, hostArch: Arch.X86_64 },
-  TargetRow { os: "Linux", arch: "X86_64", hostOs: Os.Linux, hostArch: Arch.X86_64 },
-  TargetRow { os: "Linux", arch: "Arm64", hostOs: Os.Linux, hostArch: Arch.Arm64 },
+  TargetRow {
+    os: "MacOS",
+    arch: "Arm64",
+    hostOs: Some(Os.MacOS),
+    hostArch: Some(Arch.Arm64),
+    triple: "aarch64-macos",
+    libc: "",
+  },
+  TargetRow {
+    os: "MacOS",
+    arch: "X86_64",
+    hostOs: Some(Os.MacOS),
+    hostArch: Some(Arch.X86_64),
+    triple: "x86_64-macos",
+    libc: "",
+  },
+  TargetRow {
+    os: "Linux",
+    arch: "X86_64",
+    hostOs: Some(Os.Linux),
+    hostArch: Some(Arch.X86_64),
+    triple: "x86_64-linux-gnu",
+    libc: "",
+  },
+  TargetRow {
+    os: "Linux",
+    arch: "Arm64",
+    hostOs: Some(Os.Linux),
+    hostArch: Some(Arch.Arm64),
+    triple: "aarch64-linux-gnu",
+    libc: "",
+  },
+  TargetRow {
+    os: "Linux",
+    arch: "X86_64",
+    hostOs: Some(Os.Linux),
+    hostArch: Some(Arch.X86_64),
+    triple: "x86_64-linux-musl",
+    libc: "musl",
+  },
+  TargetRow {
+    os: "Linux",
+    arch: "Arm64",
+    hostOs: Some(Os.Linux),
+    hostArch: Some(Arch.Arm64),
+    triple: "aarch64-linux-musl",
+    libc: "musl",
+  },
+  TargetRow {
+    os: "Windows",
+    arch: "X86_64",
+    hostOs: None,
+    hostArch: None,
+    triple: "x86_64-windows-gnu",
+    libc: "",
+  },
+  TargetRow {
+    os: "Wasi",
+    arch: "Wasm32",
+    hostOs: None,
+    hostArch: None,
+    triple: "wasm32-wasi",
+    libc: "",
+  },
 ]
 
 // What a `@target` function needs: the variant names its attribute gives,
@@ -61,10 +124,8 @@ export function createUnknownTarget(debug: bool): BuildTarget {
 export function detectHostTarget(debug: bool): BuildTarget uses io, alloc {
   // An override names a row by its os and arch.
   if (Env.get(HOST_OVERRIDE) is Some(named)) {
-    for (const row of Arrays.values(TARGETS)) {
-      if (named == `${row.os}-${row.arch}`) {
-        return createTarget(row, debug)
-      }
+    if (findTargetRow(named) is Some(row)) {
+      return createTarget(row, debug)
     }
     return BuildTarget { os: "", arch: "", debug, unsupportedHost: named }
   }
@@ -72,7 +133,7 @@ export function detectHostTarget(debug: bool): BuildTarget uses io, alloc {
   const host = Build.hostTarget()
   if (host is Some(target)) {
     for (const row of Arrays.values(TARGETS)) {
-      if (target.os == row.hostOs && target.arch == row.hostArch) {
+      if (row.hostOs == Some(target.os) && row.hostArch == Some(target.arch)) {
         return createTarget(row, debug)
       }
     }
@@ -80,10 +141,36 @@ export function detectHostTarget(debug: bool): BuildTarget uses io, alloc {
   return createFailedTarget(debug, "no supported target for this C compiler")
 }
 
+export function describeRow(row: TargetRow): string uses alloc {
+  return joinTargetName(row.os, row.arch, row.libc)
+}
+
+export function findTargetRow(name: string): Option<TargetRow> uses alloc {
+  for (const row of Arrays.values(TARGETS)) {
+    if (describeRow(row) == name) {
+      return Some(row)
+    }
+  }
+  return None
+}
+
+export function describeUnknownTarget(name: string): string uses alloc {
+  return `E1600: unknown target ${name}; the targets are ${describeTargets()}`
+}
+
+export function describeSanitizeError(row: TargetRow): string uses alloc {
+  return `E1601: -sanitize cannot build for ${describeRow(row)}: sanitizer runtimes do not cross-link; build without -sanitize`
+}
+
+export function targetCompilerArguments(_row: TargetRow): Array<string> uses alloc {
+  // Per-target flags of the C compiler; none yet.
+  return []
+}
+
 export function describeTargets(): string uses alloc {
   let names: Array<string> = []
   for (const row of Arrays.values(TARGETS)) {
-    Arrays.push(mutable names, `${row.os}-${row.arch}`)
+    Arrays.push(mutable names, describeRow(row))
   }
   return Str.join(names, ", ")
 }
@@ -97,7 +184,14 @@ export function listTargets(debug: bool): Array<BuildTarget> uses alloc {
 }
 
 export function describeTarget(target: BuildTarget): string uses alloc {
-  return `${target.os}-${target.arch}`
+  return joinTargetName(target.os, target.arch, target.libc)
+}
+
+function joinTargetName(os: string, arch: string, libc: string): string uses alloc {
+  if (libc == "") {
+    return `${os}-${arch}`
+  }
+  return `${os}-${arch}-${libc}`
 }
 
 export function isTargetMet(requirement: TargetRequirement, target: BuildTarget): bool {
@@ -116,8 +210,14 @@ export function describeRequirement(requirement: TargetRequirement): string uses
   return Str.join(parts, ", ")
 }
 
-function createTarget(row: TargetRow, debug: bool): BuildTarget uses alloc {
-  return BuildTarget { os: row.os, arch: row.arch, debug, unsupportedHost: "" }
+export function createTarget(row: TargetRow, debug: bool): BuildTarget uses alloc {
+  return BuildTarget {
+    os: row.os,
+    arch: row.arch,
+    debug,
+    unsupportedHost: "",
+    libc: row.libc,
+  }
 }
 
 function createFailedTarget(debug: bool, reason: string): BuildTarget {

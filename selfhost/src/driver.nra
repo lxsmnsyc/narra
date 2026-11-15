@@ -4,7 +4,8 @@
 //   narrac build [flags] file.nra|dir
 //   narrac run [flags] file.nra|dir [args...]
 //   narrac test [flags] file.nra|dir [args...]
-//   narrac check [--json] [--all-targets] file.nra|dir
+//   narrac check [--json] [--all-targets] [--target name] file.nra|dir
+//   narrac targets
 //   narrac explain CODE
 //
 // Flags of build, run and test (-name, --name, -name=value, -name value; the
@@ -15,6 +16,7 @@
 //   -bin name       the package binary to build or run
 //   -filter text    test only: run the tests whose name contains text
 //   -time           test only: print the time of each test
+//   -target name    build for a target of `narrac targets`, not the host (build only)
 //   -sanitize       compile with -fsanitize=address,undefined
 //   -stdin path     run and test: the program reads this file as its stdin;
 //                   without it stdin is closed
@@ -47,7 +49,21 @@ import * as Body from "narrac/body"
 import * as Effects from "narrac/effects"
 import { Checker } from "narrac/check"
 import { chooseTarget, importsBuildModule } from "narrac/buildconditions"
-import { BuildTarget, listTargets, describeTarget } from "narrac/buildtarget"
+import {
+  BuildTarget,
+  TargetRow,
+  listTargets,
+  describeTarget,
+  describeRow,
+  detectHostTarget,
+  findTargetRow,
+  createTarget,
+  describeUnknownTarget,
+  describeSanitizeError,
+  createUnknownTarget,
+  targetCompilerArguments,
+  TARGETS,
+} from "narrac/buildtarget"
 import { reportSharedWrites } from "narrac/sharedwrites"
 import { checkConstants } from "narrac/consteval"
 import { explainCode, writeDiagnosticJson } from "narrac/diagnostics"
@@ -75,6 +91,7 @@ struct DriverOptions {
   binaryName: string
   filter: string
   stdinPath: string
+  targetName: string
   path: string
   programArguments: Array<string>
 }
@@ -85,6 +102,7 @@ export function isDriverCommand(name: string): bool {
     name == "test" ||
     name == "check" ||
     name == "explain" ||
+    name == "targets" ||
     name == "apply-fix"
 }
 
@@ -95,6 +113,9 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
   }
   if (command == "explain") {
     return runExplain(arguments)
+  }
+  if (command == "targets") {
+    return runTargets()
   }
   if (command == "apply-fix") {
     return runApplyFix(arguments)
@@ -116,6 +137,15 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
     printError("-filter and -time are for `narrac test`")
     return 2
   }
+  if (command != "build" && options.targetName != "") {
+    printError("-target is for `narrac build` and `narrac check`")
+    return 2
+  }
+  const rejected = checkTargetOptions(options)
+  if (rejected != "") {
+    printError(rejected)
+    return 2
+  }
   if (command == "build") {
     return runBuild(options)
   }
@@ -125,11 +155,12 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
 function usageText(): string {
   const lines = [
     "usage:",
-    "  narrac build [-release] [-sanitize] [-bin name] [-o output] [-emit-c file.c] file.nra|dir",
+    "  narrac build [-release] [-sanitize] [-target name] [-bin name] [-o output] [-emit-c file.c] file.nra|dir",
     "  narrac run [-release] [-sanitize] [-bin name] [-stdin file] file.nra|dir [args...]",
     "  narrac test [-filter text] [-time] [-release] [-sanitize] [-stdin file] file.nra|dir",
-    "  narrac check [--json] [--all-targets] file.nra|dir",
+    "  narrac check [--json] [--all-targets] [--target name] file.nra|dir",
     "                                            report errors, on every target with --all-targets",
+    "  narrac targets                            list the targets of -target: name and C compiler triple",
     "  narrac explain CODE                       explain a diagnostic code",
     "",
     "A dir is a package: a directory with narra.toml and src/. Without -bin,",
@@ -170,6 +201,7 @@ function parseOptions(arguments: Array<string>): Result<DriverOptions, string> u
     binaryName: "",
     filter: "",
     stdinPath: "",
+    targetName: "",
     path: "",
     programArguments: [],
   }
@@ -241,7 +273,12 @@ function isBoolFlag(name: string): bool {
 }
 
 function isValueFlag(name: string): bool {
-  return name == "o" || name == "emit-c" || name == "bin" || name == "filter" || name == "stdin"
+  return name == "o" ||
+    name == "emit-c" ||
+    name == "bin" ||
+    name == "filter" ||
+    name == "stdin" ||
+    name == "target"
 }
 
 function parseBool(name: string, hasValue: bool, value: string): Result<bool, string> uses alloc {
@@ -291,6 +328,8 @@ function setValueFlag(mutable options: DriverOptions, name: string, value: strin
     options.binaryName = value
   } else if (name == "filter") {
     options.filter = value
+  } else if (name == "target") {
+    options.targetName = value
   } else {
     options.stdinPath = value
   }
@@ -337,7 +376,7 @@ function convertLoadErrors(errors: Array<LoadError>): Array<Diagnostic> from err
   return diagnostics
 }
 
-function loadAndCheck(path: string, release: bool): Result<#[
+function loadAndCheck(path: string, release: bool, targetName: string): Result<#[
   Package,
   Checker,
 ], Array<Diagnostic>> uses io, alloc {
@@ -345,7 +384,7 @@ function loadAndCheck(path: string, release: bool): Result<#[
   if (loaded is Err(errors)) {
     return Err(convertLoadErrors(errors))
   }
-  return checkForTarget(loaded.value, chooseTarget(loaded.value, release))
+  return checkForTarget(loaded.value, chooseNamedTarget(loaded.value, release, targetName))
 }
 
 function checkForTarget(package: Package, target: BuildTarget): Result<#[
@@ -544,8 +583,9 @@ function compileToC(
   binaryName: string,
   tests: bool,
   release: bool,
+  targetName: string,
 ): Result<CompiledProgram, string> uses io, alloc {
-  const checked = loadAndCheck(path, release)
+  const checked = loadAndCheck(path, release, targetName)
   if (checked is Err(diagnostics)) {
     return Err(formatDiagnostics(diagnostics))
   }
@@ -603,6 +643,61 @@ function makeTempDirectory(): Result<string, string> uses io, alloc {
   return Ok(Str.trim(output))
 }
 
+function chooseNamedTarget(
+  package: Package,
+  release: bool,
+  targetName: string,
+): BuildTarget uses io, alloc {
+  // A named target replaces the host for the build conditions.
+  if (findTargetRow(targetName) is Some(row)) {
+    if (importsBuildModule(package)) {
+      return createTarget(row, !release)
+    }
+    return createUnknownTarget(!release)
+  }
+  return chooseTarget(package, release)
+}
+
+function findCrossTarget(targetName: string): Option<TargetRow> uses io, alloc {
+  // The row of a named target that is not the host; none for the host itself.
+  if (targetName == "") {
+    return None
+  }
+  const found = findTargetRow(targetName)
+  if (found is Some(row)) {
+    const host = detectHostTarget(true)
+    if (host.os == "" || describeTarget(host) != targetName) {
+      return Some(row)
+    }
+  }
+  return None
+}
+
+function checkTargetOptions(options: DriverOptions): string uses io, alloc {
+  // An unknown name (E1600) or -sanitize for another target (E1601) is a usage error.
+  if (options.targetName == "") {
+    return ""
+  }
+  if (findTargetRow(options.targetName) is None) {
+    return describeUnknownTarget(options.targetName)
+  }
+  if (options.sanitize) {
+    if (findCrossTarget(options.targetName) is Some(row)) {
+      return describeSanitizeError(row)
+    }
+  }
+  return ""
+}
+
+function runTargets(): int uses io, alloc {
+  let lines = Str.builder()
+  for (const row of Arrays.values(TARGETS)) {
+    Str.append(mutable lines, `${describeRow(row)} ${row.triple}\n`)
+  }
+  writeStandardOutput(Str.build(lines))
+  return 0
+}
+
 function cCompilerName(): string uses io, alloc {
   // $CC is one program name or path; it is never split into words.
   const configured = Env.get("CC")
@@ -619,8 +714,16 @@ function cCompilerArguments(
   cPath: string,
   output: string,
   compiled: CompiledProgram,
-): Array<string> uses alloc {
+): Array<string> uses io, alloc {
   let arguments: Array<string> = []
+  // A target other than the host goes first, so the C compiler knows it before the other flags.
+  if (findCrossTarget(options.targetName) is Some(row)) {
+    Arrays.push(mutable arguments, "-target")
+    Arrays.push(mutable arguments, row.triple)
+    for (const flag of Arrays.values(targetCompilerArguments(row))) {
+      Arrays.push(mutable arguments, flag)
+    }
+  }
   if (options.release) {
     Arrays.push(mutable arguments, "-O2")
     Arrays.push(mutable arguments, "-DNARRA_RELEASE")
@@ -662,7 +765,7 @@ function buildExecutable(
   tests: bool,
   output: string,
 ): Result<CompiledProgram, string> uses io, alloc {
-  const compiled = compileToC(options.path, binaryName, tests, options.release)
+  const compiled = compileToC(options.path, binaryName, tests, options.release, options.targetName)
   if (compiled is Err(message)) {
     return Err(message)
   }
@@ -895,10 +998,17 @@ function trimTrailingSlashes(path: string): string {
 function runCheck(arguments: Array<string>): int uses io, alloc {
   let asJson = false
   let allTargets = false
+  let targetName = ""
+  let takesTarget = false
   let paths: Array<string> = []
   for (const index of Ranges.between(2, Arrays.length(arguments))) {
     const argument = arguments[index]
-    if (argument == "--json" || argument == "-json") {
+    if (takesTarget) {
+      targetName = argument
+      takesTarget = false
+    } else if (argument == "--target" || argument == "-target") {
+      takesTarget = true
+    } else if (argument == "--json" || argument == "-json") {
       asJson = true
     } else if (argument == "--all-targets" || argument == "-all-targets") {
       allTargets = true
@@ -906,15 +1016,24 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
       Arrays.push(mutable paths, argument)
     }
   }
-  if (Arrays.length(paths) != 1 || Str.startsWith(paths[0], "-")) {
-    printError("usage: narrac check [--json] [--all-targets] file.nra|dir")
+  if (
+    Arrays.length(paths) != 1 ||
+      Str.startsWith(paths[0], "-") ||
+      takesTarget ||
+      (allTargets && targetName != "")
+  ) {
+    printError("usage: narrac check [--json] [--all-targets | --target name] file.nra|dir")
+    return 2
+  }
+  if (targetName != "" && findTargetRow(targetName) is None) {
+    printError(describeUnknownTarget(targetName))
     return 2
   }
   let diagnostics: Array<Diagnostic> = []
   if (allTargets) {
     diagnostics = checkEveryTarget(paths[0])
   } else {
-    const checked = loadAndCheck(paths[0], false)
+    const checked = loadAndCheck(paths[0], false, targetName)
     if (checked is Err(found)) {
       diagnostics = found
     } else {
@@ -981,7 +1100,7 @@ function runApplyFix(arguments: Array<string>): int uses io, alloc {
     return 2
   }
   let diagnostics: Array<Diagnostic> = []
-  const checked = loadAndCheck(paths[0], false)
+  const checked = loadAndCheck(paths[0], false, "")
   if (checked is Err(found)) {
     diagnostics = found
   }

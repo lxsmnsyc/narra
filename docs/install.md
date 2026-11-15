@@ -140,4 +140,25 @@ The repository's tests run on Linux in a container with `sh scripts/linux-check.
 
 ## Prebuilt binaries
 
-Prebuilt binaries are not published yet. Build from source as shown above.
+Each release on GitHub has an archive for macOS on arm64 and one for Linux on x64. This command downloads the one for your system, checks its SHA-256 sum against the sum published with the release, and copies `narrac` to `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lxsmnsyc/narra/main/install.sh | sh
+```
+
+The script stops with an error and installs nothing when the sums differ. It also needs `curl` and `tar`. `narrac` still calls the C compiler each time it builds a program, so keep the C compiler installed.
+
+Two variables change what the script does:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `NARRA_VERSION` | The version to install, such as `0.1.0`. | The latest release. |
+| `NARRA_INSTALL` | The folder that receives `narrac`. | `~/.local/bin` |
+
+For example, this installs version 0.1.0 into `/usr/local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lxsmnsyc/narra/main/install.sh | NARRA_VERSION=0.1.0 NARRA_INSTALL=/usr/local/bin sh
+```
+
+Run the same command again to update. To uninstall, delete the `narrac` file. For other systems, such as macOS on x64 or Linux on arm64, build from source as shown above.

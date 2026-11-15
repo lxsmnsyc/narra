@@ -31,6 +31,7 @@ import {
   pushScope,
   popScope,
   getLocal,
+  markAssigned,
   getRef,
   getNodeType,
   setNodeType,
@@ -377,9 +378,28 @@ function checkVariable<W: Walker>(
   // `const _ =` does not let a task go; Async.detach does (D109 item 5).
   AsyncCheck.checkDiscardedName(mutable checker, pos, name, found)
   const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
+  // A plain `let` is checked for a write; the hidden source of a `for` loop is not a declaration.
+  if (isMutable && name != "_") {
+    let letPos = copy(pos)
+    if (isLoopSource(value)) {
+      letPos = Pos { line: 0, column: 0 }
+      if (checker.scopes[checker.current].facts.letPositions[nodeId] is Some(written)) {
+        letPos = copy(written)
+      }
+    }
+    checker.bodies[checker.body].locals[local].letLine = letPos.line
+    checker.bodies[checker.body].locals[local].letColumn = letPos.column
+  }
   setBinding(mutable checker, local, value, BindingKind.Plain)
   recordConstantLocal(mutable checker, local, value)
   seedResultLocal(mutable checker, local, value)
+}
+
+function isLoopSource(value: Expr): bool {
+  if (value is Expr.Ident(_, _, name)) {
+    return Str.startsWith(name, "__for_")
+  }
+  return false
 }
 
 function checkAssignment<W: Walker>(
@@ -442,6 +462,9 @@ function checkAssignment<W: Walker>(
 
   // The root of the target must be a `let` variable.
   const root = findAssignedLocal(checker, target)
+  if (root >= 0) {
+    markAssigned(mutable checker, root)
+  }
   if (root < 0) {
     reportError(
       mutable checker,
@@ -1252,6 +1275,7 @@ function checkReferenceFor<W: Walker>(
         "the source of `for (mutable ...)` must be a variable, a field or an element, so the loop can change it in place; store the array in a local first",
       )
     } else {
+      markAssigned(mutable checker, root)
       checkContentsChange(mutable checker, sourcePos, root, source, true)
     }
   }
@@ -1421,7 +1445,19 @@ function declareYieldInput(
   type: Type,
 ) uses alloc {
   if (binding is Some(bound)) {
-    declareLocal(mutable checker, bound.id, bound.pos, bound.name, type, bound.isMutable, false)
+    const local = declareLocal(
+      mutable checker,
+      bound.id,
+      bound.pos,
+      bound.name,
+      type,
+      bound.isMutable,
+      false,
+    )
+    if (bound.isMutable) {
+      checker.bodies[checker.body].locals[local].letLine = bound.pos.line
+      checker.bodies[checker.body].locals[local].letColumn = bound.pos.column
+    }
   }
 }
 

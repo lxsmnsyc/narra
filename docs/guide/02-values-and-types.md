@@ -81,7 +81,15 @@ export function run(args: Array<string>): int uses io, alloc {
 3 weeks
 ```
 
-Use `const` for every name that does not need a new value, and `let` only where it does. A reader then knows which names to watch. As the sections on arrays and structs show, `const` fixes the name, not the contents: the elements of a `const` array can still change.
+Use `const` for every name that does not need a new value, and `let` only where it does. A reader then knows which names to watch. The compiler checks it: a `let` that is never assigned after its declaration is an error, and its fix writes `const` for you. As the sections on arrays and structs show, `const` fixes the name, not the contents: the elements of a `const` array can still change.
+
+```narra error
+// error: 3:3: "weeks" is never reassigned; declare it with `const`
+export function run(args: Array<string>): int {
+  let weeks = 7
+  return weeks
+}
+```
 
 An inner block, such as the body of an `if` or a loop, cannot declare a name that is still in scope from outside it. That way a name never silently changes meaning partway through a function:
 

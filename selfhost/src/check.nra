@@ -31,7 +31,7 @@ import {
   SourceFacts,
   createEmptyFacts,
 } from "narrac/ast"
-import { Fix, createFix, insertAt, moveColumn } from "narrac/fixes"
+import { Fix, createEdit, createFix, insertAt, moveColumn } from "narrac/fixes"
 import { getPosKey } from "narrac/trivia"
 import {
   Type,
@@ -222,6 +222,11 @@ export struct LocalInfo {
   namePos: Pos
   shorthand: bool = false
   writes: Array<Pos> = []
+  // For the never-reassigned check: the `let` keyword of a plain declaration (letLine is
+  // 0 for any other local), and whether the local was ever written.
+  letLine: int = 0
+  letColumn: int = 0
+  assigned: bool = false
   binding: BindingKind
   // For a Loop binding: the place the loop reads (`players`), or "" when the
   // the source is no place, and whether its elements have contents, for the hint
@@ -2122,6 +2127,7 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
     }
     Arrays.push(mutable unused, index)
   }
+  reportNeverReassigned(mutable checker, body, unused)
   for (const position of Ranges.between(1, Arrays.length(unused))) {
     for (
       let current = position;
@@ -2154,6 +2160,37 @@ function reportUnusedLocals(mutable checker: Checker) uses alloc {
         `"${local.name}" is never read; remove it, or name it "_${local.name}" to mark it as unused on purpose`,
       )
     }
+  }
+}
+
+function reportNeverReassigned(
+  mutable checker: Checker,
+  body: BodyInfo,
+  unused: Array<int>,
+) uses alloc {
+  // A `let` that nothing writes should be a `const`. An unused one is reported as unused.
+  for (const index of Ranges.between(0, Arrays.length(body.locals))) {
+    const local = body.locals[index]
+    if (local.letLine == 0 || local.assigned || Str.startsWith(local.name, "_")) {
+      continue
+    }
+    const letPos = Pos { line: local.letLine, column: local.letColumn }
+    let isUnused = false
+    for (const other of Arrays.values(unused)) {
+      if (other == index) {
+        isUnused = true
+      }
+    }
+    if (isUnused) {
+      continue
+    }
+    reportErrorFix(
+      mutable checker,
+      local.pos,
+      "E1510",
+      [createFix("Change `let` to `const`", [createEdit(letPos, moveColumn(letPos, 3), "const")])],
+      `"${local.name}" is never reassigned; declare it with \`const\``,
+    )
   }
 }
 
@@ -2232,6 +2269,10 @@ export function findLocal(checker: Checker, name: string): int {
     return index
   }
   return -1
+}
+
+export function markAssigned(mutable checker: Checker, index: int) {
+  checker.bodies[checker.body].locals[index].assigned = true
 }
 
 export function getLocal(checker: Checker, index: int): LocalInfo from checker {

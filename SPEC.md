@@ -654,7 +654,7 @@ export function length(r: Range): int {
 
 `type Name = T` gives a type a second name. `export type` exports it.
 
-```
+```narra fragment
 type Tok = Token
 type Pair<T> = #[T, T]
 export type Token = Text.Token

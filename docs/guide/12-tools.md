@@ -105,7 +105,7 @@ The text form is for people. A program that reads the errors, such as an editor 
 narrac check --json hello.nra
 ```
 
-```text
+```json
 {"code":"E0003","severity":"error","message":"semicolons are not used; end the statement with a line break","file":"hello.nra","range":{"start":[3,17],"end":[3,17]},"fixes":[{"title":"remove the semicolon","edits":[{"file":"hello.nra","range":{"start":[3,17],"end":[3,18]},"text":""}]}]}
 ```
 
@@ -148,7 +148,7 @@ The first line is the message. Where the message names something from your code,
 narrac apply-fix hello.nra
 ```
 
-```text
+```narra fragment
 // error: 3:17: semicolons are not used; end the statement with a line break
 export function run(args: Array<string>): int {
   print("hello")
@@ -285,7 +285,7 @@ The note means what it says: a function passed as a value and called later is no
 narrac query interface weather/convert
 ```
 
-```text
+```narra fragment
 export function toFahrenheit(celsius: int): int
 export function describe(celsius: int): string uses alloc
 export function hottest(readings: Array<int>): int
@@ -299,7 +299,7 @@ By default the query runs on the package in the current folder. `--package DIR` 
 narrac query --json type-of src/main.nra:5:17
 ```
 
-```text
+```json
 {"query": "type-of", "location": {"file": "src/main.nra", "range": {"start": [5, 17], "end": [5, 18]}}, "type": "string", "effects": ["alloc"]}
 ```
 

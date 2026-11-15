@@ -1,7 +1,6 @@
 // Turns the Markdown files of the repository into modules that export their title, summary,
 // headings and HTML. Code is highlighted with twinkleplop at build time, so a page loads no
 // highlighting script. The HTML is a `raw` value, so markup inserts it as it is.
-import { language as bash } from '@twinkleplop/bash';
 import { language as json } from '@twinkleplop/json';
 import twinkleplop from '@twinkleplop/markdown-it';
 import { language as typescript } from '@twinkleplop/typescript';
@@ -9,7 +8,11 @@ import MarkdownIt from 'markdown-it';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
+import { readFenceLanguage } from '../src/highlight/fences.ts';
+import { language as lua } from '../src/highlight/lua.ts';
 import { language as narra } from '../src/highlight/narra.ts';
+import { language as sh } from '../src/highlight/sh.ts';
+import { language as toml } from '../src/highlight/toml.ts';
 
 const REPOSITORY = 'https://github.com/lxsmnsyc/narra';
 
@@ -32,12 +35,14 @@ export interface Page {
   html: unknown;
 }
 
-const LANGUAGES = {
+export const LANGUAGES = {
   narra: narra(),
-  sh: 'bash',
-  bash: bash(),
+  sh: sh(),
+  bash: sh(),
   json: json(),
   ts: typescript(),
+  toml: toml(),
+  lua: lua(),
 };
 
 function rewriteLink(href: string, from: string): string {
@@ -101,7 +106,10 @@ function createRenderer(from: string): MarkdownIt {
   // scrolls and a scrolling region must take focus. A table scrolls the same way.
   const renderFence = parser.renderer.rules.fence!;
   parser.renderer.rules.fence = (tokens, index, options, env, self) => {
-    const language = tokens[index]!.info.trim().split(/\s+/)[0] ?? '';
+    // The language comes from the info string, so `narra file shop narra.toml` is TOML.
+    const token = tokens[index]!;
+    const language = readFenceLanguage(token.info);
+    token.info = language;
     const block = renderFence(tokens, index, options, env, self).replace(
       /<pre(?=[\s>])/,
       '<pre tabindex="0" role="group" aria-label="Code"',

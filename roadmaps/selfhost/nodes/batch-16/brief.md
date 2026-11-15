@@ -76,13 +76,15 @@ Checks that wait for the batch seed update, collected from the children:
 
 ## Acceptance
 
-- [ ] Every child is done, or moved out of the batch with a reason in this brief.
+- [x] Every child is done, or moved out of the batch with a reason in this brief.
+  - Evidence: every child listed above is `status: done`; the C chain, workspaces and website-repl are out of the batch with reasons above.
 - [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-  - Evidence: `test.sh: PASS, 10063 cases in 177s`; `linux-check: PASS in 412s` (tree at commit 0c5e8373).
+  - Evidence, after the review fixes and the last seed update: `test.sh: PASS, 10132 cases in 178s`; `linux-check: PASS in 408s`; `cross-check.sh Windows-X86_64 Wasi-Wasm32` with the seed check: `PASS`, seed emits the same C as the host on both.
 - [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
-  - Evidence: `sh scripts/seed-update.sh` printed `seed is current` and `seed unchanged` after the Windows stdout fix (commit 0c94fe8a).
+  - Evidence: after the review fixes, a second `sh scripts/seed-update.sh` printed `seed is current` and `seed unchanged`.
 - [x] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
-  - Evidence: stage 2 C built with `cc -O1 -g` and no `-DNARRA_RELEASE`; `NARRA_CHECK_COPIES=1 narrac emit selfhost` exit=0.
-- [ ] A fresh review of the whole story branch, before the pull request.
+  - Evidence: the final seed built with `cc -O1 -g` and no `-DNARRA_RELEASE`; `NARRA_CHECK_COPIES=1 narrac emit selfhost` exit 0.
+- [x] A fresh review of the whole story branch, before the pull request.
+  - Evidence: three fresh reviewers (packages, distribution, checks and docs). Two must-fix items (a plain-tag checkout reused for a member package; CRLF checkouts on windows-latest) and the should-fix items were fixed on fix/batch-16-packages and fix/batch-16-distribution and landed here.
 - [x] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.
   - Evidence: instructions 3.561G (main compiler) to 3.596G (batch-16 compiler) on the batch-16 source, +1.0%, inside the 2% spread.

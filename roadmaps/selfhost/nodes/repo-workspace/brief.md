@@ -37,9 +37,6 @@ depends_on:
   - on: workspace-lsp
     kind: hard
     why: without it, the lsp suite reaches the root manifest from `testdata/lsp`
-  - on: selfhost-layout
-    kind: soft
-    why: both edit `selfhost/CLAUDE.md`, and either order works
 ---
 # This repository becomes a workspace
 

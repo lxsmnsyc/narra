@@ -1,7 +1,7 @@
 ---
 id: site-design
 title: "Site design system, motion and home page"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-17

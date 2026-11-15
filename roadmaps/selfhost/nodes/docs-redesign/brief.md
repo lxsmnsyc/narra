@@ -1,7 +1,7 @@
 ---
 id: docs-redesign
 title: "Docs pages on the new design"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-17

@@ -1,7 +1,7 @@
 ---
 id: windows-runtime
 title: "Runtime and file std on Windows x64"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16

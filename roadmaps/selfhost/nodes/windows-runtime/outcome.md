@@ -48,3 +48,7 @@ A fresh agent found no must-fix item. Fixed the should-fix items: `dirname` of a
 - `sh scripts/test.sh` on the rebased branch: all 8 shards 1236 or 1237 passed; one failure `sources/formatted`, since fixed.
 - `sh scripts/test.sh --suite generated`: PASS, 23 cases. `--suite guide`: PASS, 330 cases. `--suite sources`: PASS, 1 cases.
 - Final full run: all shards passed except a regex timing check (`(x+x+)+y` under 1 s) under load 50; `--filter regex` PASS, 63 cases.
+
+## Landing
+
+Landed on feat/batch-16 by the orchestrator on 2026-11-15. Acceptance item 1 (same output on Windows) moves to the windows-latest job of cross-targets, which first runs when the batch pull request opens. A mismatch there reopens this node.

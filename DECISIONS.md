@@ -1212,6 +1212,63 @@ Size-class allocator: built (node fast-alloc). `narra_alloc` takes blocks of up 
 
 Regions: not built yet.
 
+## D101. Workspaces: a `[workspace]` table, path dependencies, one lock at the root
+
+Decision (spike workspace-design, for the maintainer at the gate): build workspaces after package-dependencies and package-exports land. A workspace is a directory whose `narra.toml` has a `[workspace]` table. Its members are packages in subdirectories. They depend on each other through path dependencies, share one `narra.lock` and one version of each git dependency, and build, check and test together. This repository becomes a workspace of `selfhost` and `selfhost/tests` (maintainer, 2026-11-14).
+
+```toml
+# narra.toml at the repository root
+[workspace]
+members = ["selfhost", "selfhost/tests", "packages/*"]
+
+# packages/app/narra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+json = { path = "../json" }
+http = { git = "https://example.com/narra-http", version = "2.0.1" }
+```
+
+- **Manifest form (question 1).** `[workspace]` has one key, `members`: an array of directories relative to the root. A `*` may stand for one whole path segment (`"packages/*"`) and matches every directory there with a `narra.toml`. No other glob form. Each member must have a `[package]` table and a unique name. Two members with one name, a member with no `narra.toml`, and a member that has its own `[workspace]` are errors.
+- **Root package.** The root `narra.toml` may also have `[package]`, as in Cargo. The root package is then a member, and its `src/` is loaded as for any package. A root with only `[workspace]` is not a package.
+- **Finding the workspace.** From a package directory, walk up to the first `narra.toml` with a `[workspace]` table. When its `members` list the package, that is its workspace. When they do not, the package is standalone. This keeps the 145 fixture packages under `testdata/` standalone without an `exclude` key.
+- **Manifests without `[package]` (finding).** `findPackageDirectory` (`lspserver.nra`) and `findConfig` (`fmtconfig.nra`) take the nearest `narra.toml`. Once the repository root has one, every file under `testdata/` reaches it. Both must skip a manifest with no `[package]` table when looking for a package. `findConfig` keeps reading `[fmt]` from the nearest package manifest first, then from the workspace root (see `fmt` below).
+- **Member dependencies (question 2).** A path dependency, `json = { path = "../json" }`, relative to the declaring package. The target directory must be a member of the same workspace, and its `[package] name` must equal the key. A path dependency has no `version` and no `git`. It is not fetched, takes no part in version selection and has no lock entry. Its own `[dependencies]` join the graph.
+- **Version selection.** deps-resolve starts from every member's manifest at once, not only the package being built. So each git package has one version across the workspace, and building one member gives the same versions as building all. A git dependency whose name equals a member name is the existing "one name, two sources" error (deps-resolve, E0450-E0459).
+- **Path dependencies inside a fetched package.** A git checkout whose `narra.toml` has a path dependency is an error. A package another repository uses must name its dependencies by git and version.
+- **Git dependency on a workspace member.** Not decided. A git dependency is the package at the repository root, as in `contracts/dependencies.md`. Naming one member of another repository's workspace needs a subdirectory key and a tag form such as Go's `json/v1.2.0`.
+- **Order against git dependencies.** Path dependencies need the inline-table reader of deps-manifest-lock and the second-package loader of package-dependencies. They do not need fetch or resolve. They could land on the loader half of package-dependencies alone, but batch-16 builds the whole chain, so the children start after package-dependencies with no reordering.
+- **Commands (question 3).** Every driver command already takes a path, so the path selects the work. No `-package` flag.
+
+| path given | `build` | `run` | `test` | `check` | `fmt` | `query` |
+| --- | --- | --- | --- | --- | --- | --- |
+| a member directory | that member, as today | that member | that member's tests | that member | files under it | that member |
+| the workspace root | every binary of every member | the one binary named by `-bin`, searched across members | each member's tests, one program per member, in `members` order | every member, diagnostics merged and sorted | files under every member | error: names the members, asks for a member directory |
+| a file | as today | as today | as today | as today | as today | as today |
+
+- **Build output.** Unchanged: executables go to the current directory under their binary name, or to `-o`. The driver keeps its C files in a temporary directory, so no target directory is needed. Binary names must be unique across the workspace, because a root build writes every member's binaries into one directory.
+- **Tests of dependencies.** A member's tests do not run when another member that depends on it is tested, as for git dependencies (package-dependencies).
+- **One lock file (question 4).** `narra.lock` lives at the workspace root. A command on any member reads and writes the root lock. A `narra.lock` in a member directory is an error that names the root lock. The lock lists git packages only. SPEC section 15 "one version per package" holds across the workspace.
+- **Module hashes.** The package being built hashes its modules without its name, as today. Every other package in the build, member or git, hashes with its name (package-dependencies). So a member's C names depend on whether it is the root of the build, and `narrac emit selfhost` keeps the seed's C names.
+- **Language service (question 5).** From an opened file, take the nearest manifest with `[package]`, then find its workspace as above. Check the package that holds the file, then every member that depends on it, directly or not. Each is loaded as its own program. Publish diagnostics only for each program's own modules. Errors in a member's files are reported by checking that member, not its dependents. `Modules.ParseCache` is keyed by source path, so a member shared by several programs is parsed once. The per-module check state in `lspcache.nra` and `Server.reported` are keyed by package directory. The language service never writes the lock and never fetches (package-dependencies).
+- **`[fmt]`.** A member without a `[fmt]` table uses the `[fmt]` of the workspace root, then the defaults. A member's own `[fmt]` wins.
+- **Exports (question 6).** A member is a dependency package to the members that import it, so D97 applies without a new rule. A member with `[exports]` exposes only the listed paths to other members. Inside the member, imports use real paths. package-exports does not have to land first for path dependencies to work. It lands first in practice, and the workspace children test `[exports]` between members.
+- **This repository.** Root `narra.toml` with `[workspace] members = ["selfhost", "selfhost/tests"]` and no `[package]` and no `[fmt]`. A root `[fmt]` would format every `testdata/` file through `findConfig`. `std/` stays embedded through `stdtext.nra` and is not a member. `bench/` programs stay single files. The testrunner imports no `narrac/` module today, so the move adds no member dependency. `sh selfhost/bootstrap.sh` and `sh scripts/test.sh` keep their paths. `narrac check .` and `narrac fmt --check .` at the root cover both packages.
+- **Codes.** E0480-E0489 for workspace and path dependency errors (E0430-E0479 are taken by the deps nodes).
+- **Reason.** Every driver command takes a directory, so a workspace needs one new table, one new dependency form and a walk up to the root. Path dependencies reuse the loader, the hash rule and the exports check of package-dependencies and package-exports. One lock at the root and selection from every member give one version per package across the repository, as SPEC section 15 asks.
+- **Cost.** Five nodes, four M and one S (`roadmaps/selfhost/nodes/workspace-design/outcome.md`). `manifest.nra` gains the `[workspace]` table and `path`. `Dependency` in `contracts/dependencies.md` gains `path: string`, a contract version 2. `modules.nra` gains a workspace loader that walks up and lists members. `depresolve.nra` starts from several roots. `driver.nra` loops over members for `build`, `test` and `check`. `lspserver.nra`, `lspcache.nra` and `fmtconfig.nra` change their manifest walk. A root check of N members is N full checks. A member shared by several dependents is checked once per dependent.
+- **Rejected: `json = { workspace = true }` (Cargo's inheritance form).** Cargo uses it to inherit a version from `[workspace.dependencies]`. With path dependencies between members and one selection over all members, there is nothing left to inherit.
+- **Rejected: `version = "workspace:*"` (pnpm).** It overloads the version string, and a member has no version tag to resolve.
+- **Rejected: a `go.work` file next to `narra.toml`.** A second manifest format. Go needs it because its modules carry their import path in `go.mod`; a Narra package name already is the import prefix.
+- **Rejected: an error for a package inside a workspace that `members` do not list, with an `exclude` key (Cargo).** All 145 fixtures under `testdata/` would need an exclude entry or the glob `testdata/**`. A mistyped member is still visible, since a root `check` names the members it checked.
+- **Rejected: a `--package NAME` flag on the driver.** Every driver command already takes a path. `query` keeps its `--package DIR`.
+- **Rejected: a shared target directory.** The driver writes no build products besides the executables.
+- **Rejected: a member replacing a git dependency of the same name (`go.work` `use`, Cargo `[patch]`).** It hides which source a build uses. Left for a later decision if someone needs to develop a library and its user together.
+
+Not built yet.
+
 ## D102. Contracts get `||` and relations between parameters; no `!`, no `&&` inside a pattern
 
 Decision (spike contract-logic-design; maintainer, 2026-11-12). Facts about one name stay one interval (D92, D95). A second kind of fact, a relation between two names, is added. Counts: `roadmaps/selfhost/nodes/contract-logic-design/count.py` on `feat/batch-11` (text heuristics; `-v` lists each site). `selfhost/src` and `std/src` hold no `requires` or `ensures` line today, so the counts are of checks that a contract could replace: 70 `if` and `while` conditions read an integer parameter, and 42 of them are entry guards (among the first three statements, the block returns or panics). Measured base: `narrac emit selfhost` retires 2.41G to 2.43G instructions (two runs, batch-11 start).

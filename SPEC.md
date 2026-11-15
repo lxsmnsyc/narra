@@ -16,7 +16,7 @@ Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` function
 - The compiler frees memory with reference counting that it inserts itself. There is no garbage collector.
 - When a value has exactly one owner, an update writes to it in place instead of copying it.
 
-```ts
+```narra
 import * as Float from "std/float"
 
 export enum Shape {
@@ -98,7 +98,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 - **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
 - **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narra query recursion MODULE` lists them.
 
-```ts
+```narra
 function gcd(a: int, b: int): int {
   if (b == 0) {
     return a
@@ -121,7 +121,7 @@ function each(items: Array<int>, f: (item: int) => void) {
 ---
 const numbers = [1, 2]
 -->
-```ts
+```narra
 let total = 0
 each(numbers, (item) => { total = total + item })
 ```
@@ -155,7 +155,7 @@ struct Player {
 ---
 let players: Array<Player> = []
 -->
-```ts
+```narra
 for (mutable player of players) {
   player.hp = 0                // changes players
 }
@@ -171,7 +171,7 @@ import * as Ranges from "std/range"
 ---
 const items = ["a", "b"]
 -->
-```ts
+```narra
 for (const i of Ranges.upTo(Arrays.length(items))) {
   print(items[i])
 }
@@ -184,7 +184,7 @@ for (const i of Ranges.upTo(Arrays.length(items))) {
 const limit = 3
 let total = 0
 -->
-```ts
+```narra
 for (let i = 0; i < limit; i = i + 1) {
   total = total + i
 }
@@ -210,7 +210,7 @@ function lookup(code: int): string {
 ---
 const code = 1
 -->
-```ts
+```narra
 const label = {
   const name = lookup(code)
   if (name == "") {
@@ -231,7 +231,7 @@ const label = {
 <!-- context
 const n = 1
 -->
-```ts
+```narra
 const sign = if (n < 0) { return "negative" } else if (n == 0) { return "zero" } else { return "positive" }
 ```
 
@@ -248,7 +248,7 @@ const name = "ada"
 const digits = "[0-9]+"
 -->
 
-```ts
+```narra
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
@@ -371,7 +371,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **`std/terminal`** (alias `Terminal`, D118) is Narra source over `std/internal/terminal`. `isTerminal(stream)`, `columns(stream): Option<int>` (`None` when the stream is not a terminal) and `useColor(stream)` (which honors `NO_COLOR`, `FORCE_COLOR` and `TERM=dumb`) have the `io` effect; `Stream` is `Stdin`, `Stdout` or `Stderr`. Style functions (`bold`, `red`, `bgRed`, `style(text, Style)` and the rest) always add the codes and nest; `stripStyles` removes them. `Style` holds `foreground` and `background` as a `Color` (default `Color.Default`, which adds no code) and the flags `bold`, `dim`, `italic`, `underline`, `inverse` and `strikethrough`. `Color` has `Default`, the eight names, their bright forms, `Ansi256(index: u8)` and `Rgb(red, green, blue)`.
 - **Paths are package rooted.** `"app/text"` for this package, `"std/string"` for the standard library, `"pkgname/module"` for a dependency. Relative paths are not allowed.
 
-```ts
+```narra
 import * as Str from "std/string"            // namespace import
 import * as Arrays from "std/array"          // plural alias for a prelude type's module
 import { classify, Token } from "app/text"   // named imports
@@ -380,7 +380,7 @@ import { map as mapArray } from "std/array"  // a named import with a new name
 
 There is no re-export statement. To expose an imported name, import it and export a new declaration:
 
-```ts
+```narra
 import * as Text from "app/text"
 
 export const classify = Text.classify        // a function
@@ -420,7 +420,7 @@ Rules:
 - **Structs.** Declared with `struct`. The full rules are in "Structs" below.
 - **Enums.** Declared with `enum`. Each constructor can carry named fields, and is written with its enum's name: `Token.Word("hi")`, `Token.Space` (section 3).
 
-```ts
+```narra
 export enum Token {
   Word(text: string)
   Number(value: int)
@@ -432,7 +432,7 @@ export enum Token {
 - **Fixed-size arrays.** `FixedArray<T, N>` holds exactly `N` elements and is stored inline, like a struct. It needs no heap allocation. `N` is an integer literal or a constant type parameter, and never negative (E0995). One `FixedArray` value takes at most 1 MiB (1048576 bytes), so a local fits well inside a thread's stack; a larger one is E0995, and an `Array` holds more. `[1.0, 2.0, 3.0, 4.0]` builds one when the expected type is a `FixedArray`, and gives all `N` elements. A generic function can take the length as a parameter: `function sum<const N: int>(values: FixedArray<f64, N>): f64`.
 - **Fixed-size array indexes are proven.** Indexing a `FixedArray` never panics and has no runtime check. A constant index must be from 0 to `N - 1`, and any other index must be a name that a check proves to be in that range (E0994): an `if` or `while` condition such as `i >= 0 && i < N`, the condition of `for (let i = 0; i < N; i++)` when nothing in the loop assigns `i`, or `for (const i of Ranges.upTo(N))`. An assignment to the name ends the proof. In a generic body the proof is made in each instance, where `N` is a constant. `FixedArrays.get(values, i)` (`std/fixedarray`) returns an `Option<T>` for any index, and `FixedArrays.length(values)` returns `N`. `for (const v of values)` reads a copy of the elements. Equality, hashing, ordering and `Show` follow the element type, as for `Array`.
 
-```ts
+```narra
 import * as FixedArrays from "std/fixedarray"
 
 function sum<const N: int>(values: FixedArray<f64, N>): f64 {
@@ -479,7 +479,7 @@ function last(values: FixedArray<f64, 4>): Option<f64> {
 
 A struct is a fixed set of named fields, stored inline like a C struct.
 
-```ts
+```narra
 export struct ServerConfig {
   host: string
   port: int = 8080
@@ -515,7 +515,7 @@ struct ServerConfig {
 }
 ---
 -->
-```ts
+```narra
 const config = ServerConfig { host: "localhost" }            // port is 8080, tags is []
 const loopback: ServerConfig = { host: "127.0.0.1", port: 3000 }
 ```
@@ -526,7 +526,7 @@ struct Entry<K, V> {
   value: V
 }
 -->
-```ts
+```narra
 function makeEntry(key: string, value: int): Entry<string, int> {
   return { key: key, value: value }                          // type taken from the return type
 }
@@ -548,7 +548,7 @@ struct ServerConfig {
 ---
 const config = ServerConfig { host: "localhost" }
 -->
-```ts
+```narra
 const moved = { ...config, port: 9000 }
 
 let current = copy(config)
@@ -577,7 +577,7 @@ struct Point {
 const config = ServerConfig { host: "localhost" }
 const point = Point { x: 1.0, y: 2.0 }
 -->
-```ts
+```narra
 const { host, port: serverPort } = config
 
 match (point) {
@@ -603,7 +603,7 @@ match (point) {
 <!-- context
 import * as Boxes from "std/box"
 -->
-```ts
+```narra
 struct ListNode {
   value: int
   next: Option<Box<ListNode>> = None
@@ -616,7 +616,7 @@ const list = ListNode { value: 1, next: Some(Boxes.new(ListNode { value: 2 })) }
 
 `export opaque struct` exports a struct's name but not its fields.
 
-```ts
+```narra
 // module "app/range"
 export opaque struct Range {
   start: int
@@ -660,7 +660,7 @@ export type Token = Text.Token
 
 `typeof name` in a type position stands for the type of a value in scope: a `const`, `let`, a parameter, a top-level constant or a function (D96). Its use is to keep a type in step with a value, without writing the type twice.
 
-```ts
+```narra
 export const table: Map<string, Array<int>> = Map {}
 
 function fill(mutable target: typeof table, key: string) {
@@ -678,7 +678,7 @@ struct Response {
   status: int
 }
 -->
-```ts
+```narra
 export function handle(request: Request): Response uses io {
   return Response { status: 200 }
 }
@@ -696,7 +696,7 @@ export type Handler = typeof handle // (request: Request) => Response uses io
 
 `distinct type` declares a new type with the same representation as an existing one.
 
-```ts
+```narra
 export distinct type UserId = int
 export distinct type OrderId = int
 ```
@@ -708,7 +708,7 @@ function loadUser(id: UserId) {}
 ---
 -->
 <!-- error: E0119 -->
-```ts
+```narra
 const user = UserId.from(42)
 const raw: int = UserId.toInt(user)
 
@@ -726,7 +726,7 @@ loadUser(OrderId.from(7))     // compile error: OrderId is not UserId
 
 A distinct type may restrict its values with `requires` and a list of patterns joined by `&&` (D116). The list follows the base and the trait lists and may start on the next line.
 
-```ts
+```narra
 export distinct type Port = int derives Show requires >= 1 && <= 65535
 export distinct type Method = string requires "GET" | "POST"
 distinct type Bit = u8
@@ -751,7 +751,7 @@ distinct type Port = int requires >= 1 && <= 65535
 ---
 -->
 <!-- error: E1223 -->
-```ts
+```narra
 const port = Port.from(70000)     // compile error: 70000 does not satisfy Port (<= 65535)
 ```
 
@@ -791,7 +791,7 @@ enum Status {
 const token = Token.Space
 const status = Status.Active
 -->
-```ts
+```narra
 match (token) {
   Token.Word(text) => print(text)
   Token.Number(n) if (n < 0) => print("negative")
@@ -828,7 +828,7 @@ const label = match (status) {
 <!-- context
 import * as Arrays from "std/array"
 -->
-```ts
+```narra
 export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
   for (const item of Arrays.values(items)) {
     if (item == wanted) {
@@ -839,7 +839,7 @@ export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
 }
 ```
 
-```ts
+```narra
 struct Vector<const N: int> {
   values: Array<f64>
 }
@@ -860,7 +860,7 @@ A trait is a named set of functions that a type implements. A type's traits are 
 <!-- context
 import * as Int from "std/int"
 -->
-```ts
+```narra
 export trait Label {
   function label(value: Self): string
 }
@@ -899,7 +899,7 @@ implement Label for Money {
 ---
 const price = Money { cents: 1250 }
 -->
-```ts
+```narra
 const text = Label.label(price)
 ```
 
@@ -992,7 +992,7 @@ const text = Label.label(price)
 <!-- context
 import * as Str from "std/string"
 -->
-```ts
+```narra
 export struct Pair {
   key: string
   value: string
@@ -1050,7 +1050,7 @@ enum ConfigError {
   IoFailed(message: string)
 }
 -->
-```ts
+```narra
 export function readConfig(path: string): Result<Config, ConfigError> uses io, alloc {
   const text = File.readText(path)
   if (text is Err(e)) {
@@ -1090,7 +1090,7 @@ export function readConfig(path: string): Result<Config, ConfigError> uses io, a
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 -->
-```ts
+```narra
 let squares: Array<int> = []
 if (Arrays.filled(0, 1000) is Some(zeros)) {
   squares = zeros
@@ -1115,7 +1115,7 @@ When an update targets a value whose reference count is greater than 1, the valu
 <!-- context
 import * as Arrays from "std/array"
 -->
-```ts
+```narra
 const scores = [[1, 2], [3, 4]]
 let other = copy(scores)
 other[1][0] = 30            // copies the outer array and one row; scores is unchanged
@@ -1134,7 +1134,7 @@ enum Slot {
 }
 ---
 -->
-```ts
+```narra
 const found: Option<Array<int>> = Some([1, 2])
 const kept = copy(found)
 if (kept is Some(items)) {
@@ -1153,7 +1153,7 @@ if (other is Slot.Filled(row)) {
 An enum whose payloads hold only scalars and strings has nothing to copy:
 
 <!-- error: E0975 -->
-```ts
+```narra
 const count: Option<int> = Some(3)
 const same = copy(count)      // E0975: remove the call
 ```
@@ -1170,7 +1170,7 @@ struct Bag {
 ---
 -->
 <!-- error: E0978 -->
-```ts
+```narra
 let bag = Bag { items: [1, 2], count: 0 }
 const items = bag.items
 bag.items[0] = 9              // E0978: items still shares bag.items
@@ -1186,7 +1186,7 @@ struct Bag {
 }
 ---
 -->
-```ts
+```narra
 let bag = Bag { items: [1, 2], count: 0 }
 const items = copy(bag.items)
 bag.items[0] = 9
@@ -1208,7 +1208,7 @@ struct Row {
 }
 ---
 -->
-```ts
+```narra
 let rows = [Row { cells: [1] }, Row { cells: [2] }]
 const first = rows[0]
 rows[1].cells[0] = 4          // accepted: rows[0] and rows[1] are different places
@@ -1225,7 +1225,7 @@ struct SortItem {
   key: int
 }
 -->
-```ts
+```narra
 function firstItem(items: Array<SortItem>): SortItem from items {
   return items[0]
 }
@@ -1249,7 +1249,7 @@ struct Grid {
   rows: Array<Array<int>>
 }
 -->
-```ts
+```narra
 struct Picker {
   pick: (grid: Grid) => Array<int> from grid uses alloc
 }
@@ -1285,7 +1285,7 @@ struct Player {
 }
 -->
 <!-- error: E0949 -->
-```ts
+```narra
 function damage(mutable player: Player, amount: int) {
   player.hp = player.hp - amount     // ok: changes a field
   player = { ...player, hp: 0 }      // compile error: a mutable parameter cannot be replaced
@@ -1307,13 +1307,13 @@ function damage(mutable player: Player, amount: int) {
 }
 ---
 -->
-```ts
+```narra
 const hero = Player { name: "Ana", hp: 100, position: Vec2 { x: 0.0, y: 0.0 } }
 damage(mutable hero, 10)      // hero.hp is now 90
 ```
 
 <!-- error: E0948 -->
-```ts
+```narra
 function bump(mutable n: int) {  // compile error: int has no contents to change
   n = n + 1
 }
@@ -1381,7 +1381,7 @@ Rules:
 
 A function that calls a function it receives has that function's effects. An effect variable states this in a signature.
 
-```ts
+```narra
 export function map<T, U, effect E>(items: Array<T>, f: (item: T) => U uses E): Array<U> uses alloc, E
 ```
 
@@ -1410,7 +1410,7 @@ A generator is a function that can suspend itself with `yield` and be resumed la
 <!-- context
 import * as Ranges from "std/range"
 -->
-```ts
+```narra
 function* counter(limit: int): Generator<int> {
   for (const i of Ranges.upTo(limit)) {
     yield i
@@ -1438,7 +1438,7 @@ function* both(): Generator<int> {
 }
 ---
 -->
-```ts
+```narra
 for (const n of both()) {
   print(Int.toString(n))
 }
@@ -1460,7 +1460,7 @@ for (const n of both()) {
 
 Threads run in a scope. Every thread started in a scope finishes before the scope returns.
 
-```ts
+```narra
 import * as Thread from "std/thread"
 
 const total = Thread.scope((scope) => {
@@ -1482,7 +1482,7 @@ const total = Thread.scope((scope) => {
 
 ### Channels
 
-```ts
+```narra
 const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
 Thread.start(scope, () => {
@@ -1514,7 +1514,7 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 <!-- context
 import * as Cells from "std/cell"
 -->
-```ts
+```narra
 const count = Cells.create(0)
 const next = (): int => {
   Cells.update(count, (value) => value + 1)
@@ -1544,7 +1544,7 @@ A few types have identity: copying one copies a handle to the same object. They 
 <!-- context
 import * as Shared from "std/shared"
 -->
-```ts
+```narra
 const hits = Shared.create(0)
 
 Shared.update(hits, (count) => count + 1)
@@ -1565,7 +1565,7 @@ const now = Shared.read(hits, (count) => count)
 
 An async function runs as a task on the event loop of its thread. A task suspends at an `await` that has to wait, and the loop resumes it when the awaited task has finished, a timer has fired or I/O is ready. The syntax is TypeScript's (D93, D95, D109).
 
-```ts
+```narra
 import * as Async from "std/async"
 import * as Bytes from "std/bytes"
 import * as Net from "std/async/net"
@@ -1647,7 +1647,7 @@ The loop:
 
 An async generator produces values one at a time and may wait between them (D110). The syntax is TypeScript's `async function*` and `for await`.
 
-```ts
+```narra
 import * as Bytes from "std/bytes"
 import * as Net from "std/async/net"
 import { Connection } from "std/async/net"
@@ -1690,7 +1690,7 @@ async function total(connection: Connection): int uses io, alloc {
 - **Pointer values are ordinary data.** A `Ptr` can be stored in a struct, an array or a tuple, copied, passed to and returned from any function, `@trusted` or not, and held across calls. Copying one copies the address. A `Ptr` is not `Equatable`, `Hashable` or printable: `==` and `!=` on it are compile errors, it cannot be a `Map` key, and a struct that holds one cannot derive those traits. Test for null with `Ptr.isNull`.
 - **std/ptr.** `Ptr.alloc(count: int): Ptr<T>` allocates `count` zeroed elements (`uses alloc`); `Ptr.free(pointer)` frees what `Ptr.alloc` returned and does nothing for a null pointer; `Ptr.read(pointer): T` and `Ptr.write(pointer, value: T)` read and write one element; `Ptr.offset(pointer, count: int): Ptr<T>` moves by `count` elements. `Ptr.cast(pointer: Ptr<T>): Ptr<U>` reinterprets the address as a pointer to another element type, as a C cast does, with no check (`const bytes: Ptr<u8> = Ptr.cast(words)`); `Ptr.element(pointer: Ptr<FixedArray<T, N>>, index: int): Ptr<T>` is the address of one item of a FixedArray. `Ptr.element` proves its index like a FixedArray read does (E0994 for a constant outside 0 to N - 1 or an unproven index), and a pointer to anything else is E0998. These seven have the `unsafe` effect. `Ptr.null(): Ptr<T>` and `Ptr.isNull(pointer): bool` touch no memory and are safe. `Ptr.alloc`, `Ptr.null` and `Ptr.cast` take the result's element type from the expected type (`const items: Ptr<int> = Ptr.alloc(4)`). There is no `Ptr<void>`, since `void` is not a type that can be written; `Ptr<u8>` stands for C's `void*`. Nothing is checked at run time: a read past the allocation, a use after `Ptr.free` or a double free is undefined behavior, and so is reading or writing through a `Ptr.cast` pointer whose element type does not match the stored data, except through `u8` and `i8`, because programs are built with strict aliasing. Memory from `Ptr.alloc` counts toward the debug leak check (section 13) until it is freed.
 
-```ts
+```narra
 import * as Ptr from "std/ptr"
 
 @trusted
@@ -1712,7 +1712,7 @@ function sumSquares(count: int): int uses alloc {
 
 - **`extern { ... } from "library"`** declares C functions, like an import names a module. The block stands at the top level and holds one or more function signatures, each on its own line, with no type parameters, no `uses` and no body (E1000). `from` names the library as `cc` takes it after `-l` (letters, digits, `_`, `.`, `+` and `-`, not starting with `-`): `"m"` for libm, `"z"` for zlib; `"c"` is libc and needs no `-l`. A member may be written `export`, and is then called from other modules like any exported function.
 
-```ts
+```narra
 import * as Float from "std/float"
 
 extern {
@@ -1745,7 +1745,7 @@ export function cubeRootOfMagnitude(value: i32): f64 {
 - **`@repr(C)`** on a struct fixes its field order and padding to match C. Without it, the compiler may reorder fields to reduce padding.
 - **C-compatible enums.** `@repr(u8)`, `@repr(i32)` and the other integer types give an enum without fields explicit values. `Red = 1` in an enum without `@repr` is a compile error whose fix adds `@repr(i32)` (D73). `Enum.toInt` and `Enum.fromInt` convert, and `fromInt` returns `Option`.
 
-```ts
+```narra
 @repr(u8)
 export enum Color {
   Red = 1
@@ -1811,7 +1811,7 @@ export enum Color {
 
 Code that differs by platform branches on constants from `std/build`. The compiler keeps only the matching branch.
 
-```ts
+```narra
 import * as Build from "std/build"
 import { Os } from "std/build"
 import * as Env from "std/env"
@@ -1837,7 +1837,7 @@ export function configDir(): string uses io, alloc {
 - **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed. The effects of every branch count toward the function's effects, the dropped ones included, so a function has the same signature on every target.
 - **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Narra functions and `extern { } from` blocks take `@target`; other declarations do not.
 
-```ts
+```narra
 import * as Build from "std/build"
 import { Os } from "std/build"
 
@@ -1870,7 +1870,7 @@ export function opener(): string {
 - **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
 - **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
-```ts
+```narra
 import { Os } from "std/build"
 
 @target(os = Os.Windows)
@@ -1908,7 +1908,7 @@ function divide(a: int, b: int): int {
   return a / b
 }
 -->
-```ts
+```narra
 import * as Test from "std/test"
 
 test "parse" {
@@ -1920,7 +1920,7 @@ test "parse" {
 
 - **Contracts.** `requires` lines between a function's signature and its body state what each caller must prove (D95). They are proven at compile time; nothing is checked at run time.
 
-```ts
+```narra
 export function pick(index: int, count: int): int
   requires index >= 0 && index < 64
   requires count != 0
@@ -1942,7 +1942,7 @@ function pickChecked(n: int): int {
 - **A function with `requires` cannot be used as a value** (E0986), and `typeof` of it is E0982: a function type carries no condition, so a call through the value could pass an unproven argument. Functions of an `implement` block cannot have `requires` (E0984), since a call through the trait proves nothing.
 - **`ensures` lines** follow the `requires` lines. Each is a pattern every result must match, with no named subject. Every `return` value is proven against each line; in a generator, every `yield` value, and `yield*` is E0988. A pattern holds one bound per place, with no `&&`: write two lines, `ensures Some(>= 0) | None` and `ensures Some(< 64) | None`, and a caller learns both.
 
-```ts
+```narra
 import * as Arrays from "std/array"
 
 function findIndex(items: Array<int>, wanted: int): Option<int>

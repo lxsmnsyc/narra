@@ -1,7 +1,7 @@
 ---
 id: narrac-wasm
 title: "narrac built for Wasi-Wasm32"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

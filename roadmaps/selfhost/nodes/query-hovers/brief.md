@@ -1,7 +1,7 @@
 ---
 id: query-hovers
 title: "narrac query hovers: every type and diagnostic of a file"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-17

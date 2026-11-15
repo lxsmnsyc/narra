@@ -43,8 +43,9 @@ samples="hello arrays closures enums maps int_to_string float_shortest c_interop
 expected_failures=""
 
 # Samples a row leaves out, one "row:sample" pair per word: c_interop calls libc
-# through a bitcast and windows_runtime uses std/thread, which wasm32-wasi lacks.
-left_out="Wasi-Wasm32:c_interop Wasi-Wasm32:windows_runtime"
+# through a bitcast, windows_runtime uses std/thread, windows_process uses Process.run
+# and windows_async uses std/async/net, which wasm32-wasi lacks.
+left_out="Wasi-Wasm32:c_interop Wasi-Wasm32:windows_runtime Wasi-Wasm32:windows_process Wasi-Wasm32:windows_async"
 
 run_timeout=${RUN_TIMEOUT:-300}
 
@@ -253,7 +254,7 @@ runbinary() {
   case "$kind" in
     native) withtimeout "$binary" "$@" < /dev/null ;;
     rosetta) withtimeout arch -x86_64 "$binary" "$@" < /dev/null ;;
-    wasmtime) withtimeout wasmtime -W exceptions=y --dir "$root" --dir "$work" "$binary" -- "$@" < /dev/null ;;
+    wasmtime) withtimeout wasmtime -W exceptions=y --dir "$root" --dir "$work" "$binary" "$@" < /dev/null ;;
     docker)
       withtimeout docker run --rm -i -e TMPDIR=/tmp --platform "$(dockerplatform "$row")" \
         -v "$root:/repo:ro" "$(dockerimage "$row")" \
@@ -353,7 +354,7 @@ checkrow() {
   fi
   seedbinary="$work/$row/seed$suffix"
   seedlibs_text=$(seedlibs "$row")
-  if ! "$CC" -target "$triple" -O2 -DNARRA_RELEASE -std=c11 -w -o "$seedbinary" "$root/seed/narrac.c" $seedlibs_text > "$work/$row/seed.build" 2>&1; then
+  if ! "$CC" -target "$triple" -O2 -DNARRA_RELEASE -std=c11 -w $(seedflags "$row") -o "$seedbinary" "$root/seed/narrac.c" $seedlibs_text > "$work/$row/seed.build" 2>&1; then
     say "  seed: build failed"
     sed -n 1,3p "$work/$row/seed.build" | sed 's/^/    /'
     record "$row" seed build-failed ""
@@ -387,9 +388,19 @@ checkrow() {
   fi
 }
 
+# seedflags prints the extra compiler flags a row needs; the Wasi ones are those
+# of scripts/wasm-build.sh.
+seedflags() {
+  case "$1" in
+    Wasi-*) say "-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false" ;;
+    *) say "" ;;
+  esac
+}
+
 seedlibs() {
   case "$1" in
     Windows-*) say "" ;;
+    Wasi-*) say "-lsetjmp -lm" ;;
     *) say "-lm" ;;
   esac
 }

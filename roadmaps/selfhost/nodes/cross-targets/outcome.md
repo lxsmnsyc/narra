@@ -55,3 +55,7 @@ A fresh agent (pr-review) found three must-fix and four should-fix items. Fixed:
 
 - `sh scripts/cross-check.sh`, `... Linux-Arm64 Linux-Arm64-musl Linux-X86_64 Linux-X86_64-musl`, `... Windows-X86_64 Wasi-Wasm32`, all with `NARRAC` set: exit 0, as in the table.
 - `sh scripts/test.sh` on the rebased branch: `test.sh: PASS, 9897 cases in 264s`. Before the rebase one run failed `programs/regex_linear.nra/debug` (a 1 s timing check) at load above 150; the rerun passed.
+
+## Landing
+
+Landed on feat/batch-16 by the orchestrator on 2026-11-15. The Windows row and the seed builds for Windows and Wasi wait for the batch seed update. wasi-runtime removes Wasi-Wasm32 from `expected_failures` and fills `left_out`. The windows-latest job runs on the batch pull request and is expected to pass only after the seed update.

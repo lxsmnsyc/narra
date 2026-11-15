@@ -51,4 +51,4 @@ A fresh agent found no must-fix item. Fixed the should-fix items: `dirname` of a
 
 ## Landing
 
-Landed on feat/batch-16 by the orchestrator on 2026-11-15. Acceptance item 1 (same output on Windows) moves to the windows-latest job of cross-targets, which first runs when the batch pull request opens. A mismatch there reopens this node.
+Landed on feat/batch-16 by the orchestrator on 2026-11-15. Acceptance item 1 (same output on Windows) moves to the windows-latest job of cross-targets, which first runs when the batch pull request opens. A mismatch there reopens this node. Under wine in docker, `scripts/cross-check.sh` ran both samples and every other sample of the list on Windows-X86_64 with matching output (10 of 10, seed check skipped), so the runtime itself is shown to work.

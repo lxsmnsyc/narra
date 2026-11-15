@@ -1,7 +1,7 @@
 ---
 id: cross-targets
 title: "Build and run every target from one machine"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16

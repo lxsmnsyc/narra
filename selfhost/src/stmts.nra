@@ -14,7 +14,7 @@ import {
 import { splitString, substring } from "narrac/textops"
 import { Pos, Expr, Stmt, Block, TypeExpr, Pattern, YieldBinding, LoopReference } from "narrac/ast"
 import { quoteGo } from "narrac/parser"
-import { isPathEndingCall } from "narrac/pathends"
+import { findCForOpenPath, findWhileOpenPath, isPathEndingCall } from "narrac/pathends"
 import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/fixes"
 import { Type, isInteger } from "narrac/types"
 import {
@@ -87,6 +87,7 @@ import * as Str from "std/string"
 import * as Int from "std/int"
 import * as Ranges from "std/range"
 import * as AsyncCheck from "narrac/asynccheck"
+import { checkDeadCode } from "narrac/deadcode"
 import { isVoidInstance } from "narrac/asyncvoid"
 
 export function checkBlock<W: Walker>(
@@ -98,6 +99,7 @@ export function checkBlock<W: Walker>(
   for (const statement of Arrays.values(block.statements)) {
     checkStatement(mutable checker, walker, statement)
   }
+  checkDeadCode(mutable checker, block)
   popScope(mutable checker)
 }
 
@@ -816,6 +818,9 @@ function statementEndsInReturn(checker: Checker, bodyIndex: int, statement: Stmt
     Stmt.ExprStmt(_, expression) =>
       isPathEndingCall(checker, bodyIndex, expression) ||
       matchEndsInReturn(checker, bodyIndex, expression)
+    Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body) is None
+    Stmt.CForStmt(_, label, _, condition, _, body) =>
+      findCForOpenPath(label, condition, body) is None
     _ => false
   }
 }
@@ -906,6 +911,7 @@ function checkIf<W: Walker>(
   for (const statement of Arrays.values(then.statements)) {
     checkStatement(mutable checker, walker, statement)
   }
+  checkDeadCode(mutable checker, then)
   popScope(mutable checker)
 
   // Where the test failed, a two-variant enum holds the other variant,

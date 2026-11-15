@@ -3,6 +3,16 @@
 // The WASI preview1 calls narrac.wasm imports, written against node:fs. It does not use
 // node:wasi. A call that narrac does not import is not here. Run `WebAssembly.Module.imports`
 // on the module to see the list.
+//
+// What the shim protects: a path a call names must stay inside the directory of the descriptor it
+// is opened from. The check is on the text of the path, after `path.resolve`: `..` that leaves the
+// directory and absolute paths give ENOTCAPABLE, so a bug or a wrong argument cannot reach a file
+// outside the preopens.
+//
+// What it does not protect: it is not a sandbox for a module you do not trust. A symbolic link
+// inside a preopen may point outside it and is followed. A path can change between the check and
+// the use. The module runs with the rights of this process inside the preopens, and nothing limits
+// its time, memory or output. Run untrusted code with node:wasi or an operating system sandbox.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -19,6 +29,7 @@ const ERRNO = {
   nametoolong: 37,
   noent: 44,
   nosys: 52,
+  notcapable: 76,
   notdir: 54,
   notempty: 55,
   perm: 63,
@@ -119,8 +130,14 @@ function findOpenFlags(rights, oflags, fdflags) {
   return flags;
 }
 
+function waitBriefly() {
+  // Sleep without using the processor; nothing wakes this wait early.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+
 function readStandardInput(buffer) {
-  // Loop on EAGAIN (a terminal in non-blocking mode); EOF ends the input.
+  // A terminal in non-blocking mode answers EAGAIN until a key arrives: wait a moment and ask
+  // again. EOF ends the input.
   for (;;) {
     try {
       return fs.readSync(0, buffer, 0, buffer.length, null);
@@ -131,13 +148,14 @@ function readStandardInput(buffer) {
       if (error.code !== "EAGAIN") {
         throw error;
       }
+      waitBriefly();
     }
   }
 }
 
 function runWasi(module, options) {
-  // options: args, env (object), cwd, stdin (Buffer, or undefined for the real fd 0),
-  // writeStdout(bytes), writeStderr(bytes). Returns the exit status.
+  // Step 1: set up from the options: args, env (an object), cwd, stdin (a Buffer, or undefined
+  // for the real descriptor 0), writeStdout(bytes) and writeStderr(bytes).
   const preopens = createPreopens(options.cwd, options.args);
   const entries = new Map();
   entries.set(0, { kind: "stdin" });
@@ -170,16 +188,23 @@ function runWasi(module, options) {
   }
 
   function resolveHostPath(descriptor, pointer, length) {
-    // The path is relative to the directory the descriptor names.
+    // Step 1: the descriptor must name a directory; the path is relative to it.
     const entry = entries.get(descriptor);
     if (entry === undefined || entry.kind !== "directory") {
       throw new WasiError(ERRNO.badf);
     }
-    return path.resolve(entry.path, readText(pointer, length));
+    const resolved = path.resolve(entry.path, readText(pointer, length));
+    // Step 2: refuse a path that leaves the directory, by `..` or by an absolute name.
+    const relative = path.relative(entry.path, resolved);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new WasiError(ERRNO.notcapable);
+    }
+    return resolved;
   }
 
   function writeStrings(table, tablePointer, bufferPointer) {
-    // table is the list of encoded strings. Each pointer goes to tablePointer, each text to bufferPointer.
+    // The table is the list of encoded strings: each pointer goes to tablePointer and each text
+    // to bufferPointer.
     const view = viewMemory();
     const target = new Uint8Array(memory.buffer);
     let offset = 0;
@@ -395,16 +420,23 @@ function runWasi(module, options) {
     if (entry === undefined || entry.kind !== "directory") {
       return entry === undefined ? ERRNO.badf : ERRNO.notdir;
     }
-    const names = fs.readdirSync(entry.path, { withFileTypes: true });
+    // The listing is read when a walk starts (cookie 0) and kept for the calls that continue it.
+    if (entry.listing === undefined || Number(cookie) === 0) {
+      entry.listing = [];
+      for (const item of fs.readdirSync(entry.path, { withFileTypes: true })) {
+        entry.listing.push({ name: Buffer.from(item.name), filetype: findFiletype(item) });
+      }
+    }
+    const names = entry.listing;
     const target = new Uint8Array(memory.buffer, bufferPointer, bufferLength);
     const header = new DataView(new ArrayBuffer(24));
     let used = 0;
     for (let index = Number(cookie); index < names.length && used < bufferLength; index++) {
-      const name = Buffer.from(names[index].name);
+      const name = names[index].name;
       header.setBigUint64(0, BigInt(index + 1), true);
       header.setBigUint64(8, 0n, true);
       header.setUint32(16, name.length, true);
-      header.setUint8(20, findFiletype(names[index]));
+      header.setUint8(20, names[index].filetype);
       // A last entry that does not fit is cut off; the caller sees a full buffer and reads again.
       const record = Buffer.concat([Buffer.from(header.buffer), name]);
       const slice = record.subarray(0, bufferLength - used);
@@ -543,33 +575,52 @@ function runWasi(module, options) {
 
   const instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: imports });
   memory = instance.exports.memory;
+  let status = 0;
+  let failure;
   try {
     instance.exports._start();
-    return 0;
   } catch (error) {
     if (error instanceof ExitSignal) {
-      return error.status;
+      status = error.status;
+    } else {
+      failure = error;
     }
-    throw error;
-  } finally {
-    closeOpenFiles(entries);
   }
+  // The files close in every case, and an error from closing never hides the error of the run.
+  const closeFailure = closeOpenFiles(entries);
+  if (failure !== undefined) {
+    throw failure;
+  }
+  if (closeFailure !== undefined) {
+    throw closeFailure;
+  }
+  return status;
 }
 
 function closeOpenFiles(entries) {
+  // Close every file, even after one fails; return the first error.
+  let firstFailure;
   for (const entry of entries.values()) {
-    if (entry.kind === "file") {
+    if (entry.kind !== "file") {
+      continue;
+    }
+    try {
       fs.closeSync(entry.hostDescriptor);
+    } catch (error) {
+      if (firstFailure === undefined) {
+        firstFailure = error;
+      }
     }
   }
+  return firstFailure;
 }
 
 function createPreopens(cwd, args) {
-  // wasi-libc strips the leading "/" and "./" from a preopen name and from every path, so "." and
-  // "/" are the same empty prefix, and an absolute path looks like a relative one. The empty prefix
-  // therefore names the working directory (relative paths, `..` included). An absolute path is
-  // matched by the longest prefix: the top folder of each absolute argument gets a preopen of its
-  // own, which the empty prefix loses to.
+  // Step 1: the working directory. wasi-libc strips the leading "/" and "./" from a preopen name
+  // and from every path, so "." and "/" are the same empty prefix and an absolute path looks like
+  // a relative one. The empty prefix therefore names the working directory.
+  // Step 2: an absolute path is matched by the longest prefix, so the top folder of each absolute
+  // argument gets a preopen of its own, which the empty prefix loses to.
   const preopens = [{ descriptor: 3, guestName: ".", hostPath: path.resolve(cwd) }];
   const seen = new Set();
   for (const argument of args) {
@@ -586,8 +637,8 @@ function createPreopens(cwd, args) {
 }
 
 function findVirtualDevice(descriptor, text) {
-  // The compiler reads "/dev/stdin" as a file. Under the working directory it is the stream of
-  // the call, unless the folder has a dev/stdin.
+  // Step 1: the compiler reads "/dev/stdin" as a file. Under the working directory it is the
+  // stream of the call, unless the folder has a dev/stdin.
   const names = { "dev/stdin": "stdin", "dev/stdout": "stdout", "dev/stderr": "stderr" };
   const kind = names[text.replace(/^\/+/, "")];
   return descriptor === 3 && kind !== undefined ? kind : undefined;
@@ -609,4 +660,4 @@ function sumLengths(buffers) {
   return total;
 }
 
-module.exports = { runWasi };
+module.exports = { runWasi, waitBriefly };

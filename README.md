@@ -6,6 +6,8 @@ The name comes from the narra, the national tree of the Philippines, a hardwood 
 
 Status: specification draft. The compiler, `narrac`, is written in Narra (`selfhost/`). The checked-in C file `seed/narrac.c` builds it with `cc` alone: `sh selfhost/bootstrap.sh`. `sh scripts/test.sh` runs the test suites. There is no Go compiler.
 
+To build and install `narrac`, follow [docs/install.md](docs/install.md).
+
 ## Goals
 
 - **Simple.** One way to write each thing. A small grammar with no ambiguity.

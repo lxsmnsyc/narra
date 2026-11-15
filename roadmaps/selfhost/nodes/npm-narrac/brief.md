@@ -1,7 +1,7 @@
 ---
 id: npm-narrac
 title: "narrac on npm, command form"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

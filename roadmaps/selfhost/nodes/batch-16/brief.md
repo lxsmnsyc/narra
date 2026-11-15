@@ -65,6 +65,15 @@ Children:
 
 `selfhost/src` and seed-compiled std may use only features the committed seed compiles. let-never-reassigned sweeps the compiler only after the batch seed update. Runtime text edits (wasi-runtime, windows-runtime) need two seed updates at the end of the batch.
 
+## After the seed update
+
+Checks that wait for the batch seed update, collected from the children:
+
+- `sh scripts/cross-check.sh` with the seed check on, for Windows-X86_64 and Wasi-Wasm32 (cross-targets, windows-runtime, wasi-runtime).
+- `sh scripts/wasm-build.sh` with its default seed input (narrac-wasm).
+- `narrac build --target Windows-X86_64 selfhost`; if it builds, add the `narrac-win32-x64` package and row to `npm/` and `scripts/npm-package.sh` (npm-narrac dropped it on a `poll.h` failure before windows-process-async landed).
+- The narra-skills eval run, alone, with its cost recorded.
+
 ## Acceptance
 
 - [ ] Every child is done, or moved out of the batch with a reason in this brief.

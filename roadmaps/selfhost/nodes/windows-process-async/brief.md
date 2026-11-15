@@ -1,7 +1,7 @@
 ---
 id: windows-process-async
 title: "std/process and the async loop on Windows x64"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

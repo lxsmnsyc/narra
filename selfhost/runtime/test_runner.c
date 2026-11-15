@@ -211,7 +211,8 @@ static DWORD WINAPI narra_test_drain(LPVOID argument) {
       size_t capacity = reader->capacity ? reader->capacity * 2 : 1024;
       while (capacity < reader->length + count + 1) capacity *= 2;
       char* bigger = realloc(reader->text, capacity);
-      if (!bigger) break;
+      // Without memory the rest is dropped, and the pipe is still read so the child does not block.
+      if (!bigger) continue;
       reader->text = bigger;
       reader->capacity = capacity;
     }
@@ -264,12 +265,48 @@ static bool narra_test_start(int index, HANDLE* process, HANDLE* job, HANDLE* re
   memcpy(line, original, (line_length + 1) * sizeof(wchar_t));
   SetEnvironmentVariableA("NARRA_TEST_CHILD", number);
   SetEnvironmentVariableA("NARRA_TEST_PIPE", handle_text);
-  STARTUPINFOW startup;
+  // Only the standard handles and the panic pipe pass to the child, so a
+  // process started by another thread does not hold them open. A handle may
+  // appear in the list once.
+  HANDLE standard[3] = {GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE)};
+  HANDLE inherited[4];
+  DWORD inherited_count = 0;
+  inherited[inherited_count++] = write_end;
+  for (int i = 0; i < 3; i++) {
+    bool listed = standard[i] == NULL || standard[i] == INVALID_HANDLE_VALUE;
+    for (DWORD k = 0; !listed && k < inherited_count; k++) {
+      if (inherited[k] == standard[i]) listed = true;
+    }
+    if (listed) {
+      if (standard[i] == INVALID_HANDLE_VALUE) standard[i] = NULL;
+      continue;
+    }
+    SetHandleInformation(standard[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    inherited[inherited_count++] = standard[i];
+  }
+  STARTUPINFOEXW startup;
   memset(&startup, 0, sizeof startup);
-  startup.cb = sizeof startup;
+  startup.StartupInfo.cb = sizeof startup;
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = standard[0];
+  startup.StartupInfo.hStdOutput = standard[1];
+  startup.StartupInfo.hStdError = standard[2];
+  SIZE_T list_size = 0;
+  InitializeProcThreadAttributeList(NULL, 1, 0, &list_size);
+  startup.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(list_size);
+  bool listed_all = startup.lpAttributeList != NULL &&
+    InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &list_size) &&
+    UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, inherited_count * sizeof(HANDLE), NULL, NULL);
   PROCESS_INFORMATION information;
   memset(&information, 0, sizeof information);
-  BOOL started = CreateProcessW(path, line, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &startup, &information);
+  BOOL started = FALSE;
+  if (listed_all) {
+    started = CreateProcessW(path, line, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, NULL, NULL, &startup.StartupInfo, &information);
+  }
+  if (startup.lpAttributeList) {
+    if (listed_all) DeleteProcThreadAttributeList(startup.lpAttributeList);
+    free(startup.lpAttributeList);
+  }
   free(line);
   SetEnvironmentVariableA("NARRA_TEST_CHILD", NULL);
   SetEnvironmentVariableA("NARRA_TEST_PIPE", NULL);
@@ -336,6 +373,10 @@ static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
     if (!msg) {
       msg = malloc(1);
       reader.length = 0;
+      if (!msg) {
+        fprintf(stderr, "out of memory\n");
+        return 1;
+      }
     }
     msg[reader.length] = 0;
     int64_t ms = narra_test_now_ms() - start;

@@ -10,23 +10,37 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.row }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
       matrix:
-        os:
-          - macos-14
-          - ubuntu-24.04
+        include:
+          # The first row of each runner is built natively and runs the tests.
+          # The other rows are cross builds with zig cc and do not run the tests.
+          - { os: macos-14, row: MacOS-Arm64, cross: false }
+          - { os: macos-14, row: MacOS-X86_64, cross: true }
+          - { os: ubuntu-24.04, row: Linux-X86_64, cross: false }
+          - { os: ubuntu-24.04, row: Linux-Arm64, cross: true }
+          - { os: ubuntu-24.04, row: Linux-X86_64-musl, cross: true }
+          - { os: ubuntu-24.04, row: Linux-Arm64-musl, cross: true }
+          - { os: ubuntu-24.04, row: Windows-X86_64, cross: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install zig
+        if: matrix.cross
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/python3" -m pip install ziglang
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
       - name: Build, test and pack
         env:
           TAG: ${{ github.ref_name }}
-        run: sh scripts/release-build.sh "${TAG#v}"
+          ROW: ${{ matrix.row }}
+        run: sh scripts/release-build.sh --target "$ROW" "${TAG#v}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: archive-${{ matrix.os }}
+          name: archive-${{ matrix.row }}
           path: dist/*
           if-no-files-found: error
 
@@ -37,18 +51,42 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: archive-*
           merge-multiple: true
+      - name: Collect the assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          # Every archive and its checksum file must be there.
+          for platform in macos-arm64 macos-x86_64 linux-x86_64 linux-arm64 linux-x86_64-musl linux-arm64-musl windows-x86_64; do
+            case "$platform" in
+              windows-*) extension=zip ;;
+              *) extension=tar.gz ;;
+            esac
+            for file in "narra-$version-$platform.$extension" "narra-$version-$platform.$extension.sha256"; do
+              if [ ! -f "dist/$file" ]; then
+                echo "missing asset: $file" >&2
+                exit 1
+              fi
+            done
+          done
+          # One file with every checksum, and the installers.
+          (cd dist && cat narra-*.sha256 > checksums.txt)
+          cp install.sh install.ps1 dist/
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          # A tag with a suffix such as v1.0.0-rc1 is a prerelease
+          # A tag with a suffix such as v1.0.0-rc1 is a prerelease. The one-liner in the
+          # docs fetches install.sh from releases/latest, which skips prereleases, so the
+          # first tag must have no suffix (v0.1.0).
           case "$TAG" in
             *-*) prerelease=--prerelease ;;
             *) prerelease= ;;

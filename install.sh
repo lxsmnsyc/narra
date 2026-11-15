@@ -1,13 +1,16 @@
 #!/bin/sh
 # Install a prebuilt narrac from a GitHub release.
-#   curl -fsSL https://raw.githubusercontent.com/lxsmnsyc/narra/main/install.sh | sh
-# It picks the archive for this system, checks its SHA-256 against the checksum file
-# of the release, and copies narrac to ~/.local/bin.
+#   curl -fsSL https://github.com/lxsmnsyc/narra/releases/latest/download/install.sh | sh
+# It picks the archive for this system (macOS or Linux; arm64 or x86_64; musl on a musl
+# system), checks its SHA-256 against the checksum file of the release, and copies narrac
+# to ~/.local/bin.
 # Variables:
-#   NARRA_VERSION   the version to install, such as 0.1.0 or v0.1.0 (default: the latest release)
+#   NARRA_VERSION   the version to install, such as 0.1.0 or v0.1.0 (default: the latest release;
+#                   when there is only a prerelease, the newest prerelease)
 #   NARRA_INSTALL   the folder that receives narrac (default: $HOME/.local/bin)
 #   NARRA_BASE_URL  the folder that holds the archive and its .sha256 file
-#                   (default: the release of NARRA_VERSION on GitHub); for tests
+#                   (default: the release of NARRA_VERSION on GitHub); for tests; it may
+#                   also be a file:// URL of a folder
 set -eu
 
 repository=lxsmnsyc/narra
@@ -28,10 +31,17 @@ case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
   *) fail "unsupported processor: $(uname -m). Build from source: docs/install.md" ;;
 esac
-case "$os-$arch" in
-  macos-arm64 | linux-x86_64) ;;
-  *) fail "no prebuilt binary for $os $arch. Build from source: docs/install.md" ;;
-esac
+# A musl system, such as Alpine, needs the musl archive.
+libc=
+if [ "$os" = linux ]; then
+  if (ldd --version 2>&1 || true) | grep -qi musl; then
+    libc=-musl
+  else
+    for loader in /lib/ld-musl-*; do
+      if [ -e "$loader" ]; then libc=-musl; fi
+    done
+  fi
+fi
 
 command -v curl >/dev/null 2>&1 || fail "curl is not installed"
 command -v tar >/dev/null 2>&1 || fail "tar is not installed"
@@ -44,6 +54,8 @@ else
 fi
 
 # Find the version. Without NARRA_VERSION, follow the redirect of the latest release.
+# GitHub's latest release skips prereleases, so when it finds none, ask for the newest
+# release of any kind.
 version=${NARRA_VERSION:-}
 if [ -z "$version" ]; then
   latest=$(curl -fsSLI --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") ||
@@ -51,7 +63,14 @@ if [ -z "$version" ]; then
   version=${latest##*/}
   case "$version" in
     v[0-9]*) ;;
-    *) fail "there is no release yet at https://github.com/$repository/releases" ;;
+    *)
+      newest=$(curl -fsSL --proto '=https' --proto-redir '=https' "https://api.github.com/repos/$repository/releases?per_page=1" 2>/dev/null |
+        sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | sed -n 1p) || newest=
+      case "$newest" in
+        v[0-9]*) version=$newest ;;
+        *) fail "there is no release yet at https://github.com/$repository/releases" ;;
+      esac
+      ;;
   esac
 fi
 version=${version#v}
@@ -61,7 +80,7 @@ case "$version" in
     ;;
 esac
 
-name=narra-$version-$os-$arch
+name=narra-$version-$os-$arch$libc
 base=${NARRA_BASE_URL:-https://github.com/$repository/releases/download/v$version}
 # A custom base URL must use https, except for a test server on this machine.
 protocols='=https'
@@ -84,6 +103,10 @@ case "$base" in
     # A local test server may speak http; the first request only.
     protocols='=http,https'
     ;;
+  file://*)
+    # A folder on this machine, for tests.
+    protocols='=file'
+    ;;
   *) fail "NARRA_BASE_URL must start with https:// (http:// only for localhost or 127.0.0.1): $base" ;;
 esac
 if [ -z "${NARRA_INSTALL:-}" ] && [ -z "${HOME:-}" ]; then
@@ -94,7 +117,7 @@ install_dir=${NARRA_INSTALL:-$HOME/.local/bin}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-echo "install: narra $version for $os $arch"
+echo "install: narra $version for $os $arch${libc:+ (musl)}"
 curl -fsSL --proto "$protocols" --proto-redir '=https' -o "$work/$name.tar.gz" "$base/$name.tar.gz" ||
   fail "could not download $base/$name.tar.gz"
 curl -fsSL --proto "$protocols" --proto-redir '=https' -o "$work/$name.tar.gz.sha256" "$base/$name.tar.gz.sha256" ||
@@ -123,3 +146,4 @@ case ":$PATH:" in
   *":$install_dir:"*) ;;
   *) echo "install: $install_dir is not on your PATH. Add: export PATH=\"$install_dir:\$PATH\"" ;;
 esac
+echo "install: open a new terminal, then run: narrac targets"

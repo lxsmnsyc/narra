@@ -79,7 +79,15 @@ static bool narra_io_no_nul(lstr* s, lstr** err) {
 }
 #endif
 
-
+#ifdef __wasi__
+// WASI preview 1 starts no processes. The compiler refuses Process.run on this
+// target (E0991); the stub keeps a build that is not checked linking.
+static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, lstr** out, lstr** errout, lstr** err) {
+  (void)cmd; (void)argv; (void)argc; (void)code; (void)out; (void)errout;
+  *err = lstr_from_cstr("processes are not available on WASI");
+  return false;
+}
+#else
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -315,4 +323,4 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   free(be.p);
   return true;
 }
-
+#endif

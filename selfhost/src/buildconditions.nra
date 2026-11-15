@@ -285,7 +285,94 @@ function findBuildVariant(
   return ""
 }
 
+// The std modules WASI preview 1 cannot back: threads, sockets and child processes.
+const WASI_LEFT_OUT_MODULES: Array<string> = [
+  "std/thread",
+  "std/parallel",
+  "std/channel",
+  "std/shared",
+  "std/atomic",
+  "std/async/net",
+]
+
+// Single std functions WASI cannot back, as "<module>|<name>".
+const WASI_LEFT_OUT_FUNCTIONS: Array<string> = ["std/terminal|columns"]
+
+// A builtin (a function with no Narra source) WASI cannot back.
+const WASI_LEFT_OUT_BUILTINS: Array<string> = ["Process.run"]
+
+function isLeftOutOnWasi(module: string, name: string): bool {
+  for (const leftOutModule of Arrays.values(WASI_LEFT_OUT_MODULES)) {
+    if (leftOutModule == module) {
+      return true
+    }
+  }
+  for (const leftOutFunction of Arrays.values(WASI_LEFT_OUT_FUNCTIONS)) {
+    if (leftOutFunction == `${module}|${name}`) {
+      return true
+    }
+  }
+  return false
+}
+
+export function checkBuiltinTargetUse(mutable checker: Checker, pos: Pos, name: string) uses alloc {
+  for (const leftOutBuiltin of Arrays.values(WASI_LEFT_OUT_BUILTINS)) {
+    if (leftOutBuiltin == name) {
+      reportLeftOut(mutable checker, pos, name, "")
+    }
+  }
+}
+
+function reportLeftOut(
+  mutable checker: Checker,
+  pos: Pos,
+  name: string,
+  module: string,
+) uses alloc {
+  // Only a Wasi target leaves these out; a use in a branch or function Wasi drops is fine.
+  const target = checker.buildTarget
+  if (target.os != "Wasi") {
+    return
+  }
+  if (checker.functionIndex >= 0) {
+    const own = checker.functions[checker.functionIndex]
+    if (module != "" && own.module == module) {
+      return
+    }
+    if (isLeftOutOnWasi(own.module, own.name)) {
+      return
+    }
+    if (checker.functionTargets[checker.functionIndex] is Some(requirement)) {
+      if (!isTargetMet(requirement, target)) {
+        return
+      }
+    }
+  }
+  for (const range of Arrays.values(checker.droppedRanges)) {
+    if (range.scope == checker.current && isWithin(pos, range.start, range.end)) {
+      return
+    }
+  }
+  reportError(
+    mutable checker,
+    pos,
+    "E0991",
+    `${describeLeftOut(name, module)} is not available on Wasi, but this use is compiled for ${describeTarget(target)}; use it inside an if on Build.os that drops Os.Wasi`,
+  )
+}
+
+function describeLeftOut(name: string, module: string): string uses alloc {
+  if (module == "") {
+    return name
+  }
+  return `${module}.${name}`
+}
+
 export function checkTargetUse(mutable checker: Checker, pos: Pos, funcIndex: int) uses alloc {
+  const usedFunction = copy(checker.functions[funcIndex])
+  if (isLeftOutOnWasi(usedFunction.module, usedFunction.name)) {
+    reportLeftOut(mutable checker, pos, usedFunction.name, usedFunction.module)
+  }
   // A use is fine on a target the function exists on, in a branch this target
   // drops, and in a `@target` function this target does not have.
   const target = checker.buildTarget

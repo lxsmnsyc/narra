@@ -39,13 +39,12 @@ trap 'rm -rf "$work"' EXIT
 samples="hello arrays closures enums maps int_to_string float_shortest c_interop windows_runtime windows_path"
 
 # Rows whose runtime work has not landed. A failure on one is reported as an
-# expected failure. wasi-runtime removes its row from this
-# list when it passes.
-expected_failures="Wasi-Wasm32"
+# expected failure.
+expected_failures=""
 
-# Samples a row leaves out, one "row:sample" pair per word. wasi-runtime fills
-# this for the programs wasm32-wasi cannot run.
-left_out=""
+# Samples a row leaves out, one "row:sample" pair per word: c_interop calls libc
+# through a bitcast and windows_runtime uses std/thread, which wasm32-wasi lacks.
+left_out="Wasi-Wasm32:c_interop Wasi-Wasm32:windows_runtime"
 
 run_timeout=${RUN_TIMEOUT:-300}
 

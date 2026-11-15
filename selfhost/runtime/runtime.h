@@ -37,6 +37,11 @@ __attribute__((constructor)) static void narra_windows_binary_mode(void) {
 #define NARRA_PATH_WINDOWS 0
 #endif
 
+#ifdef __wasi__
+// The wasm setjmp lowering throws this exception tag, and wasi-libc leaves it undefined.
+__asm__(".globl __c_longjmp\n.tagtype __c_longjmp i32\n__c_longjmp:\n");
+#endif
+
 // Thread mode (D111): a program that imports std/thread is emitted with
 // NARRA_THREADS defined. Shared objects then carry negative counts that change
 // atomically, each thread allocates from a heap of its own, and the state

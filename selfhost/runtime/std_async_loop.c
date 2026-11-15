@@ -17,8 +17,11 @@
 #include <sys/event.h>
 #elif defined(__linux__)
 #include <sys/epoll.h>
+#elif defined(__wasi__)
+// WASI preview 1 has no descriptor poller here: the loop has timers and no
+// descriptor waits, and a turn with nothing ready sleeps until the nearest timer.
 #else
-#error "async needs a poller: kqueue (macOS) or epoll (Linux)"
+#error "async needs a poller: kqueue (macOS), epoll (Linux) or WASI timers only"
 #endif
 #include <errno.h>
 #include <time.h>
@@ -214,6 +217,7 @@ static void narra_timer_remove(narra_wait* wait) {
 // The poller.
 
 static void narra_poller_open(void) {
+#if !defined(__wasi__)
   if (narra_async_loop.poller_open) return;
 #if defined(__APPLE__)
   narra_async_loop.poller = kqueue();
@@ -226,12 +230,15 @@ static void narra_poller_open(void) {
     exit(101);
   }
   narra_async_loop.poller_open = true;
+#endif
 }
 
 static void narra_poller_close(void) {
+#if !defined(__wasi__)
   if (!narra_async_loop.poller_open) return;
   close(narra_async_loop.poller);
   narra_async_loop.poller_open = false;
+#endif
 }
 
 // The wait of the io list on descriptor in one direction, or NULL.
@@ -280,7 +287,10 @@ static int narra_epoll_sync(int descriptor, bool registered) {
 // Adds a wait, already in the io list, to the poller; 0, or the errno value.
 static int narra_poller_add(narra_wait* wait) {
   narra_poller_open();
-#if defined(__APPLE__)
+#if defined(__wasi__)
+  (void)wait;
+  return ENOSYS;
+#elif defined(__APPLE__)
   struct kevent change;
   EV_SET(&change, wait->descriptor, wait->writable ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, wait);
   if (kevent(narra_async_loop.poller, &change, 1, NULL, 0, NULL) < 0) return errno;
@@ -293,7 +303,11 @@ static int narra_poller_add(narra_wait* wait) {
 // Takes a wait, already out of the io list, out of the poller. woke is true
 // when the poller reported it, so kqueue has deleted its one-shot event.
 static void narra_poller_remove(int descriptor, bool writable, bool woke) {
-#if defined(__APPLE__)
+#if defined(__wasi__)
+  (void)descriptor;
+  (void)writable;
+  (void)woke;
+#elif defined(__APPLE__)
   if (woke) return;
   struct kevent change;
   EV_SET(&change, descriptor, writable ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0, NULL);
@@ -520,6 +534,13 @@ static bool narra_loop_poll(void) {
     int64_t left = deadline <= now ? 0 : deadline - now;
     if (left < timeout) timeout = left;
   }
+#if defined(__wasi__)
+  // Only timers exist: sleep until the nearest deadline.
+  struct timespec limit;
+  limit.tv_sec = (time_t)(timeout / 1000000000);
+  limit.tv_nsec = (long)(timeout % 1000000000);
+  nanosleep(&limit, NULL);
+#else
   enum { NARRA_POLL_EVENTS = 64 };
   int count;
 #if defined(__APPLE__)
@@ -552,6 +573,7 @@ static bool narra_loop_poll(void) {
     if (writer && (ready & (EPOLLOUT | broken))) narra_wait_end(writer, 0, true);
 #endif
   }
+#endif
   int64_t now = narra_loop_now();
   while (narra_async_loop.timer_count > 0 && narra_async_loop.timers[0]->deadline <= now) {
     narra_wait* wait = narra_async_loop.timers[0];

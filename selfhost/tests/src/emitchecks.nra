@@ -37,6 +37,10 @@
 //   build-targets/cross-flag   `build --target` passes `-target <triple>` first to $CC,
 //                      and nothing for the host target
 //   build-targets/cross-errors   E1600 (unknown name), E1601 (-sanitize), `check --target`
+//   wasi/left-out      Process.run and Terminal.columns are E0991 on Wasi-Wasm32 outside a
+//                      branch that drops it, found by check --all-targets
+//   wasi/left-out-plain   the same for a program that does not import std/build, found by
+//                      check --target Wasi-Wasm32
 //   build-targets/cross-list   `narrac targets` prints the eight rows
 //   audit/basic        `narrac audit` lists the unsafe blocks and @trusted
 //                      functions of testdata/audit/basic
@@ -133,6 +137,16 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       "build-targets/extern-outside-branch",
       Path.join(buildTargets, "extern_outside_branch.nra"),
       "extern-outside-branch",
+    ),
+    makeCase(
+      "wasi/left-out",
+      Path.join(Path.join(context.testdata, "wasi_cases"), "left_out.nra"),
+      "wasi-left-out",
+    ),
+    makeCase(
+      "wasi/left-out-plain",
+      Path.join(Path.join(context.testdata, "wasi_cases"), "left_out_plain.nra"),
+      "wasi-left-out-plain",
     ),
     makeCase("build-targets/cross-flag", Path.join(buildTargets, "cross_hello.nra"), "cross-flag"),
     makeCase(
@@ -231,6 +245,17 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "extern-outside-branch") {
     return checkAllTargets(context, testCase.path, "extern_outside_branch.err", false)
+  }
+  if (testCase.variant == "wasi-left-out") {
+    return checkAllTargets(context, testCase.path, "left_out.err", true)
+  }
+  if (testCase.variant == "wasi-left-out-plain") {
+    return expectEmitError(
+      context,
+      ["check", "--target", "Wasi-Wasm32", testCase.path],
+      testCase.path,
+      "left_out_plain.err",
+    )
   }
   if (testCase.variant == "cross-flag") {
     return checkCrossFlag(context, testCase.path)
@@ -606,7 +631,10 @@ function checkCrossFlag(context: Context, source: string): Result<bool, string> 
   const wanted = [
     #["Linux-X86_64-musl", "-target x86_64-linux-musl -O0"],
     #["Windows-X86_64", "-target x86_64-windows-gnu -O0"],
-    #["Wasi-Wasm32", "-target wasm32-wasi -O0"],
+    #[
+      "Wasi-Wasm32",
+      "-target wasm32-wasi -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -lsetjmp -O0",
+    ],
     #["Linux-X86_64", "-O0"],
   ]
   for (const #[name, start] of Arrays.values(wanted)) {

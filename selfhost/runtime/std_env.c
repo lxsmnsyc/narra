@@ -105,6 +105,32 @@ static lstr* narra_env_arg(int64_t i) {
   const char* a = __argv[i];
   return narra_io_lossy(a, strlen(a));
 }
+#elif defined(__wasi__)
+#include <wasi/api.h>
+// WASI has no /proc: the arguments come from args_sizes_get and args_get, read once.
+// Threads do not exist in preview 1, so no lock is needed.
+static char* narra_env_buf;
+static char** narra_env_list;
+static int64_t narra_env_n = -1;
+
+static void narra_env_load(void) {
+  if (narra_env_n >= 0) return;
+  narra_env_n = 0;
+  __wasi_size_t count = 0;
+  __wasi_size_t size = 0;
+  if (__wasi_args_sizes_get(&count, &size) != 0 || count == 0) return;
+  narra_env_buf = malloc(size ? size : 1);
+  narra_env_list = malloc(sizeof(char*) * count);
+  if (!narra_env_buf || !narra_env_list) return;
+  if (__wasi_args_get((uint8_t**)narra_env_list, (uint8_t*)narra_env_buf) != 0) return;
+  narra_env_n = (int64_t)count;
+}
+static int64_t narra_env_argc(void) { narra_env_load(); return narra_env_n; }
+static lstr* narra_env_arg(int64_t i) {
+  narra_env_load();
+  const char* a = narra_env_list[i];
+  return narra_io_lossy(a, strlen(a));
+}
 #else
 // Elsewhere the arguments are read once from /proc/self/cmdline.
 static char* narra_env_buf;

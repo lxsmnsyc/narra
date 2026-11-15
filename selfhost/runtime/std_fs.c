@@ -136,6 +136,22 @@ static bool narra_fs_read_bytes(lstr* path, lstr** out, lstr** err) {
 
 static bool narra_fs_write(lstr* path, lstr* text, int64_t* written, lstr** err) {
   if (!narra_io_no_nul(path, err)) return false;
+#ifdef __wasi__
+  // WASI has no /dev: the two standard output paths write descriptors 1 and 2.
+  FILE* standard = NULL;
+  if (strcmp(path->data, "/dev/stdout") == 0) standard = stdout;
+  if (strcmp(path->data, "/dev/stderr") == 0) standard = stderr;
+  if (standard) {
+    errno = 0;
+    size_t sent = fwrite(text->data, 1, (size_t)text->len, standard);
+    if (sent != (size_t)text->len || fflush(standard) != 0) {
+      *err = narra_io_fail(path->data, path->len, strerror(errno ? errno : EIO));
+      return false;
+    }
+    *written = text->len;
+    return true;
+  }
+#endif
   FILE* f = fopen(path->data, "wb");
   if (!f) {
     *err = narra_io_fail(path->data, path->len, strerror(errno));

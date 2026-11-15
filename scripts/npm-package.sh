@@ -9,15 +9,18 @@
 #   3. The package of this machine's row gets the compiler. Rows named in
 #      NARRA_NPM_ROWS (as `narrac targets` prints them) are built with
 #      `narrac build --target` and zig cc.
-#   4. Each package folder is copied to $NARRA_NPM_OUT/package/, its version is
-#      set, the binary is added, and `npm pack` writes the tarballs to $NARRA_NPM_OUT.
+#   4. Each package folder is copied to $NARRA_NPM_OUT/narrac-npm/package/, its version
+#      is set, the binary is added, and `npm pack` writes the tarballs to
+#      $NARRA_NPM_OUT/narrac-npm/. That subfolder is the only place the script deletes
+#      from; it holds a marker file, and a folder of that name without the marker stops
+#      the run.
 #   5. Unless --no-check: the tarballs install into two scratch projects, one
 #      with the host package and one with only narrac-wasm, and
 #      npm/test/compare.js compares `npx narrac` and the API with native narrac.
 #
 # Environment:
 #   NARRA_STAGE      folder that holds narrac and stage2.c (bootstrap.sh <dir>); skips step 1
-#   NARRA_NPM_OUT    output folder (default dist/npm)
+#   NARRA_NPM_OUT    folder that receives narrac-npm/ (default dist/npm)
 #   NARRA_NPM_ROWS   extra rows to build with zig, for example "Linux-Arm64-musl"
 #   NARRA_NPM_SCRATCH folder for the scratch projects (default: a temporary folder)
 #
@@ -58,7 +61,9 @@ for tool in node npm; do
   fi
 done
 
-out=${NARRA_NPM_OUT:-$root/dist/npm}
+base=${NARRA_NPM_OUT:-$root/dist/npm}
+out=$base/narrac-npm
+marker=$out/.narrac-npm-owned
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT TERM
@@ -135,10 +140,14 @@ for row in ${NARRA_NPM_ROWS:-}; do
 done
 
 # 4. Copy each package, set the version, add the binary and pack.
-# Clear only what an earlier run wrote, never the folder itself.
-rm -rf "$out/package"
-rm -f "$out"/*.tgz
+# Clear only the subfolder this script owns, and only when an earlier run marked it.
+if [ -e "$out" ] && [ ! -f "$marker" ]; then
+  echo "npm-package: $out exists and is not from this script; remove it or pick another NARRA_NPM_OUT" >&2
+  exit 1
+fi
+rm -rf "$out"
 mkdir -p "$out/package"
+: > "$marker"
 for source in "$root"/npm/narrac "$root"/npm/narrac-*; do
   [ -f "$source/package.json" ] || continue
   name=$(basename "$source")

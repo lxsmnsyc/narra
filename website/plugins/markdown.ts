@@ -13,7 +13,7 @@ import { language as lua } from '../src/highlight/lua.ts';
 import { language as narra } from '../src/highlight/narra.ts';
 import { language as sh } from '../src/highlight/sh.ts';
 import { language as toml } from '../src/highlight/toml.ts';
-import { annotate, queryHovers, readFenceKind } from './twoslash.ts';
+import { annotate, collectSamples, queryHovers, readFenceKind } from './twoslash.ts';
 import type { Answer } from './twoslash.ts';
 
 const REPOSITORY = 'https://github.com/lxsmnsyc/narra';
@@ -120,7 +120,7 @@ function createRenderer(from: string): MarkdownIt {
       '<pre tabindex="0" role="group" aria-label="Code"',
     );
     // The answers of narrac were collected before the render; a sample without one stays plain.
-    const answer = kind ? (env as { answers?: Map<string, Answer> }).answers?.get(token.content) : undefined;
+    const answer = kind ? (env as { answers?: Map<number, Answer> }).answers?.get(index) : undefined;
     if (answer) {
       block = annotate(block, answer, kind === 'error');
     }
@@ -188,15 +188,16 @@ export default function markdown(): Plugin {
       this.addWatchFile(file);
       const from = path.relative(ROOT, file).split(path.sep).join('/');
       const parser = createRenderer(from);
-      const env: { headings: Heading[]; answers?: Map<string, Answer> } = { headings: [] };
-      // The samples that are whole files go to narrac together, before the page renders.
-      const samples: string[] = [];
-      for (const token of parser.parse(source, {})) {
-        if (token.type === 'fence' && readFenceKind(token.info)) {
-          samples.push(token.content);
+      const env: { headings: Heading[]; answers?: Map<number, Answer> } = { headings: [] };
+      // The samples go to narrac together before the page renders, keyed by their place in the
+      // token list, which the render sees in the same order.
+      const fences: { index: number; info: string; content: string }[] = [];
+      for (const [index, token] of parser.parse(source, {}).entries()) {
+        if (token.type === 'fence') {
+          fences.push({ index, info: token.info, content: token.content });
         }
       }
-      env.answers = await queryHovers(samples);
+      env.answers = await queryHovers(collectSamples(fences));
       const html = parser.render(source, env);
       let title = '';
       for (const heading of env.headings) {

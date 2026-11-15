@@ -36,9 +36,12 @@ export interface Answer {
   diagnostics: Diagnostic[];
 }
 
-export type FenceKind = 'file' | 'error';
+export type FenceKind = 'file' | 'error' | 'package';
 
-/** A sample is a whole file when its info string is `narra` or `narra error`. */
+/**
+ * A sample is a whole file when its info string is `narra` or `narra error`, and one file of a
+ * package of the page when it is `narra file <package> <path>` with a `.nra` path.
+ */
 export function readFenceKind(info: string): FenceKind | undefined {
   const words = info.trim().split(/\s+/);
   if (words[0] !== 'narra') {
@@ -47,7 +50,55 @@ export function readFenceKind(info: string): FenceKind | undefined {
   if (words.length === 1) {
     return 'file';
   }
+  if (words[1] === 'file' && words.length === 4 && words[3]!.endsWith('.nra')) {
+    return 'package';
+  }
   return words.length === 2 && words[1] === 'error' ? 'error' : undefined;
+}
+
+/** The files of a package to check, and the one whose hovers the page shows. */
+export interface Sample {
+  files: Record<string, string>;
+  target: string;
+}
+
+const DEFAULT_MANIFEST = '[package]\nname = "sample"\n';
+
+/**
+ * Turns the fences of a page into samples, by their place in the token list. A `narra file`
+ * fence is a version of one file of a package: it is checked with the files of that package
+ * shown before it, and with the first version of the files shown only after it, so an import of
+ * a module the page shows later still resolves.
+ */
+export function collectSamples(fences: { index: number; info: string; content: string }[]): Map<number, Sample> {
+  const samples = new Map<number, Sample>();
+  const firstVersions = new Map<string, Record<string, string>>();
+  for (const fence of fences) {
+    const words = fence.info.trim().split(/\s+/);
+    if (words[0] === 'narra' && words[1] === 'file' && words.length === 4) {
+      const files = firstVersions.get(words[2]!) ?? {};
+      files[words[3]!] ??= fence.content;
+      firstVersions.set(words[2]!, files);
+    }
+  }
+  const current = new Map<string, Record<string, string>>();
+  for (const fence of fences) {
+    const kind = readFenceKind(fence.info);
+    const words = fence.info.trim().split(/\s+/);
+    if (words[0] === 'narra' && words[1] === 'file' && words.length === 4) {
+      // Every file fence updates its package, also `narra.toml`.
+      const files = { ...current.get(words[2]!), [words[3]!]: fence.content };
+      current.set(words[2]!, files);
+      if (kind === 'package') {
+        const all = { ...firstVersions.get(words[2]!), ...files };
+        all['narra.toml'] ??= DEFAULT_MANIFEST;
+        samples.set(fence.index, { files: all, target: words[3]! });
+      }
+    } else if (kind) {
+      samples.set(fence.index, { files: { 'narra.toml': DEFAULT_MANIFEST, 'src/main.nra': fence.content }, target: 'src/main.nra' });
+    }
+  }
+  return samples;
 }
 
 interface Narrac {
@@ -89,16 +140,21 @@ function getNarrac(): Promise<Narrac | undefined> {
   return narracPromise;
 }
 
-async function runQuery(narrac: Narrac, source: string): Promise<Answer | undefined> {
-  // The sample is the whole of `src/main.nra` of a package of its own.
+async function runQuery(narrac: Narrac, sample: Sample): Promise<Answer | undefined> {
+  // The sample's files become a package of their own in a temporary folder.
   const directory = await mkdtemp(path.join(os.tmpdir(), 'narra-twoslash-'));
   try {
-    await mkdir(path.join(directory, 'src'));
-    await writeFile(path.join(directory, 'narra.toml'), '[package]\nname = "sample"\n');
-    await writeFile(path.join(directory, 'src/main.nra'), source);
+    for (const [file, content] of Object.entries(sample.files)) {
+      const target = path.join(directory, file);
+      if (!target.startsWith(directory + path.sep)) {
+        continue;
+      }
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
     const { stdout } = await execFileAsync(
       narrac.command,
-      ['query', '--package', directory, '--json', 'hovers', 'src/main.nra'],
+      ['query', '--package', directory, '--json', 'hovers', sample.target],
       { timeout: QUERY_TIMEOUT, maxBuffer: 8 * 1024 * 1024 },
     );
     return readAnswer(stdout);
@@ -123,15 +179,25 @@ function readAnswer(stdout: string): Answer | undefined {
 
 const answers = new Map<string, Promise<Answer | undefined>>();
 
-async function answerSample(narrac: Narrac, source: string): Promise<Answer | undefined> {
-  const key = createHash('sha256').update(narrac.identity).update('\0').update(source).digest('hex');
+function makeKey(sample: Sample): string {
+  // The file names are sorted, so the same package gives the same key.
+  const names = Object.keys(sample.files).sort();
+  const parts: string[] = [sample.target];
+  for (const name of names) {
+    parts.push(name, sample.files[name]!);
+  }
+  return JSON.stringify(parts);
+}
+
+async function answerSample(narrac: Narrac, sample: Sample, sampleKey: string): Promise<Answer | undefined> {
+  const key = createHash('sha256').update(narrac.identity).update('\0').update(sampleKey).digest('hex');
   const file = path.join(CACHE, `${key}.json`);
   try {
     return JSON.parse(await readFile(file, 'utf8')) as Answer;
   } catch {
     // Not cached yet.
   }
-  const answer = await runQuery(narrac, source);
+  const answer = await runQuery(narrac, sample);
   if (answer) {
     await mkdir(CACHE, { recursive: true });
     await writeFile(file, JSON.stringify(answer));
@@ -143,23 +209,29 @@ async function answerSample(narrac: Narrac, source: string): Promise<Answer | un
  * Asks narrac about each sample, four processes at a time. A sample the compiler could not answer
  * is missing from the result and renders as plain highlighted code.
  */
-export async function queryHovers(sources: string[]): Promise<Map<string, Answer>> {
-  const result = new Map<string, Answer>();
+export async function queryHovers(samples: Map<number, Sample>): Promise<Map<number, Answer>> {
+  const result = new Map<number, Answer>();
   const narrac = await getNarrac();
   if (!narrac) {
     return result;
   }
   const pending: Promise<void>[] = [];
-  const queue: string[] = [];
-  for (const source of new Set(sources)) {
-    if (!answers.has(source)) {
-      queue.push(source);
+  const queue: [string, Sample][] = [];
+  const keys = new Map<number, string>();
+  for (const [index, sample] of samples) {
+    const key = makeKey(sample);
+    keys.set(index, key);
+    if (!answers.has(key)) {
+      // A placeholder keeps a second fence with the same sample out of the queue.
+      answers.set(key, Promise.resolve(undefined));
+      queue.push([key, sample]);
     }
   }
   async function work(): Promise<void> {
-    for (let source = queue.shift(); source !== undefined; source = queue.shift()) {
-      answers.set(source, answerSample(narrac!, source));
-      await answers.get(source);
+    for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
+      const running = answerSample(narrac!, item[1], item[0]);
+      answers.set(item[0], running);
+      await running;
     }
   }
   for (let worker = 0; worker < Math.min(POOL_SIZE, queue.length); worker++) {
@@ -167,10 +239,10 @@ export async function queryHovers(sources: string[]): Promise<Map<string, Answer
   }
   await Promise.all(pending);
   let failed = 0;
-  for (const source of new Set(sources)) {
-    const answer = await answers.get(source);
+  for (const [index, key] of keys) {
+    const answer = await answers.get(key);
     if (answer) {
-      result.set(source, answer);
+      result.set(index, answer);
     } else {
       failed++;
     }

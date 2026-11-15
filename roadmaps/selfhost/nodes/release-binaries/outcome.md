@@ -37,6 +37,10 @@
 - `install.sh` against archives served by `python3 -m http.server` on 127.0.0.1, scratch HOME and `NARRA_INSTALL`: good checksum, exit 0, installed `narrac` ran hello.nra; corrupted `.sha256`, exit 1, "checksum ... does not match", nothing installed.
 - `sh scripts/test.sh --suite guide`: PASS, 329 cases in 95s.
 
+## Gate
+
+- 2026-11-15: by the maintainer's delegation, the orchestrator reviewed this node with a fresh agent. It found no must-fix or should-fix items. `actionlint` and `shellcheck` are clean. Tags with a suffix now become prereleases. The node landed on `feat/batch-16` as direct commits, not as its own pull request. No tag was pushed.
+
 ## Before the first tag (maintainer)
 
 - Read `.github/workflows/release.yml`: trigger, permissions, action versions (`checkout@v4`, `upload-artifact@v4`, `download-artifact@v4`).

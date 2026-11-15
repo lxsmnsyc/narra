@@ -49,7 +49,7 @@ depends_on:
 
 ## Goal
 
-`narrac build --emit node-addon` writes `<name>.node` for the host or a `--target` row, as D123 item 3 says, with one generated Node-API wrapper per `@export(C)` function, `napi_register_module_v1`, and `<name>.d.ts`. Every export is synchronous.
+`narrac build --emit node-addon` writes `<name>.node` for the host or a `--target` row, as D123 item 3 says, with one generated Node-API wrapper per `@export(C)` function, `napi_register_module_v1`, and `<name>.d.ts`. Every export is synchronous. Types are those of D122 item 7: `bigint` for `int`, `i64` and `u64`, `Uint8Array` for `bytes`, and E1640 for `Ptr<T>`. The `.d.ts` follows it. The glue calls `narra_try_name` as a `static` function in the same C file. It does not take the lock itself: the entry does.
 
 ## Context
 
@@ -60,6 +60,7 @@ depends_on:
 ## Acceptance
 
 - [ ] A sample library with `string`, `bytes`, number and `bool` exports loads with `require` in a test. The suite skips it with a message when `node` is missing. Each call returns the expected value, and a panic and an `Err` arrive as thrown `Error`s.
+- [ ] A test loads the `.node` in two `worker_threads` and calls an export in both. A panic gives an `Error` with `code` `ERR_NARRA_PANIC`, and a later call works.
 - [ ] The `.node` file exports only `napi_register_module_v1` (`nm`).
 - [ ] The `.d.ts` file passes `tsc --noEmit` if TypeScript is on the machine. Otherwise the outcome says so.
 - [ ] The leak check is clean after a million calls in one process.

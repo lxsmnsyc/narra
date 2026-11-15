@@ -1,7 +1,7 @@
 ---
 id: release-binaries
 title: "Release workflow with macOS and Linux binaries"
-status: active
+status: done
 priority: could
 type: chore
 story: batch-16

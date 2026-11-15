@@ -52,12 +52,13 @@ depends_on:
 
 ## Goal
 
-`narrac build --emit wasm-js --target Wasi-Wasm32` writes the reactor module and `<name>.js` plus `<name>.d.ts`, as D123 item 4 says. The JS module instantiates the reactor, holds the WASI preview1 calls the runtime imports, copies strings and bytes through the D122 allocator calls, and throws a JS `Error` for a panic or an `Err`. No outside npm package (no emnapi).
+`narrac build --emit wasm-js --target Wasi-Wasm32` writes the reactor module and `<name>.js` plus `<name>.d.ts`, as D123 item 4 says. The JS module instantiates the reactor, holds the WASI preview1 calls the runtime imports, copies strings and bytes through the D122 allocator calls, follows D122 item 9 (`_initialize`, a 64-byte scratch area, `narra_<library>_alloc` and `_free`, 64-bit integers as `bigint`), and throws a JS `Error` for a panic or an `Err`. No outside npm package (no emnapi).
 
 ## Acceptance
 
 - [ ] node-addon's sample gives the same results through `<name>.js` in Node as through the `.node` build, and in a headless browser if one is on the machine. Otherwise the outcome says so.
 - [ ] The generated JS imports nothing outside itself, and `<name>.d.ts` matches node-addon's.
+- [ ] The module is built with `-wasm-use-legacy-eh=false` and runs in Node 26 and under wasmtime 50. The outcome names the browser versions that run it, or says no browser was tried.
 - [ ] A panic inside an export leaves the instance usable for the next call.
 
 ## Sizing

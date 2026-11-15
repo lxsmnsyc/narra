@@ -1,7 +1,7 @@
 ---
 id: c-abi-design
 title: "Spike: ownership and runtime rules at the C library boundary"
-status: todo
+status: done
 priority: could
 type: spike
 story: batch-16

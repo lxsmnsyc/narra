@@ -49,7 +49,7 @@ Programs built with `--target Wasi-Wasm32` run under `wasmtime`. The std modules
 
 Probe 2026-11-14 (zig 0.17.1, wasmtime 50.0.1):
 
-- A small program builds and runs with `zig cc -target wasm32-wasi -mexception-handling -mllvm -wasm-enable-sjlj ... -lsetjmp` and `wasmtime -W exceptions=y`. Without those flags `setjmp.h` fails: the panic handler (`runtime.h`, `narra_panic_jmp`) needs setjmp. Those flags go into `targetCompilerArguments` for the wasm row.
+- A small program builds and runs with `zig cc -target wasm32-wasi -mexception-handling -mllvm -wasm-enable-sjlj ... -lsetjmp` and `wasmtime -W exceptions=y`. Without those flags `setjmp.h` fails: the panic handler (`runtime.h`, `narra_panic_jmp`) needs setjmp. Those flags go into `targetCompilerArguments` for the wasm row. They are not enough: the row also needs `-mllvm -wasm-use-legacy-eh=false`, or wasmtime 50 refuses any module that links `setjmp`, and the emitted C must define the `__c_longjmp` tag. See D122 (item 5 and the probe table). The `targets` contract lists neither; this node carries them.
 - `seed/narrac.c` for wasm fails on `signal.h`, `sys/wait.h`, `pipe`, `kill`, `sigaction`: `std_process.c`, `std_test.c` and `test_runner.c`. `std_async_io.c` uses sockets and `std_async_loop.c` uses kqueue or epoll; `std_thread.c` uses pthreads (wasi threads are not in preview 1).
 
 ## Work

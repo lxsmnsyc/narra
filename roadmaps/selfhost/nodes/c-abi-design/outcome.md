@@ -71,6 +71,10 @@
 
 - SPEC section 9: delete the `@layout(C)` text, write the rules of D122 when c-export-functions lands. This is part of that node.
 
+## Gate
+
+- 2026-11-15: the maintainer delegated the gate reading to the orchestrator. The orchestrator accepted D122 as written. `bigint` for 64-bit integers, the pointer and length shape, one lock per library and a leak after a caught panic all stay.
+
 ## Open questions
 
-- None that change what gets built. Choices the maintainer may overrule when reading D122: `bigint` for 64-bit integers, the flat pointer and length shape, one lock per library instead of per-thread heaps, and a leak (not cleanup) after a caught panic.
+- None. The four choices listed under Gate were accepted.

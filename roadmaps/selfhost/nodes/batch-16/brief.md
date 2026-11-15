@@ -1,7 +1,7 @@
 ---
 id: batch-16
 title: "Batch 16: packages, distribution and docs"
-status: active
+status: done
 priority: could
 type: story
 story:

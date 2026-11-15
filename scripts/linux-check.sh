@@ -31,6 +31,7 @@ status=0
 docker run --rm ${platform[@]+"${platform[@]}"} \
   --cap-add SYS_PTRACE \
   -e JOBS="${JOBS:-}" \
+  -e TMPDIR=/tmp \
   --security-opt seccomp=unconfined \
   -v "$root:/repo:ro" \
   "$image" \

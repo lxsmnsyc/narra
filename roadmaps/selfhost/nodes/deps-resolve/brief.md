@@ -1,7 +1,7 @@
 ---
 id: deps-resolve
 title: "Minimal version selection and writing narra.lock"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

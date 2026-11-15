@@ -1,7 +1,7 @@
 ---
 id: package-exports
 title: "Package exports table"
-status: todo
+status: done
 priority: could
 type: feature
 story: batch-16

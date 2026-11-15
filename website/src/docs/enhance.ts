@@ -1,5 +1,6 @@
 // Browser behavior of a documentation page: a copy button on each code block, and an outline
 // that follows the section in view.
+import { readCodeText } from '../twoslash/client.ts';
 
 const COPY_ICON =
   '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
@@ -15,9 +16,8 @@ function createCopyButton(block: HTMLElement): HTMLButtonElement {
   button.innerHTML = `<span class="swap"><span class="swap-item">${COPY_ICON}</span><span class="swap-item" aria-hidden="true">${CHECK_ICON}</span></span>`;
   let timer = 0;
   button.addEventListener('click', async () => {
-    const code = block.querySelector('pre code') ?? block.querySelector('pre');
     try {
-      await navigator.clipboard.writeText(code?.textContent ?? '');
+      await navigator.clipboard.writeText(readCodeText(block));
     } catch {
       return;
     }

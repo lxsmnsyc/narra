@@ -13,6 +13,8 @@ import { language as lua } from '../src/highlight/lua.ts';
 import { language as narra } from '../src/highlight/narra.ts';
 import { language as sh } from '../src/highlight/sh.ts';
 import { language as toml } from '../src/highlight/toml.ts';
+import { annotate, queryHovers, readFenceKind } from './twoslash.ts';
+import type { Answer } from './twoslash.ts';
 
 const REPOSITORY = 'https://github.com/lxsmnsyc/narra';
 
@@ -108,12 +110,18 @@ function createRenderer(from: string): MarkdownIt {
   parser.renderer.rules.fence = (tokens, index, options, env, self) => {
     // The language comes from the info string, so `narra file shop narra.toml` is TOML.
     const token = tokens[index]!;
+    const kind = readFenceKind(token.info);
     const language = readFenceLanguage(token.info);
     token.info = language;
-    const block = renderFence(tokens, index, options, env, self).replace(
+    let block = renderFence(tokens, index, options, env, self).replace(
       /<pre(?=[\s>])/,
       '<pre tabindex="0" role="group" aria-label="Code"',
     );
+    // The answers of narrac were collected before the render; a sample without one stays plain.
+    const answer = kind ? (env as { answers?: Map<string, Answer> }).answers?.get(token.content) : undefined;
+    if (answer) {
+      block = annotate(block, answer, kind === 'error');
+    }
     const label =
       language && language !== 'text'
         ? `<span class="code-lang">${parser.utils.escapeHtml(language)}</span>`
@@ -170,7 +178,7 @@ export default function markdown(): Plugin {
   return {
     name: 'narra-markdown',
     enforce: 'pre',
-    transform(source, id) {
+    async transform(source, id) {
       const file = id.split('?')[0]!;
       if (!file.endsWith('.md')) {
         return undefined;
@@ -178,7 +186,15 @@ export default function markdown(): Plugin {
       this.addWatchFile(file);
       const from = path.relative(ROOT, file).split(path.sep).join('/');
       const parser = createRenderer(from);
-      const env: { headings: Heading[] } = { headings: [] };
+      const env: { headings: Heading[]; answers?: Map<string, Answer> } = { headings: [] };
+      // The samples that are whole files go to narrac together, before the page renders.
+      const samples: string[] = [];
+      for (const token of parser.parse(source, {})) {
+        if (token.type === 'fence' && readFenceKind(token.info)) {
+          samples.push(token.content);
+        }
+      }
+      env.answers = await queryHovers(samples);
       const html = parser.render(source, env);
       let title = '';
       for (const heading of env.headings) {

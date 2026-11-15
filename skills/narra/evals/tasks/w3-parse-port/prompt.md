@@ -1,0 +1,1 @@
+Add a module `task/port` in `src/port.nra` that exports `parsePort(text: string): Result<int, string>`. It returns `Ok(port)` when the text is a whole number from 1 to 65535, and `Err(message)` for any other text. Do not panic.

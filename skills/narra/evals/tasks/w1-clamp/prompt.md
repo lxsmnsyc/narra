@@ -1,0 +1,1 @@
+Add a module `task/math` in `src/math.nra` that exports `clamp(value: int, low: int, high: int): int`. It returns `low` when `value` is below `low`, `high` when `value` is above `high`, and `value` otherwise.

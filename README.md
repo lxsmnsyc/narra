@@ -8,6 +8,8 @@ Status: specification draft. The compiler, `narrac`, is written in Narra (`selfh
 
 To build and install `narrac`, follow [docs/install.md](docs/install.md).
 
+To have a coding agent write Narra with `narrac`, add the skill in [skills/narra](skills/narra/SKILL.md) to Claude Code: `/plugin marketplace add lxsmnsyc/narra`, then `/plugin install narra@narra`.
+
 ## Goals
 
 - **Simple.** One way to write each thing. A small grammar with no ambiguity.

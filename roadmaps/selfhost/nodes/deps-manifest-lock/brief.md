@@ -1,7 +1,7 @@
 ---
 id: deps-manifest-lock
 title: "[dependencies] in narra.toml and the narra.lock format"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 225451
 owns:
   - roadmaps/selfhost/nodes/deps-manifest-lock/**
   - selfhost/src/lockfile.nra

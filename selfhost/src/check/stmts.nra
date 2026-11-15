@@ -1,0 +1,2176 @@
+// The statement checker, ported from compiler/internal/narra/check_stmt.go
+// (block, stmt, ifStmt, diverges, isResult; lvalueRoot is
+// findAssignedLocal in exprs.nra). Locals go into the current body's
+// tables through declareLocal; block scopes are pushScope and
+// popScope (check.nra).
+import { isVector, checkVectorOperator } from "narrac/check/simdtypes"
+import {
+  proveResult,
+  rejectDelegatedResults,
+  seedResultLocal,
+  seedPatternFacts,
+  seedLoopFacts,
+} from "narrac/check/contracts"
+import { splitString, substring } from "narrac/driver/textops"
+import {
+  Pos,
+  Expr,
+  Stmt,
+  Block,
+  TypeExpr,
+  Pattern,
+  YieldBinding,
+  LoopReference,
+} from "narrac/syntax/ast"
+import { quoteGo } from "narrac/syntax/parser"
+import { findCForOpenPath, findWhileOpenPath, isPathEndingCall } from "narrac/check/pathends"
+import { Fix, createFix, createEdit, insertAt, sliceCharacters } from "narrac/driver/fixes"
+import { Type, isInteger } from "narrac/check/types"
+import {
+  isConditional,
+  Checker,
+  BlockContext,
+  Ref,
+  Walker,
+  findLocal,
+  reportError,
+  reportErrorFix,
+  typeString,
+  declareLocal,
+  pushScope,
+  popScope,
+  getLocal,
+  markAssigned,
+  getRef,
+  getNodeType,
+  setNodeType,
+  getExpressionId,
+  getExpressionPos,
+  BindingKind,
+  LoopBorrow,
+  setBinding,
+  isContentsType,
+  isNumeric,
+} from "narrac/check/check"
+import { resolveType, findTupleType, enterTypeofChain } from "narrac/check/resolve"
+import {
+  checkExpression,
+  expectType,
+  checkConstWrite,
+  checkNoMutableEscape,
+  findAssignedLocal,
+  checkContentsChange,
+  describePlace,
+} from "narrac/check/exprs"
+import { checkIs, checkMatch, checkDestructure } from "narrac/check/match"
+import { markCapturedWrite } from "narrac/check/funcvalues"
+import { recordBuildCondition } from "narrac/check/buildconditions"
+import { checkStreamYield } from "narrac/check/asyncgenerators"
+import {
+  checkForAwaitPlace,
+  findStreamElement,
+  reportPlainStreamLoop,
+  reportMutableStreamLoop,
+} from "narrac/check/forawait"
+import {
+  getPatternId,
+  collectPatternLocals,
+  bindPatternLocals,
+  findNarrowable,
+  setNarrowed,
+  endNarrowing,
+  findOtherVariant,
+  areArgumentsIrrefutable,
+} from "narrac/check/patterns"
+import {
+  collectAssignedInExpr,
+  collectAssignedInBlock,
+  collectAssignedInStatement,
+  narrowByCondition,
+  recordConstantLocal,
+  checkDivisor,
+  checkShiftCount,
+} from "narrac/check/operands"
+import { seedRangeFacts, seedCounterFact } from "narrac/check/fixedarrays"
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as AsyncCheck from "narrac/check/asynccheck"
+import { checkDeadCode } from "narrac/check/deadcode"
+import { isVoidInstance } from "narrac/check/asyncvoid"
+
+export function checkBlock<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  block: Block,
+) uses alloc {
+  pushScope(mutable checker)
+  for (const statement of Arrays.values(block.statements)) {
+    checkStatement(mutable checker, walker, statement)
+  }
+  checkDeadCode(mutable checker, block)
+  popScope(mutable checker)
+}
+
+export function checkStatement<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  statement: Stmt,
+) uses alloc {
+  // The emitter runs `mutable` calls before the rest of the statement, so a
+  // read of the local anywhere in the statement may see the new value.
+  match (statement) {
+    Stmt.VarStmt(_, _, _, _, _, _, value) => endExpressionNarrowing(mutable checker, value)
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      endExpressionNarrowing(mutable checker, target)
+      endExpressionNarrowing(mutable checker, value)
+    }
+    Stmt.ExprStmt(_, expression) => endExpressionNarrowing(mutable checker, expression)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        endExpressionNarrowing(mutable checker, returned)
+      }
+    }
+    Stmt.IfStmt(_, condition, _, _) => endExpressionNarrowing(mutable checker, condition)
+    Stmt.ForStmt(_, _, _, _, iterable, _, _, _) => endExpressionNarrowing(mutable checker, iterable)
+    Stmt.YieldStmt(_, value, _, _) => endExpressionNarrowing(mutable checker, value)
+    _ => {}
+  }
+  match (statement) {
+    Stmt.BlockStmt(block) => checkBlock(mutable checker, walker, block)
+    Stmt.VarStmt(nodeId, pos, isMutable, name, pattern, type, value) => checkVariable(
+      mutable checker,
+      walker,
+      nodeId,
+      pos,
+      isMutable,
+      name,
+      pattern,
+      type,
+      value,
+    )
+    Stmt.AssignStmt(pos, target, value) => checkAssignment(
+      mutable checker,
+      walker,
+      pos,
+      target,
+      "=",
+      value,
+    )
+    Stmt.CompoundAssignStmt(pos, target, operator, value) => checkAssignment(
+      mutable checker,
+      walker,
+      pos,
+      target,
+      operator,
+      value,
+    )
+    Stmt.ExprStmt(pos, expression) => checkExpressionStatement(
+      mutable checker,
+      walker,
+      pos,
+      expression,
+    )
+    Stmt.ReturnStmt(pos, value) => checkReturn(mutable checker, walker, pos, value)
+    Stmt.IfStmt(_, condition, then, orElse) => checkIf(
+      mutable checker,
+      walker,
+      condition,
+      then,
+      orElse,
+    )
+    Stmt.WhileStmt(pos, label, condition, body) => checkWhile(
+      mutable checker,
+      walker,
+      pos,
+      label,
+      condition,
+      body,
+    )
+    Stmt.CForStmt(pos, label, init, condition, step, body) => checkCFor(
+      mutable checker,
+      walker,
+      pos,
+      label,
+      init,
+      condition,
+      step,
+      body,
+    )
+    Stmt.ForStmt(nodeId, pos, label, name, iterable, body, reference, awaitPos) => checkFor(
+      mutable checker,
+      walker,
+      nodeId,
+      pos,
+      label,
+      name,
+      iterable,
+      body,
+      reference,
+      awaitPos,
+    )
+    Stmt.BreakStmt(pos, label) => checkLoopExit(
+      mutable checker,
+      pos,
+      label,
+      "break",
+      "E0233",
+      "break must be inside a loop",
+    )
+    Stmt.ContinueStmt(pos, label) => checkLoopExit(
+      mutable checker,
+      pos,
+      label,
+      "continue",
+      "E0234",
+      "continue must be inside a loop",
+    )
+    Stmt.YieldStmt(pos, value, delegate, binding) => checkYield(
+      mutable checker,
+      walker,
+      pos,
+      value,
+      delegate,
+      binding,
+    )
+  }
+  checkMutableConflicts(mutable checker, statement)
+}
+
+function checkLoopExit(
+  mutable checker: Checker,
+  pos: Pos,
+  label: string,
+  word: string,
+  code: string,
+  message: string,
+) uses alloc {
+  const blockCount = Arrays.length(checker.blocks)
+  if (blockCount > 0) {
+    // Inside a block expression only its own loops can be left. The loops
+    // outside it, also outside an enclosing block expression, are out of reach.
+    let reaches = checker.loops == 0 && hasOuterLoops(checker)
+    if (label != "") {
+      reaches = !hasLabel(checker.labels, label) && hasOuterLabel(checker, label)
+    }
+    if (reaches) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0932",
+        `${word} cannot leave a block expression; it can only leave a loop inside the block`,
+      )
+      return
+    }
+  }
+  if (label == "") {
+    if (checker.loops == 0) {
+      reportError(mutable checker, pos, code, message)
+    }
+    return
+  }
+  for (const name of Arrays.values(checker.labels)) {
+    if (name == label) {
+      return
+    }
+  }
+  reportError(mutable checker, pos, "E0916", `no enclosing loop is labeled "${label}"`)
+}
+
+function hasOuterLoops(checker: Checker): bool {
+  for (const context of Arrays.values(checker.blocks)) {
+    if (context.loops > 0) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasOuterLabel(checker: Checker, label: string): bool {
+  for (const context of Arrays.values(checker.blocks)) {
+    if (hasLabel(context.labels, label)) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasLabel(labels: Array<string>, label: string): bool {
+  for (const name of Arrays.values(labels)) {
+    if (name == label) {
+      return true
+    }
+  }
+  return false
+}
+
+function withoutLast(labels: Array<string>): Array<string> uses alloc {
+  let kept: Array<string> = []
+  for (const i of Ranges.upTo(Arrays.length(labels) - 1)) {
+    Arrays.push(mutable kept, labels[i])
+  }
+  return kept
+}
+
+function enterLoop(mutable checker: Checker, pos: Pos, label: string) uses alloc {
+  // The label is in scope inside the body only.
+  checker.loops++
+  if (label == "") {
+    return
+  }
+  if (hasLabel(checker.labels, label) || hasOuterLabel(checker, label)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0917",
+      `label "${label}" is already used by an enclosing loop`,
+    )
+  }
+  Arrays.push(mutable checker.labels, label)
+}
+
+function leaveLoop(mutable checker: Checker, label: string) uses alloc {
+  checker.loops--
+  if (label != "") {
+    checker.labels = withoutLast(checker.labels)
+  }
+}
+
+function checkCondition<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  condition: Expr,
+) uses alloc {
+  const found = checkExpression(mutable checker, walker, condition, Some(Type.TBool))
+  expectType(mutable checker, getExpressionPos(condition), Some(Type.TBool), found)
+}
+
+function checkVariable<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  isMutable: bool,
+  name: string,
+  pattern: Option<Pattern>,
+  type: Option<TypeExpr>,
+  value: Expr,
+) uses alloc {
+  if (pattern is Some(declaredPattern)) {
+    checkDestructure(mutable checker, walker, isMutable, declaredPattern, type, value)
+    AsyncCheck.checkDiscardedPattern(mutable checker, declaredPattern)
+    return
+  }
+
+  // The annotation, when written, is the variable's type.
+  let want: Option<Type> = None
+  if (type is Some(typeExpression)) {
+    // `typeof name` in the annotation of `name` refers to its own declaration.
+    checker.busy[`typeof|${name}`] = true
+    const savedChain = enterTypeofChain(mutable checker, name)
+    want = Some(resolveType(mutable checker, typeExpression))
+    checker.typeofChain = savedChain
+    checker.busy[`typeof|${name}`] = false
+  }
+  const errorCount = Arrays.length(checker.errors)
+  let found = checkExpression(mutable checker, walker, value, want)
+  if (want is Some(declared)) {
+    expectType(mutable checker, getExpressionPos(value), want, found)
+    found = declared
+  }
+
+  // A value whose check already failed is void; do not report it twice.
+  if (found == Type.TVoid && Arrays.length(checker.errors) == errorCount) {
+    reportError(mutable checker, pos, "E0225", "this expression has no value")
+  }
+  // `const _ =` does not let a task go; Async.detach does (D109 item 5).
+  AsyncCheck.checkDiscardedName(mutable checker, pos, name, found)
+  const local = declareLocal(mutable checker, nodeId, pos, name, found, isMutable, false)
+  // A plain `let` is checked for a write; the hidden source of a `for` loop is not a declaration.
+  if (isMutable && name != "_") {
+    let letPos = copy(pos)
+    if (isLoopSource(value)) {
+      letPos = Pos { line: 0, column: 0 }
+      if (checker.scopes[checker.current].facts.letPositions[nodeId] is Some(written)) {
+        letPos = copy(written)
+      }
+    }
+    checker.bodies[checker.body].locals[local].letLine = letPos.line
+    checker.bodies[checker.body].locals[local].letColumn = letPos.column
+  }
+  setBinding(mutable checker, local, value, BindingKind.Plain)
+  recordConstantLocal(mutable checker, local, value)
+  seedResultLocal(mutable checker, local, value)
+}
+
+function isLoopSource(value: Expr): bool {
+  if (value is Expr.Ident(_, _, name)) {
+    return Str.startsWith(name, "__for_")
+  }
+  return false
+}
+
+function checkAssignment<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  target: Expr,
+  operator: string,
+  value: Expr,
+) uses alloc {
+  // A write through a constant is reported before the target is checked.
+  if (checkConstWrite(mutable checker, pos, target, false)) {
+    checkExpression(mutable checker, walker, value, None)
+    return
+  }
+
+  // Writing a local does not read it. A mutable parameter is an output the
+  // caller sees, so a write to it counts as a use.
+  let writtenLocal = -1
+  let wasUsed = false
+  if (target is Expr.Ident(_, targetPos, targetName)) {
+    const found = findLocal(checker, targetName)
+    // A compound assignment reads the local, so it stays used.
+    if (
+      operator == "=" &&
+        found >= 0 &&
+        !(getLocal(checker, found).param && getLocal(checker, found).isMutable)
+    ) {
+      writtenLocal = found
+      wasUsed = getLocal(checker, found).used
+      // The fix of an unused local renames the assignments too.
+      Arrays.push(mutable checker.bodies[checker.body].locals[found].writes, copy(targetPos))
+    }
+  }
+  checker.assigningId = getExpressionId(target)
+  const targetType = checkExpression(mutable checker, walker, target, None)
+  checker.assigningId = -1
+  if (writtenLocal >= 0) {
+    const body = checker.body
+    checker.bodies[body].locals[writtenLocal].used = wasUsed
+  }
+
+  // A map element has no old value to combine with, so only `=` writes one.
+  if (operator != "=") {
+    if (target is Expr.IndexExpr(_, _, mapTarget, _)) {
+      if (copy(getNodeType(checker, getExpressionId(mapTarget))) is Some(mapType)) {
+        if (mapType is Type.TMap(_, _)) {
+          reportError(
+            mutable checker,
+            pos,
+            "E0226",
+            "only variables, fields and array elements take a compound assignment",
+          )
+          checkExpression(mutable checker, walker, value, None)
+          return
+        }
+      }
+    }
+  }
+
+  // The root of the target must be a `let` variable.
+  const root = findAssignedLocal(checker, target)
+  if (root >= 0) {
+    markAssigned(mutable checker, root)
+  }
+  if (root < 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0226",
+      "only variables, fields and array elements can be assigned",
+    )
+  } else if (target is Expr.Ident(_, _, _)) {
+    // A whole assignment changes the name: only a `let` can.
+    const local = copy(getLocal(checker, root))
+    if (local.binding == BindingKind.Reference) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0958",
+        `loop element ${quoteGo(local.name)} cannot be assigned whole; \`mutable\` reaches its fields and elements, so assign those, or write an index loop to replace the element`,
+      )
+    } else if (local.param && local.isMutable) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0949",
+        `mutable parameter ${quoteGo(local.name)} cannot be assigned whole; \`mutable\` reaches its fields and elements, so return the new value instead`,
+      )
+    } else if (!local.isMutable) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0227",
+        `${quoteGo(local.name)} is constant; declare it with \`let\` to change it`,
+      )
+    } else {
+      markCapturedWrite(mutable checker, root)
+    }
+  } else {
+    // A field or element write changes the contents.
+    checkContentsChange(mutable checker, pos, root, target, false)
+  }
+  // Storing a mutable parameter in a field or element is an escape.
+  if (!(target is Expr.Ident(_, _, _))) {
+    checkNoMutableEscape(mutable checker, value)
+  }
+  if (operator != "=") {
+    checkCompoundOperand(mutable checker, walker, pos, targetType, operator, value)
+    endNarrowing(mutable checker, root)
+    return
+  }
+  const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
+  // The effect pass tracks what a local holds, so a function assigned to a
+  // local adds its effects to the local instead of having to fit its type.
+  checker.looseFunctions = target is Expr.Ident(_, _, _)
+  expectType(mutable checker, getExpressionPos(value), Some(targetType), valueType)
+  checker.looseFunctions = false
+  endNarrowing(mutable checker, root)
+}
+
+function checkCompoundOperand<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  targetType: Type,
+  operator: string,
+  value: Expr,
+) uses alloc {
+  const targetText = typeString(checker, targetType)
+  // `x++` and `x--` take an integer; the value is the implied 1.
+  if (operator == "++" || operator == "--") {
+    if (!isInteger(targetType)) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0963",
+        `${operator} needs an integer variable, found ${targetText}; write \`x += 1\` for a float`,
+      )
+      checkExpression(mutable checker, walker, value, None)
+      return
+    }
+    checkExpression(mutable checker, walker, value, Some(targetType))
+    return
+  }
+  const valueType = checkExpression(mutable checker, walker, value, Some(targetType))
+  const arithmetic = substring(operator, 0, Str.length(operator) - 1)
+  if (isVector(targetType) || isVector(valueType)) {
+    checkVectorOperator(mutable checker, pos, arithmetic, targetType, valueType)
+    return
+  }
+  const valueText = typeString(checker, valueType)
+  if (valueType == targetType) {
+    if (arithmetic == "/" || arithmetic == "%") {
+      checkDivisor(mutable checker, value, targetType)
+    } else if (arithmetic == "<<" || arithmetic == ">>") {
+      checkShiftCount(mutable checker, value, targetType)
+    }
+  }
+  if (valueType != targetType) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0962",
+      `${operator} needs a value of the same type as its target, found ${targetText} and ${valueText}`,
+    )
+    return
+  }
+  let allowed = false
+  if (arithmetic == "+" && targetType == Type.TStr) {
+    allowed = true
+  } else if (
+    arithmetic == "+" ||
+      arithmetic == "-" ||
+      arithmetic == "*" ||
+      arithmetic == "/" ||
+      arithmetic == "%"
+  ) {
+    allowed = isNumeric(targetType)
+  } else {
+    allowed = isInteger(targetType)
+  }
+  if (!allowed) {
+    reportError(mutable checker, pos, "E0962", `${operator} cannot be applied to ${targetText}`)
+  }
+}
+
+function checkExpressionStatement<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  expression: Expr,
+) uses alloc {
+  if (expression is Expr.MatchExpr(_, matchPos, subject, arms)) {
+    checkMatch(mutable checker, walker, matchPos, subject, arms, None, false)
+    return
+  }
+  if (isConditional(expression)) {
+    reportError(
+      mutable checker,
+      getExpressionPos(expression),
+      "E0934",
+      "the value of a conditional expression must be used; write an `if` statement instead",
+    )
+    return
+  }
+  checkExpression(mutable checker, walker, expression, None)
+
+  // A value that holds a task handle must be used, whatever expression gives it.
+  if (copy(getNodeType(checker, getExpressionId(expression))) is Some(statementType)) {
+    if (AsyncCheck.holdsHandle(checker, statementType)) {
+      AsyncCheck.reportUnusedHandle(mutable checker, pos)
+      return
+    }
+  }
+
+  // Only a call can stand alone, and a Result it returns must be used.
+  const standsAlone = match (expression) {
+    Expr.CallExpr(_, _, _, _, _) | Expr.AwaitExpr(_, _, _) => true
+    _ => false
+  }
+  if (standsAlone) {
+    const nodeId = getExpressionId(expression)
+    if (copy(getNodeType(checker, nodeId)) is Some(found)) {
+      if (isResult(checker, found)) {
+        reportError(
+          mutable checker,
+          pos,
+          "E0229",
+          "this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`",
+        )
+      }
+    }
+  } else {
+    reportError(mutable checker, pos, "E0228", "this expression does nothing")
+  }
+}
+
+function checkReturn<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  value: Option<Expr>,
+) uses alloc {
+  // Inside a block expression a return ends the block and gives its value.
+  if (Arrays.length(checker.blocks) > 0) {
+    checkBlockReturn(mutable checker, walker, pos, value)
+    return
+  }
+  // A return in a generator ends it and takes no value.
+  if (checker.generator) {
+    if (value is Some(_)) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0292",
+        "return in a generator takes no value; yield the value, then return",
+      )
+    }
+    return
+  }
+  // An arrow function whose result is inferred takes any value; the
+  // returns are compared once its block is checked (closures.nra).
+  if (checker.inferring) {
+    if (value is Some(inferred)) {
+      checkNoMutableEscape(mutable checker, inferred)
+      checkExpression(mutable checker, walker, inferred, None)
+    }
+    return
+  }
+  const want = checker.resultType
+  if (value is Some(expression)) {
+    checkNoMutableEscape(mutable checker, expression)
+    const errorsBefore = Arrays.length(checker.errors)
+    const found = checkExpression(mutable checker, walker, expression, Some(want))
+    if (want == Type.TVoid) {
+      // An instance whose T is void (a thread function that returns nothing)
+      // may return a value of that T: there is none to give.
+      if (!(found == Type.TVoid && isVoidInstance(checker))) {
+        reportError(mutable checker, pos, "E0231", "this function returns nothing")
+      }
+      return
+    }
+    expectType(mutable checker, getExpressionPos(expression), Some(want), found)
+    // The function's `ensures` patterns hold for the value; an arrow's return is its own.
+    if (
+      Arrays.length(checker.errors) == errorsBefore && checker.bodies[checker.body].arrowDepth == 0
+    ) {
+      proveResult(mutable checker, expression)
+    }
+  } else if (want != Type.TVoid) {
+    const text = typeString(checker, want)
+    reportError(mutable checker, pos, "E0230", `this function must return a ${text}`)
+  }
+}
+
+export function checkBlockExpression<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  expression: Expr,
+  want: Option<Type>,
+): Type from checker uses alloc {
+  // The value is the common type of its returns, and every path must end in a return.
+  if (expression is Expr.BlockExpr(_, pos, block)) {
+    return checkBlockBody(mutable checker, walker, pos, block, want)
+  }
+  return Type.TVoid
+}
+
+export function checkBlockBody<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  block: Block,
+  want: Option<Type>,
+): Type from checker uses alloc {
+  // A match arm written as a block in value position uses this too.
+  pushBlockContext(
+    mutable checker,
+    want,
+    block.pos.line != pos.line || block.pos.column != pos.column,
+  )
+  checker.loops = 0
+  checker.labels = []
+  checkBlock(mutable checker, walker, block)
+  const finished = checker.blocks[Arrays.length(checker.blocks) - 1]
+  checker.loops = finished.loops
+  checker.labels = copy(finished.labels)
+  checker.blocks = withoutLastBlock(checker.blocks)
+  if (finished.returns == 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0933",
+      "a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`",
+    )
+    return Type.TVoid
+  }
+  if (!endsInReturn(checker, checker.body, block)) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0931",
+      "a block expression must end every path with `return value`",
+    )
+  }
+  if (finished.result is Some(found)) {
+    return found
+  }
+  return Type.TVoid
+}
+
+function pushBlockContext(mutable checker: Checker, want: Option<Type>, cond: bool) {
+  // The context is released on return, so checker.blocks holds the only copy.
+  const context = BlockContext {
+    result: want,
+    returns: 0,
+    loops: checker.loops,
+    labels: checker.labels,
+    cond,
+    reported: false,
+  }
+  Arrays.push(mutable checker.blocks, context)
+}
+
+function withoutLastBlock(blocks: Array<BlockContext>): Array<BlockContext> from blocks uses alloc {
+  let kept: Array<BlockContext> = []
+  for (const i of Ranges.upTo(Arrays.length(blocks) - 1)) {
+    Arrays.push(mutable kept, blocks[i])
+  }
+  return kept
+}
+
+function checkBlockReturn<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  value: Option<Expr>,
+) uses alloc {
+  const last = Arrays.length(checker.blocks) - 1
+  checker.blocks[last].returns++
+  if (value is Some(expression)) {
+    checkNoMutableEscape(mutable checker, expression)
+    const expected = checker.blocks[last].result
+    const errorCount = Arrays.length(checker.errors)
+    const found = checkExpression(mutable checker, walker, expression, expected)
+    if (found == Type.TVoid) {
+      // A value whose check already failed is void; do not report it twice.
+      if (Arrays.length(checker.errors) == errorCount) {
+        if (checker.blocks[last].cond) {
+          if (!checker.blocks[last].reported) {
+            checker.blocks[last].reported = true
+            reportError(
+              mutable checker,
+              pos,
+              "E0934",
+              "both branches of a conditional expression must have a value",
+            )
+          }
+        } else {
+          reportError(
+            mutable checker,
+            pos,
+            "E0931",
+            "a block expression must end every path with `return value`",
+          )
+        }
+      }
+      return
+    }
+    if (expected is Some(_)) {
+      expectType(mutable checker, getExpressionPos(expression), expected, found)
+    } else {
+      checker.blocks[last].result = Some(found)
+    }
+  } else {
+    reportError(
+      mutable checker,
+      pos,
+      "E0931",
+      "a block expression must end every path with `return value`",
+    )
+  }
+}
+
+function endsInReturn(checker: Checker, bodyIndex: int, block: Block): bool {
+  const count = Arrays.length(block.statements)
+  if (count == 0) {
+    return false
+  }
+  return statementEndsInReturn(checker, bodyIndex, block.statements[count - 1])
+}
+
+function statementEndsInReturn(checker: Checker, bodyIndex: int, statement: Stmt): bool {
+  return match (statement) {
+    Stmt.ReturnStmt(_, _) => true
+    Stmt.BlockStmt(block) => endsInReturn(checker, bodyIndex, block)
+    Stmt.IfStmt(_, _, then, orElse) => ifEndsInReturn(checker, bodyIndex, then, orElse)
+    Stmt.ExprStmt(_, expression) =>
+      isPathEndingCall(checker, bodyIndex, expression) ||
+      matchEndsInReturn(checker, bodyIndex, expression)
+    Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body) is None
+    Stmt.CForStmt(_, label, _, condition, _, body) =>
+      findCForOpenPath(label, condition, body) is None
+    _ => false
+  }
+}
+
+function ifEndsInReturn(checker: Checker, bodyIndex: int, then: Block, orElse: Option<Stmt>): bool {
+  if (orElse is Some(other)) {
+    return endsInReturn(checker, bodyIndex, then) &&
+      statementEndsInReturn(checker, bodyIndex, other)
+  }
+  return false
+}
+
+function matchEndsInReturn(checker: Checker, bodyIndex: int, expression: Expr): bool {
+  if (expression is Expr.MatchExpr(_, _, _, arms)) {
+    if (Arrays.length(arms) == 0) {
+      return false
+    }
+    for (const arm of Arrays.values(arms)) {
+      if (arm.block is Some(armBlock)) {
+        if (!endsInReturn(checker, bodyIndex, armBlock)) {
+          return false
+        }
+      } else if (arm.body is Some(armBody)) {
+        if (!isPathEndingCall(checker, bodyIndex, armBody)) {
+          return false
+        }
+      } else {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function checkIf<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  condition: Expr,
+  then: Block,
+  orElse: Option<Stmt>,
+) uses alloc {
+  // A condition that is an `is` test may bind names for the then branch, and narrows
+  // the subject in the branches when it is a `const` local.
+  // The whole condition may be an `is` test, the only place that binds.
+  let testPattern: Option<Pattern> = None
+  let testedValue: Option<Expr> = None
+  let subject = -1
+  if (condition is Expr.IsExpr(testId, testPos, testSubject, pattern)) {
+    testedValue = Some(testSubject)
+    const found = checkIs(mutable checker, walker, testPos, testSubject, pattern, true)
+    setNodeType(mutable checker, testId, found)
+    expectType(mutable checker, testPos, Some(Type.TBool), found)
+    testPattern = Some(pattern)
+    subject = findNarrowable(checker, testSubject)
+  } else {
+    checkCondition(mutable checker, walker, condition)
+  }
+  recordBuildCondition(mutable checker, condition, then, orElse)
+
+  // The variant the test names, when its pattern is a constructor or name.
+  let enumIndex = -1
+  let variantIndex = -1
+  if (testPattern is Some(testedPattern)) {
+    if (getRef(checker, getPatternId(testedPattern)) is Ref.Constructor(testEnum, testVariant)) {
+      enumIndex = testEnum
+      variantIndex = testVariant
+    }
+  }
+  if (subject < 0) {
+    variantIndex = -1
+  }
+
+  // The then branch sees the bindings and the narrowed subject.
+  pushScope(mutable checker)
+  if (testPattern is Some(boundPattern)) {
+    let locals: Array<int> = []
+    collectPatternLocals(checker, boundPattern, mutable locals)
+    bindPatternLocals(mutable checker, locals)
+    if (testedValue is Some(testedSubject)) {
+      seedPatternFacts(mutable checker, testedSubject, boundPattern)
+    }
+  }
+  if (variantIndex >= 0) {
+    setNarrowed(mutable checker, subject, variantIndex)
+  }
+  narrowByCondition(mutable checker, condition, true)
+  for (const statement of Arrays.values(then.statements)) {
+    checkStatement(mutable checker, walker, statement)
+  }
+  checkDeadCode(mutable checker, then)
+  popScope(mutable checker)
+
+  // Where the test failed, a two-variant enum holds the other variant,
+  // unless the pattern also tested the fields (`x is Some(1)`).
+  let otherVariant = findOtherVariant(checker, enumIndex, variantIndex)
+  if (testPattern is Some(fieldPattern)) {
+    if (!areArgumentsIrrefutable(checker, fieldPattern)) {
+      otherVariant = -1
+    }
+  }
+  if (orElse is Some(other)) {
+    pushScope(mutable checker)
+    if (otherVariant >= 0) {
+      setNarrowed(mutable checker, subject, otherVariant)
+    }
+    narrowByCondition(mutable checker, condition, false)
+    checkStatement(mutable checker, walker, other)
+    popScope(mutable checker)
+  } else if (diverges(checker, checker.body, then)) {
+    if (otherVariant >= 0) {
+      setNarrowed(mutable checker, subject, otherVariant)
+    }
+    narrowByCondition(mutable checker, condition, false)
+  }
+}
+
+function checkWhile<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  label: string,
+  condition: Expr,
+  body: Block,
+) uses alloc {
+  endLoopNarrowing(mutable checker, Some(condition), body)
+  checkCondition(mutable checker, walker, condition)
+  enterLoop(mutable checker, pos, label)
+  // The body runs only where the condition held.
+  pushScope(mutable checker)
+  narrowByCondition(mutable checker, condition, true)
+  checkBlock(mutable checker, walker, body)
+  popScope(mutable checker)
+  leaveLoop(mutable checker, label)
+}
+
+function checkCFor<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  label: string,
+  init: Option<Stmt>,
+  condition: Option<Expr>,
+  step: Option<Stmt>,
+  body: Block,
+) uses alloc {
+  // The loop variable lives in a scope around the whole loop.
+  pushScope(mutable checker)
+  if (init is Some(declaration)) {
+    checkStatement(mutable checker, walker, declaration)
+  }
+  // Names that the condition, the step or the body assign lose their narrowing.
+  endLoopNarrowing(mutable checker, condition, body)
+  let stepNames: Array<string> = []
+  if (step is Some(stepStatement)) {
+    collectAssignedInStatement(stepStatement, mutable stepNames)
+  }
+  for (const name of Arrays.values(stepNames)) {
+    const stepLocal = findLocal(checker, name)
+    endNarrowing(mutable checker, stepLocal)
+  }
+  let assignedNames: Array<string> = []
+  if (condition is Some(testedCondition)) {
+    collectAssignedInExpr(testedCondition, mutable assignedNames)
+  }
+  collectAssignedInBlock(body, mutable assignedNames)
+  seedCounterFact(mutable checker, init, condition, step, assignedNames)
+  if (condition is Some(loopCondition)) {
+    const found = checkExpression(mutable checker, walker, loopCondition, Some(Type.TBool))
+    if (found != Type.TBool) {
+      const foundText = typeString(checker, found)
+      reportError(
+        mutable checker,
+        getExpressionPos(loopCondition),
+        "E0959",
+        `the condition of a for loop must be a bool, found ${foundText}`,
+      )
+    }
+  }
+  enterLoop(mutable checker, pos, label)
+  // The body runs only where the condition held. Names the body or the step assign
+  // lost their facts above, and an assignment in the body ends them again.
+  pushScope(mutable checker)
+  if (condition is Some(heldCondition)) {
+    narrowByCondition(mutable checker, heldCondition, true)
+  }
+  checkBlock(mutable checker, walker, body)
+  popScope(mutable checker)
+  leaveLoop(mutable checker, label)
+  // The step runs after the body, so narrowing from the body does not hold.
+  for (const name of Arrays.values(stepNames)) {
+    const stepLocal = findLocal(checker, name)
+    endNarrowing(mutable checker, stepLocal)
+  }
+  if (step is Some(stepStatement)) {
+    checkStatement(mutable checker, walker, stepStatement)
+  }
+  popScope(mutable checker)
+}
+
+function checkFor<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  name: string,
+  iterable: Expr,
+  body: Block,
+  reference: Option<LoopReference>,
+  awaitPos: Option<Pos>,
+) uses alloc {
+  if (awaitPos is Some(written)) {
+    checkForAwaitPlace(mutable checker, written)
+  }
+  if (reference is Some(marker)) {
+    if (awaitPos is Some(_)) {
+      reportMutableStreamLoop(mutable checker, pos)
+    } else {
+      checkReferenceFor(mutable checker, walker, nodeId, pos, label, name, iterable, body, marker)
+      return
+    }
+  }
+  // The iterable is a call of a std function that gives the element type.
+  const outerLine = checker.forSourceLine
+  const outerColumn = checker.forSourceColumn
+  const sourcePos = getExpressionPos(iterable)
+  checker.forSourceLine = sourcePos.line
+  checker.forSourceColumn = sourcePos.column
+  const iterableType = checkExpression(mutable checker, walker, iterable, None)
+  checker.forSourceLine = outerLine
+  checker.forSourceColumn = outerColumn
+  let builtin = ""
+  let firstArgument = Type.TVoid
+  if (iterable is Expr.CallExpr(callId, _, _, _, arguments)) {
+    if (getRef(checker, callId) is Ref.Builtin(index)) {
+      builtin = checker.registry.functions[index].name
+    }
+    if (Arrays.length(arguments) > 0) {
+      if (getNodeType(checker, getExpressionId(arguments[0].value)) is Some(argumentType)) {
+        firstArgument = copy(argumentType)
+      }
+    }
+  }
+  endLoopNarrowing(mutable checker, None, body)
+  let element = Type.TVoid
+  if (awaitPos is Some(_)) {
+    element = findStreamElement(mutable checker, iterable, iterableType)
+  } else if (builtin == "Range.upTo" || builtin == "Range.between") {
+    element = Type.TInt
+  } else if (builtin == "Array.values" || builtin == "Array.entries") {
+    element = Type.TVoid
+    if (firstArgument is Type.TArray(arrayElement)) {
+      element = arrayElement
+      if (builtin == "Array.entries") {
+        element = findTupleType(mutable checker, [Type.TInt, arrayElement])
+      }
+    }
+  } else if (builtin == "Map.keys" || builtin == "Map.entries") {
+    element = Type.TVoid
+    if (iterableType is Type.TArray(arrayElement)) {
+      element = arrayElement
+    }
+  } else if (iterableType is Type.TGenerator(generatorElement, _, _, _, generatorInput)) {
+    element = generatorElement
+    if (generatorInput != Type.TVoid) {
+      reportError(
+        mutable checker,
+        getExpressionPos(iterable),
+        "E0293",
+        "for ... of cannot iterate a coroutine, which needs an input on each resume; call Co.send(mutable g, input)",
+      )
+    }
+  } else if (iterableType is Type.TRange) {
+    // A Range value: its bounds are read once, before the loop.
+    element = Type.TInt
+  } else if (iterableType is Type.TArray(arrayElement)) {
+    // An array value, as with Array.values.
+    element = arrayElement
+  } else if (iterableType is Type.TFixedArray(fixedElement, _)) {
+    element = fixedElement
+  } else if (iterableType is Type.TAsyncGenerator(_, _, _, _)) {
+    reportPlainStreamLoop(mutable checker, iterable, iterableType)
+  } else {
+    const text = typeString(checker, iterableType)
+    reportError(
+      mutable checker,
+      getExpressionPos(iterable),
+      "E0232",
+      `for ... of needs a Range, an Array, a Generator, Str.chars, Array.entries, Map.keys or Map.entries, found ${text}`,
+    )
+  }
+
+  // The loop variable lives in a scope around the body. It is a copy of an
+  // element, so it is read-only; the hint of a write names the source.
+  pushScope(mutable checker)
+  const local = declareLocal(mutable checker, nodeId, pos, name, element, false, false)
+  const bodyIndex = checker.body
+  checker.bodies[bodyIndex].locals[local].binding = BindingKind.Loop
+  seedLoopFacts(mutable checker, local, iterable)
+  if (iterable is Expr.CallExpr(_, _, _, _, rangeArguments)) {
+    let rangeValues: Array<Expr> = []
+    for (const argument of Arrays.values(rangeArguments)) {
+      Arrays.push(mutable rangeValues, argument.value)
+    }
+    seedRangeFacts(mutable checker, local, builtin, rangeValues)
+  }
+  let source = iterable
+  if (builtin == "Array.values" || builtin == "Array.entries") {
+    if (iterable is Expr.CallExpr(_, _, _, _, sourceArguments)) {
+      if (Arrays.length(sourceArguments) > 0) {
+        source = sourceArguments[0].value
+      }
+    }
+  }
+  // Only an array place can be written through by index.
+  if (findAssignedLocal(checker, source) >= 0) {
+    if (copy(getNodeType(checker, getExpressionId(source))) is Some(Type.TArray(sourceElement))) {
+      const contents = isContentsType(checker, sourceElement)
+      checker.bodies[bodyIndex].locals[local].loopSource = describePlace(source)
+      checker.bodies[bodyIndex].locals[local].loopContents = contents
+    }
+  }
+  enterLoop(mutable checker, pos, label)
+  checkBlock(mutable checker, walker, body)
+  leaveLoop(mutable checker, label)
+  popScope(mutable checker)
+}
+
+function checkReferenceFor<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  nodeId: int,
+  pos: Pos,
+  label: string,
+  name: string,
+  iterable: Expr,
+  body: Block,
+  marker: LoopReference,
+) uses alloc {
+  // The source is an array place the loop may change, as for a `mutable` argument, its
+  // elements have contents, the binding acts as a `mutable` parameter, and the body
+  // cannot use the source (checkLoopBorrows).
+  // The element pointer would have to live in the frame across `yield` or `await`.
+  if (checker.asyncBody) {
+    reportError(
+      mutable checker,
+      pos,
+      "E1105",
+      "`for (mutable ...)` is not allowed in an async body; change the elements through an index, as in `items[index].field = value`",
+    )
+  }
+  if (checker.generator && !checker.asyncBody && checker.bodies[checker.body].arrowDepth == 0) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0957",
+      "`for (mutable ...)` is not supported in a function* body yet; change the elements through an index, as in `items[index].field = value`",
+    )
+  }
+
+  // The iterable is the source, or Arrays.values or Arrays.entries of it.
+  const outerLine = checker.forSourceLine
+  const outerColumn = checker.forSourceColumn
+  const iterablePos = getExpressionPos(iterable)
+  checker.forSourceLine = iterablePos.line
+  checker.forSourceColumn = iterablePos.column
+  const iterableType = checkExpression(mutable checker, walker, iterable, None)
+  checker.forSourceLine = outerLine
+  checker.forSourceColumn = outerColumn
+  let builtin = ""
+  let source = iterable
+  if (iterable is Expr.CallExpr(callId, _, _, _, arguments)) {
+    if (getRef(checker, callId) is Ref.Builtin(index)) {
+      builtin = checker.registry.functions[index].name
+    }
+    if ((builtin == "Array.values" || builtin == "Array.entries") && Arrays.length(arguments) > 0) {
+      source = arguments[0].value
+    }
+  }
+  const sourcePos = getExpressionPos(source)
+  // The element type, also after an error below, so the body is checked
+  // without errors that only follow from it.
+  let element = Type.TVoid
+  const sourceType = copy(getNodeType(checker, getExpressionId(source)))
+  if (sourceType is Some(Type.TArray(arrayElement))) {
+    element = copy(arrayElement)
+  } else if (sourceType is Some(Type.TMap(_, mapValue))) {
+    element = copy(mapValue)
+  }
+  let valid = true
+  if (marker.indexName != "" && builtin != "Array.entries") {
+    reportError(
+      mutable checker,
+      iterablePos,
+      "E0954",
+      `\`#[${marker.indexName}, mutable ${name}]\` needs \`Arrays.entries(items)\` as the source; without the index, write \`for (mutable ${name} of items)\``,
+    )
+    valid = false
+  } else if (marker.indexName == "" && builtin == "Array.entries") {
+    reportError(
+      mutable checker,
+      iterablePos,
+      "E0954",
+      `Arrays.entries gives #[index, item] tuples; write \`for (const #[index, mutable ${name}] of Arrays.entries(items))\``,
+    )
+    valid = false
+  } else if (!(sourceType is Some(Type.TArray(_)))) {
+    const text = typeString(checker, iterableType)
+    reportError(
+      mutable checker,
+      iterablePos,
+      "E0954",
+      `\`for (mutable ...)\` changes the elements of an Array in place, found ${text}`,
+    )
+    valid = false
+  }
+
+  // The loop changes the source, so it must be a place a `mutable` argument
+  // could name.
+  let root = -1
+  if (valid && !checkConstWrite(mutable checker, sourcePos, source, true)) {
+    root = findAssignedLocal(checker, source)
+    if (root < 0) {
+      reportError(
+        mutable checker,
+        sourcePos,
+        "E0954",
+        "the source of `for (mutable ...)` must be a variable, a field or an element, so the loop can change it in place; store the array in a local first",
+      )
+    } else {
+      markAssigned(mutable checker, root)
+      checkContentsChange(mutable checker, sourcePos, root, source, true)
+    }
+  }
+  if (root >= 0 && !isContentsType(checker, element)) {
+    const sourceText = describePlace(source)
+    const elementText = typeString(checker, element)
+    let indexName = marker.indexName
+    if (indexName == "") {
+      indexName = "index"
+    }
+    reportError(
+      mutable checker,
+      pos,
+      "E0955",
+      `the elements of ${sourceText} are ${elementText}, which have no contents to change in place; write \`${sourceText}[${indexName}] = ...\` in a \`for (const #[${indexName}, ${name}] of Arrays.entries(${sourceText}))\` loop`,
+    )
+  }
+
+  // The index is a copy; the element binding is a pointer to the element.
+  endLoopNarrowing(mutable checker, None, body)
+  pushScope(mutable checker)
+  const bodyIndex = checker.body
+  if (marker.indexName != "") {
+    const indexLocal = declareLocal(
+      mutable checker,
+      marker.indexId,
+      pos,
+      marker.indexName,
+      Type.TInt,
+      false,
+      false,
+    )
+    checker.bodies[bodyIndex].locals[indexLocal].binding = BindingKind.Loop
+  }
+  const local = declareLocal(mutable checker, nodeId, pos, name, element, true, false)
+  checker.bodies[bodyIndex].locals[local].binding = BindingKind.Reference
+
+  // The body borrows the source. The outer list stays as it is, so the push copies it.
+  const outerBorrows = copy(checker.loopBorrows)
+  if (root >= 0) {
+    Arrays.push(mutable checker.loopBorrows, LoopBorrow {
+      local: root,
+      path: findPlacePath(source),
+      source: describePlace(source),
+      name,
+    })
+  }
+  enterLoop(mutable checker, pos, label)
+  checkBlock(mutable checker, walker, body)
+  leaveLoop(mutable checker, label)
+  checker.loopBorrows = copy(outerBorrows)
+  if (Arrays.length(checker.loopBorrows) == 0) {
+    checker.borrowChecked = []
+  }
+  popScope(mutable checker)
+}
+
+function findPlacePath(place: Expr): Array<string> uses alloc {
+  // "[]" stands for an element: `game.players[0]` gives players, [].
+  return match (place) {
+    Expr.FieldExpr(_, _, target, name) => appendPath(findPlacePath(target), name)
+    Expr.IndexExpr(_, _, target, _) => appendPath(findPlacePath(target), "[]")
+    _ => []
+  }
+}
+
+function appendPath(path: Array<string>, segment: string): Array<string> from path uses alloc {
+  let longer = copy(path)
+  Arrays.push(mutable longer, segment)
+  return longer
+}
+
+function checkYield<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  value: Expr,
+  delegate: bool,
+  binding: Option<YieldBinding>,
+) uses alloc {
+  // Both are valid only directly in a function* body or its nested statement blocks:
+  // not in an arrow function and not in a block expression.
+  let word = "yield"
+  if (delegate) {
+    word = "yield*"
+  }
+  let place = ""
+  if (checker.bodies[checker.body].arrowDepth > 0) {
+    place = "inside an arrow function"
+  } else if (!checker.generator) {
+    place = "outside a generator"
+  } else if (Arrays.length(checker.blocks) > 0) {
+    place = "inside a block expression"
+  }
+  if (place != "") {
+    reportError(
+      mutable checker,
+      pos,
+      "E0291",
+      `${word} cannot be used ${place}; it is valid only directly in a function* body`,
+    )
+    checkExpression(mutable checker, walker, value, None)
+    declareYieldInput(mutable checker, binding, Type.TVoid)
+    return
+  }
+  const result = checker.resultType
+  if (result is Type.TAsyncGenerator(streamElement, _, _, _)) {
+    checkStreamYield(mutable checker, walker, pos, value, delegate, binding, streamElement)
+    return
+  }
+  if (result is Type.TGenerator(element, _, _, _, input)) {
+    if (binding is Some(_) && input == Type.TVoid) {
+      const functionName = checker.functions[checker.functionIndex].name
+      reportError(
+        mutable checker,
+        pos,
+        "E0293",
+        `the value of yield is available only in a coroutine; declare ${functionName} as Coroutine<In, Out>, or write \`yield value\` without a name`,
+      )
+    }
+    if (delegate && input != Type.TVoid) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0293",
+        "yield* is not valid in a coroutine; a delegated generator has no input to receive",
+      )
+      checkExpression(mutable checker, walker, value, None)
+      return
+    }
+    if (!delegate) {
+      const errorsBefore = Arrays.length(checker.errors)
+      const found = checkExpression(mutable checker, walker, value, Some(element))
+      expectType(mutable checker, getExpressionPos(value), Some(element), found)
+      if (Arrays.length(checker.errors) == errorsBefore) {
+        proveResult(mutable checker, value)
+      }
+      declareYieldInput(mutable checker, binding, input)
+      return
+    }
+    rejectDelegatedResults(mutable checker, pos)
+    const found = checkExpression(mutable checker, walker, value, None)
+    let matches = false
+    if (found is Type.TGenerator(otherElement, _, _, _, _)) {
+      matches = otherElement == element
+    }
+    if (!matches && found != Type.TVoid) {
+      const wanted = typeString(checker, Type.TGenerator(element, [], -1, -1, Type.TVoid))
+      const text = typeString(checker, found)
+      reportError(
+        mutable checker,
+        getExpressionPos(value),
+        "E0291",
+        `yield* needs a ${wanted}, found ${text}`,
+      )
+    }
+    return
+  }
+  // The return type was rejected already.
+  checkExpression(mutable checker, walker, value, None)
+  declareYieldInput(mutable checker, binding, Type.TVoid)
+}
+
+function declareYieldInput(
+  mutable checker: Checker,
+  binding: Option<YieldBinding>,
+  type: Type,
+) uses alloc {
+  if (binding is Some(bound)) {
+    const local = declareLocal(
+      mutable checker,
+      bound.id,
+      bound.pos,
+      bound.name,
+      type,
+      bound.isMutable,
+      false,
+    )
+    if (bound.isMutable) {
+      checker.bodies[checker.body].locals[local].letLine = bound.pos.line
+      checker.bodies[checker.body].locals[local].letColumn = bound.pos.column
+    }
+  }
+}
+
+export function isResult(checker: Checker, valueType: Type): bool {
+  if (valueType is Type.TEnum(index)) {
+    return checker.enums[index].name == "Result" &&
+      Arrays.length(checker.enums[index].arguments) == 2
+  }
+  return false
+}
+
+export function diverges(checker: Checker, bodyIndex: int, block: Block): bool {
+  const count = Arrays.length(block.statements)
+  if (count == 0) {
+    return false
+  }
+  return statementDiverges(checker, bodyIndex, block.statements[count - 1])
+}
+
+function statementDiverges(checker: Checker, bodyIndex: int, statement: Stmt): bool {
+  return match (statement) {
+    Stmt.ReturnStmt(_, _) | Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => true
+    Stmt.ExprStmt(_, expression) => isPathEndingCall(checker, bodyIndex, expression)
+    Stmt.IfStmt(_, _, then, orElse) => ifDiverges(checker, bodyIndex, then, orElse)
+    Stmt.BlockStmt(block) => diverges(checker, bodyIndex, block)
+    _ => false
+  }
+}
+
+function ifDiverges(checker: Checker, bodyIndex: int, then: Block, orElse: Option<Stmt>): bool {
+  if (orElse is Some(other)) {
+    return diverges(checker, bodyIndex, then) && statementDiverges(checker, bodyIndex, other)
+  }
+  return false
+}
+
+function endLoopNarrowing(
+  mutable checker: Checker,
+  condition: Option<Expr>,
+  body: Block,
+) uses alloc {
+  // The next iteration sees the changed value. Names are matched without scopes, which
+  // can only end more narrowing than needed.
+  let names: Array<string> = []
+  if (condition is Some(testExpression)) {
+    collectAssignedInExpr(testExpression, mutable names)
+  }
+  collectAssignedInBlock(body, mutable names)
+  for (const name of Arrays.values(names)) {
+    const local = findLocal(checker, name)
+    endNarrowing(mutable checker, local)
+  }
+}
+
+function endExpressionNarrowing(mutable checker: Checker, expression: Expr) uses alloc {
+  let names: Array<string> = []
+  collectAssignedInExpr(expression, mutable names)
+  for (const name of Arrays.values(names)) {
+    const local = findLocal(checker, name)
+    endNarrowing(mutable checker, local)
+  }
+}
+
+const USE_READ = 0
+const USE_ASSIGN = 1
+const USE_MUTABLE = 2
+
+// One place in a match arm, on one side of && or ||, or at one statement of
+// a block. Uses in different arms of one node never run together. A block
+// has a negative node (-1, -2, ...) from UseCollector.blocks.
+struct ArmStep {
+  node: int
+  arm: int
+  isMatch: bool // an arm of a match or a block expression
+  calls: int // how many calls enclosed the step when it began
+}
+
+// One use of a local in a statement's expressions (Go's localUse). For a
+// mutable use, call is the id of the call it is an argument of; chain holds
+// the ids of the calls whose arguments contain the use.
+struct LocalUse {
+  local: int
+  pos: Pos
+  kind: int
+  call: int
+  chain: Array<int>
+  arms: Array<ArmStep>
+  order: int
+  calleeOf: int // the call whose callee holds the use, or -1
+  hoist: bool // the call can move to its own statement (Go's hoist)
+}
+
+// found are the uses in evaluation order. calls keeps each call by id, for the
+// fix that moves one. blocked counts the places the walk is in where a call
+// cannot move to its own statement: the right side of && and ||, a match arm,
+// and the statements of a block expression.
+struct UseCollector {
+  found: Array<LocalUse>
+  blocks: int
+  calls: Map<int, Expr>
+  blocked: int
+}
+
+function extendCalls(chain: Array<int>, callId: int): Array<int> uses alloc {
+  let inner: Array<int> = []
+  for (const id of Arrays.values(chain)) {
+    Arrays.push(mutable inner, id)
+  }
+  Arrays.push(mutable inner, callId)
+  return inner
+}
+
+function extendArms(
+  arms: Array<ArmStep>,
+  node: int,
+  arm: int,
+  isMatch: bool,
+  calls: int,
+): Array<ArmStep> from arms uses alloc {
+  let extended: Array<ArmStep> = []
+  for (const step of Arrays.values(arms)) {
+    Arrays.push(mutable extended, step)
+  }
+  Arrays.push(mutable extended, ArmStep { node, arm, isMatch, calls })
+  return extended
+}
+
+function addUse(
+  mutable collector: UseCollector,
+  local: int,
+  pos: Pos,
+  kind: int,
+  call: int,
+  chain: Array<int>,
+  arms: Array<ArmStep>,
+) uses alloc {
+  const order = Arrays.length(collector.found)
+  const canHoist = collector.blocked == 0
+  Arrays.push(mutable collector.found, LocalUse {
+    local,
+    pos,
+    kind,
+    call,
+    chain,
+    arms,
+    order,
+    calleeOf: -1,
+    hoist: canHoist,
+  })
+}
+
+function collectRootUse(
+  checker: Checker,
+  mutable collector: UseCollector,
+  expression: Expr,
+  kind: int,
+  call: int,
+  chain: Array<int>,
+  arms: Array<ArmStep>,
+) uses alloc {
+  // Walks the index expressions on the way.
+  match (expression) {
+    Expr.Ident(nodeId, pos, _) => {
+      if (getRef(checker, nodeId) is Ref.Local(local)) {
+        addUse(mutable collector, local, pos, kind, call, chain, arms)
+      }
+    }
+    Expr.FieldExpr(_, _, target, _) => {
+      if (findAssignedLocal(checker, expression) >= 0) {
+        collectRootUse(checker, mutable collector, target, kind, call, chain, arms)
+      } else {
+        collectUses(checker, mutable collector, target, chain, arms)
+      }
+    }
+    Expr.IndexExpr(_, _, target, index) => {
+      collectRootUse(checker, mutable collector, target, kind, call, chain, arms)
+      collectUses(checker, mutable collector, index, chain, arms)
+    }
+    _ => collectUses(checker, mutable collector, expression, chain, arms)
+  }
+}
+
+function collectListUses(
+  checker: Checker,
+  mutable collector: UseCollector,
+  expressions: Array<Expr>,
+  chain: Array<int>,
+  arms: Array<ArmStep>,
+) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    collectUses(checker, mutable collector, expression, chain, arms)
+  }
+}
+
+function collectUses(
+  checker: Checker,
+  mutable collector: UseCollector,
+  expression: Expr,
+  chain: Array<int>,
+  arms: Array<ArmStep>,
+) uses alloc {
+  match (expression) {
+    Expr.Ident(nodeId, pos, _) => {
+      if (getRef(checker, nodeId) is Ref.Local(local)) {
+        addUse(mutable collector, local, pos, USE_READ, -1, chain, arms)
+      }
+    }
+    Expr.FieldExpr(_, _, target, _) => collectUses(checker, mutable collector, target, chain, arms)
+    Expr.IndexExpr(_, _, target, index) => {
+      collectUses(checker, mutable collector, target, chain, arms)
+      collectUses(checker, mutable collector, index, chain, arms)
+    }
+    Expr.IsExpr(_, _, subject, _) => collectUses(checker, mutable collector, subject, chain, arms)
+    Expr.UnaryExpr(_, _, _, operand)
+      | Expr.AwaitExpr(_, _, operand)
+      | Expr.AsyncExpr(_, _, operand) => collectUses(
+      checker,
+      mutable collector,
+      operand,
+      chain,
+      arms,
+    )
+    Expr.BinaryExpr(nodeId, _, operator, left, right) => {
+      if (operator == "&&" || operator == "||") {
+        // The left side is finished before the right side starts.
+        collectUses(
+          checker,
+          mutable collector,
+          left,
+          chain,
+          extendArms(arms, nodeId, 0, false, Arrays.length(chain)),
+        )
+        collector.blocked++
+        collectUses(
+          checker,
+          mutable collector,
+          right,
+          chain,
+          extendArms(arms, nodeId, 1, false, Arrays.length(chain)),
+        )
+        collector.blocked--
+      } else {
+        collectUses(checker, mutable collector, left, chain, arms)
+        collectUses(checker, mutable collector, right, chain, arms)
+      }
+    }
+    Expr.CallExpr(nodeId, _, callee, _, arguments) => {
+      // A mutable argument that is also the function called is reported by
+      // the closure check, so the callee's uses are marked.
+      const inner = extendCalls(chain, nodeId)
+      collector.calls[nodeId] = expression
+      const first = Arrays.length(collector.found)
+      collectUses(checker, mutable collector, callee, chain, arms)
+      markCallee(mutable collector, first, nodeId)
+      for (const argument of Arrays.values(arguments)) {
+        if (argument.isMutable) {
+          collectRootUse(
+            checker,
+            mutable collector,
+            argument.value,
+            USE_MUTABLE,
+            nodeId,
+            inner,
+            arms,
+          )
+        } else {
+          collectUses(checker, mutable collector, argument.value, inner, arms)
+        }
+      }
+    }
+    Expr.TemplateLit(_, _, parts) => collectListUses(checker, mutable collector, parts, chain, arms)
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        collectUses(checker, mutable collector, field.value, chain, arms)
+      }
+      if (spread is Some(source)) {
+        collectUses(checker, mutable collector, source, chain, arms)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => collectListUses(
+      checker,
+      mutable collector,
+      elements,
+      chain,
+      arms,
+    )
+    Expr.MapLit(_, _, _, keys, values) => {
+      for (const i of Ranges.upTo(Arrays.length(keys))) {
+        collectUses(checker, mutable collector, keys[i], chain, arms)
+        collectUses(checker, mutable collector, values[i], chain, arms)
+      }
+    }
+    Expr.BlockExpr(nodeId, _, block) => {
+      // A block expression is one value. checkExclusive looks inside it too,
+      // but its statements run one after the other.
+      collectBlockUses(
+        checker,
+        mutable collector,
+        block,
+        chain,
+        extendArms(arms, nodeId, 0, true, Arrays.length(chain)),
+      )
+    }
+    Expr.MatchExpr(nodeId, _, subject, matchArms) => {
+      // The subject is finished before the first arm starts.
+      collectUses(
+        checker,
+        mutable collector,
+        subject,
+        chain,
+        extendArms(arms, nodeId, -1, false, Arrays.length(chain)),
+      )
+      collector.blocked++
+      for (const i of Ranges.upTo(Arrays.length(matchArms))) {
+        const armSteps = extendArms(arms, nodeId, i, true, Arrays.length(chain))
+        if (matchArms[i].guard is Some(guard)) {
+          collectUses(checker, mutable collector, guard, chain, armSteps)
+        }
+        if (matchArms[i].body is Some(armBody)) {
+          collectUses(checker, mutable collector, armBody, chain, armSteps)
+        }
+        if (matchArms[i].block is Some(armBlock)) {
+          collectBlockUses(checker, mutable collector, armBlock, chain, armSteps)
+        }
+      }
+      collector.blocked--
+    }
+    _ => {}
+  }
+}
+
+function collectBlockUses(
+  checker: Checker,
+  mutable collector: UseCollector,
+  block: Block,
+  chain: Array<int>,
+  arms: Array<ArmStep>,
+) uses alloc {
+  // The statements run one after the other, so each has a step of its own.
+  collector.blocks++
+  collector.blocked++
+  const blockNode = -collector.blocks
+  for (const i of Ranges.upTo(Arrays.length(block.statements))) {
+    const steps = extendArms(arms, blockNode, i, false, Arrays.length(chain))
+    collectStatementUses(checker, mutable collector, block.statements[i], chain, steps)
+  }
+  collector.blocked--
+}
+
+function collectStatementUses(
+  checker: Checker,
+  mutable collector: UseCollector,
+  statement: Stmt,
+  chain: Array<int>,
+  arms: Array<ArmStep>,
+) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectBlockUses(checker, mutable collector, block, chain, arms)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectUses(
+      checker,
+      mutable collector,
+      value,
+      chain,
+      arms,
+    )
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, chain, arms)
+      collectUses(checker, mutable collector, value, chain, arms)
+    }
+    Stmt.ExprStmt(_, expression) => collectUses(checker, mutable collector, expression, chain, arms)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectUses(checker, mutable collector, returned, chain, arms)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      // The condition is finished before the branches start.
+      collector.blocks++
+      const stepNode = -collector.blocks
+      collectUses(
+        checker,
+        mutable collector,
+        condition,
+        chain,
+        extendArms(arms, stepNode, 0, false, Arrays.length(chain)),
+      )
+      collectBlockUses(
+        checker,
+        mutable collector,
+        then,
+        chain,
+        extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
+      )
+      // The two branches never run together.
+      if (orElse is Some(other)) {
+        collectStatementUses(
+          checker,
+          mutable collector,
+          other,
+          chain,
+          extendArms(arms, stepNode, 2, false, Arrays.length(chain)),
+        )
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collector.blocks++
+      const stepNode = -collector.blocks
+      collectUses(
+        checker,
+        mutable collector,
+        condition,
+        chain,
+        extendArms(arms, stepNode, 0, false, Arrays.length(chain)),
+      )
+      collectBlockUses(
+        checker,
+        mutable collector,
+        body,
+        chain,
+        extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
+      )
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        collectStatementUses(checker, mutable collector, declaration, chain, arms)
+      }
+      collector.blocks++
+      const stepNode = -collector.blocks
+      if (condition is Some(loopCondition)) {
+        collectUses(
+          checker,
+          mutable collector,
+          loopCondition,
+          chain,
+          extendArms(arms, stepNode, 0, false, Arrays.length(chain)),
+        )
+      }
+      collectBlockUses(
+        checker,
+        mutable collector,
+        body,
+        chain,
+        extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
+      )
+      if (step is Some(stepStatement)) {
+        collectStatementUses(checker, mutable collector, stepStatement, chain, arms)
+      }
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
+      collector.blocks++
+      const stepNode = -collector.blocks
+      collectUses(
+        checker,
+        mutable collector,
+        iterable,
+        chain,
+        extendArms(arms, stepNode, 0, false, Arrays.length(chain)),
+      )
+      collectBlockUses(
+        checker,
+        mutable collector,
+        body,
+        chain,
+        extendArms(arms, stepNode, 1, false, Arrays.length(chain)),
+      )
+    }
+    Stmt.YieldStmt(_, value, _, _) => collectUses(checker, mutable collector, value, chain, arms)
+    _ => {}
+  }
+}
+
+function markCallee(mutable collector: UseCollector, first: int, callId: int) uses alloc {
+  for (const i of Ranges.between(first, Arrays.length(collector.found))) {
+    if (collector.found[i].calleeOf < 0) {
+      collector.found[i].calleeOf = callId
+    }
+  }
+}
+
+function chainHas(chain: Array<int>, callId: int): bool {
+  for (const id of Arrays.values(chain)) {
+    if (id == callId) {
+      return true
+    }
+  }
+  return false
+}
+
+function isInsideCall(use: LocalUse, callId: int): bool {
+  // Uses in the arguments of the call, outside any match arm there, are the ones
+  // checkExclusive reports.
+  for (const i of Ranges.upTo(Arrays.length(use.chain))) {
+    if (use.chain[i] != callId) {
+      continue
+    }
+    for (const step of Arrays.values(use.arms)) {
+      if (step.isMatch && step.calls > i) {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}
+
+function inDifferentArms(first: Array<ArmStep>, second: Array<ArmStep>): bool {
+  for (const left of Arrays.values(first)) {
+    for (const right of Arrays.values(second)) {
+      if (left.node == right.node && left.arm != right.arm) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function findCallStart(expression: Expr): Pos {
+  return match (expression) {
+    Expr.FieldExpr(_, _, target, _) | Expr.IndexExpr(_, _, target, _) => findCallStart(target)
+    Expr.CallExpr(_, _, callee, _, _) => findCallStart(callee)
+    _ => getExpressionPos(expression)
+  }
+}
+
+function findStatementPos(statement: Stmt): Pos {
+  return match (statement) {
+    Stmt.VarStmt(_, pos, _, _, _, _, _)
+      | Stmt.AssignStmt(pos, _, _)
+      | Stmt.CompoundAssignStmt(pos, _, _, _)
+      | Stmt.ExprStmt(pos, _)
+      | Stmt.ReturnStmt(pos, _) => copy(pos)
+    _ => Pos { line: 0, column: 0 }
+  }
+}
+
+function isBlankText(characters: Array<char>, first: int, last: int): bool {
+  for (const index of Ranges.between(first, last)) {
+    const character = characters[index]
+    if (character != ' ' && character != '\t' && character != '\r') {
+      return false
+    }
+  }
+  return true
+}
+
+function buildHoistFix(
+  checker: Checker,
+  statement: Stmt,
+  callId: int,
+  call: Expr,
+): Array<Fix> uses alloc {
+  // Needs the source text, a statement that starts its line and a call that returns a
+  // value.
+  const scope = checker.scopes[checker.current]
+  if (!scope.isSource || Str.length(scope.facts.source) == 0) {
+    return []
+  }
+  let end = Pos { line: 0, column: 0 }
+  if (scope.facts.callEnds[callId] is Some(callEnd)) {
+    end = callEnd
+  } else {
+    return []
+  }
+  if (getNodeType(checker, callId) is Some(Type.TVoid)) {
+    return []
+  }
+  const start = findCallStart(call)
+  if (start.line != end.line || start.column == 1) {
+    return []
+  }
+  const statementPos = findStatementPos(statement)
+  const lines = splitString(scope.facts.source, "\n")
+  if (
+    statementPos.line < 1 ||
+      statementPos.line > Arrays.length(lines) ||
+      start.line > Arrays.length(lines)
+  ) {
+    return []
+  }
+  const statementLine = Str.chars(lines[statementPos.line - 1])
+  if (statementPos.column - 1 > Arrays.length(statementLine)) {
+    return []
+  }
+  if (!isBlankText(statementLine, 0, statementPos.column - 1)) {
+    return []
+  }
+  const indent = sliceCharacters(statementLine, 0, statementPos.column - 1)
+  const callLine = Str.chars(lines[start.line - 1])
+  if (end.column - 1 > Arrays.length(callLine)) {
+    return []
+  }
+  const text = sliceCharacters(callLine, start.column - 1, end.column - 1)
+  // The name comes from the function called, and gets a number while a local
+  // already has it.
+  let base = "result"
+  if (call is Expr.CallExpr(_, _, callee, _, _)) {
+    if (callee is Expr.Ident(_, _, calleeName)) {
+      base = `${calleeName}Result`
+    } else if (callee is Expr.FieldExpr(_, _, _, calleeName)) {
+      base = `${calleeName}Result`
+    }
+  }
+  let name = base
+  for (let number = 2; findLocal(checker, name) >= 0; number++) {
+    name = `${base}${Int.toString(number)}`
+  }
+  const lineStart = Pos { line: statementPos.line, column: 1 }
+  return [
+    createFix(
+      "bind the call to a const before the statement",
+      [insertAt(lineStart, `${indent}const ${name} = ${text}\n`), createEdit(start, end, name)],
+    ),
+  ]
+}
+
+function checkMutableConflicts(mutable checker: Checker, statement: Stmt) uses alloc {
+  // Uses inside the arguments of the call itself belong to checkExclusive. This runs
+  // after the statement is checked.
+  let collector = UseCollector { found: [], blocks: 0, calls: Map {}, blocked: 0 }
+  let isFixable = true
+  const noCalls: Array<int> = []
+  const noArms: Array<ArmStep> = []
+  match (statement) {
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectUses(
+      checker,
+      mutable collector,
+      value,
+      noCalls,
+      noArms,
+    )
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      collectRootUse(checker, mutable collector, target, USE_ASSIGN, -1, noCalls, noArms)
+      collectUses(checker, mutable collector, value, noCalls, noArms)
+    }
+    Stmt.ExprStmt(_, expression) => collectUses(
+      checker,
+      mutable collector,
+      expression,
+      noCalls,
+      noArms,
+    )
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectUses(checker, mutable collector, returned, noCalls, noArms)
+      }
+    }
+    Stmt.IfStmt(_, condition, _, _) | Stmt.WhileStmt(_, _, condition, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, condition, noCalls, noArms)
+    }
+    Stmt.CForStmt(_, _, _, condition, _, _) => {
+      isFixable = false
+      if (condition is Some(loopCondition)) {
+        collectUses(checker, mutable collector, loopCondition, noCalls, noArms)
+      }
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, _, _, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, iterable, noCalls, noArms)
+    }
+    Stmt.YieldStmt(_, value, _, _) => {
+      isFixable = false
+      collectUses(checker, mutable collector, value, noCalls, noArms)
+    }
+    _ => {}
+  }
+  let reported: Array<int> = []
+  for (const use of Arrays.values(collector.found)) {
+    if (chainHas(reported, use.local)) {
+      continue
+    }
+    for (const other of Arrays.values(collector.found)) {
+      if (other.order == use.order || other.local != use.local || other.kind != USE_MUTABLE) {
+        continue
+      }
+      if (use.kind == USE_MUTABLE && other.order > use.order) {
+        continue
+      }
+      if (
+        (use.calleeOf >= 0 && chainHas(other.chain, use.calleeOf)) ||
+          inDifferentArms(use.arms, other.arms) ||
+          isInsideCall(use, other.call)
+      ) {
+        continue
+      }
+      if (use.kind == USE_MUTABLE && isInsideCall(other, use.call)) {
+        continue
+      }
+      Arrays.push(mutable reported, use.local)
+      const localName = getLocal(checker, use.local).name
+      let fixes: Array<Fix> = []
+      if (isFixable && other.hoist) {
+        if (collector.calls[other.call] is Some(call)) {
+          fixes = buildHoistFix(checker, statement, other.call, call)
+        }
+      }
+      reportErrorFix(
+        mutable checker,
+        use.pos,
+        "E0929",
+        fixes,
+        `${quoteGo(localName)} is passed as mutable in one call, so the rest of the expression cannot use it`,
+      )
+      break
+    }
+  }
+}

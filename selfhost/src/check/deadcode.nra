@@ -1,0 +1,87 @@
+import * as Arrays from "std/array"
+import { Block, Expr, Pos, Stmt } from "narrac/syntax/ast"
+import { Checker, reportErrorFix } from "narrac/check/check"
+import { createEdit, createFix } from "narrac/driver/fixes"
+import { findCForOpenPath, findWhileOpenPath, isPathEndingCall } from "narrac/check/pathends"
+import { getStmtPos } from "narrac/syntax/trivia"
+
+export function checkDeadCode(mutable checker: Checker, block: Block) uses alloc {
+  // The first statement after one that leaves is dead; the fix removes it and
+  // every statement after it, up to the closing brace.
+  const count = Arrays.length(block.statements)
+  let index = 0
+  while (index + 1 < count) {
+    if (isLeaving(checker, block.statements[index])) {
+      const start = getStmtPos(block.statements[index + 1])
+      // When the dead code sits on lines of its own, the fix removes whole lines.
+      let editStart = copy(start)
+      let editEnd = copy(block.end)
+      if (start.line > getStmtPos(block.statements[index]).line && block.end.line > start.line) {
+        editStart = Pos { line: start.line, column: 1 }
+        editEnd = Pos { line: block.end.line, column: 1 }
+      }
+      reportErrorFix(
+        mutable checker,
+        start,
+        "E1500",
+        [createFix("remove the unreachable statements", [createEdit(editStart, editEnd, "")])],
+        "this statement is unreachable: the statement before it always leaves the block",
+      )
+      return
+    }
+    index += 1
+  }
+}
+
+function isBlockLeaving(checker: Checker, block: Block): bool uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    if (isLeaving(checker, statement)) {
+      return true
+    }
+  }
+  return false
+}
+
+function isLeaving(checker: Checker, statement: Stmt): bool uses alloc {
+  return match (statement) {
+    Stmt.ReturnStmt(_, _) | Stmt.BreakStmt(_, _) | Stmt.ContinueStmt(_, _) => true
+    Stmt.BlockStmt(block) => isBlockLeaving(checker, block)
+    Stmt.IfStmt(_, _, then, orElse) => isIfLeaving(checker, then, orElse)
+    Stmt.ExprStmt(_, expression) =>
+      isPathEndingCall(checker, checker.body, expression) || isMatchLeaving(checker, expression)
+    Stmt.WhileStmt(_, label, condition, body) => findWhileOpenPath(label, condition, body) is None
+    Stmt.CForStmt(_, label, _, condition, _, body) =>
+      findCForOpenPath(label, condition, body) is None
+    _ => false
+  }
+}
+
+function isIfLeaving(checker: Checker, then: Block, orElse: Option<Stmt>): bool uses alloc {
+  if (orElse is Some(other)) {
+    return isBlockLeaving(checker, then) && isLeaving(checker, other)
+  }
+  return false
+}
+
+function isMatchLeaving(checker: Checker, expression: Expr): bool uses alloc {
+  if (expression is Expr.MatchExpr(_, _, _, arms)) {
+    if (Arrays.length(arms) == 0) {
+      return false
+    }
+    for (const arm of Arrays.values(arms)) {
+      if (arm.block is Some(armBlock)) {
+        if (!isBlockLeaving(checker, armBlock)) {
+          return false
+        }
+      } else if (arm.body is Some(armBody)) {
+        if (!isPathEndingCall(checker, checker.body, armBody)) {
+          return false
+        }
+      } else {
+        return false
+      }
+    }
+    return true
+  }
+  return false
+}

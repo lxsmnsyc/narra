@@ -14,7 +14,7 @@ The data that flows between the four package dependency nodes: what `narra.toml`
 ## Interface
 
 ```ts
-// selfhost/src/manifest.nra
+// selfhost/src/driver/manifest.nra
 export struct Dependency {
   name: string     // the key in [dependencies], also the import path prefix
   git: string      // a URL or a local path; tests use file:// URLs
@@ -24,7 +24,7 @@ export struct Dependency {
 }
 // Manifest gains: version: string, dependencies: Array<Dependency>, overrides: Array<Dependency>
 
-// selfhost/src/lockfile.nra
+// selfhost/src/driver/lockfile.nra
 export struct LockEntry {
   name: string
   git: string
@@ -35,7 +35,7 @@ export struct LockEntry {
 export function parseLock(text: string): Result<Array<LockEntry>, LoadError>
 export function formatLock(entries: Array<LockEntry>): string  // sorted by name
 
-// selfhost/src/depcache.nra (deps-fetch)
+// selfhost/src/driver/depcache.nra (deps-fetch)
 // The checkout of one dependency version, read-only once written.
 export function checkoutPath(git: string, tag: string): string
 // <cache>/git/<sanitized url>/<sanitized tag>, <cache> = $NARRA_CACHE or $HOME/.cache/narra

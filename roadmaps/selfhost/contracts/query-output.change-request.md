@@ -5,10 +5,10 @@
 
 ## Problem
 
-The v1 draft was written before `narrac query` existed. The built command (PR #88, `selfhost/src/query.nra`, goldens in `compiler/testdata/query/*/queries.txt`) needs some rules the draft does not have:
+The v1 draft was written before `narrac query` existed. The built command (PR #88, `selfhost/src/tools/query.nra`, goldens in `compiler/testdata/query/*/queries.txt`) needs some rules the draft does not have:
 
 - The draft does not say what `type` and `effects` mean at each kind of position.
-- Nodes inside a template string have no positions of their own. The parser gives every node inside `${...}` the template's position (`parseTemplate` in `selfhost/src/parser.nra`).
+- Nodes inside a template string have no positions of their own. The parser gives every node inside `${...}` the template's position (`parseTemplate` in `selfhost/src/syntax/parser.nra`).
 - A load error with no file has no location.
 - The draft lists kinds that `def` never produces.
 - It leaves open what happens with an ambiguous bare name, how callers are counted, and whether tests count as callers.

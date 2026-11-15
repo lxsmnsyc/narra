@@ -9,7 +9,7 @@ defined_by: fmt-trivia
 
 ## Purpose
 
-The source details the AST drops, kept in side tables so `narrac fmt` (and later the language service) can see them: comments, blank lines and written parentheses. Built by `selfhost/src/lexer.nra` and `selfhost/src/parser.nra` only when asked for.
+The source details the AST drops, kept in side tables so `narrac fmt` (and later the language service) can see them: comments, blank lines and written parentheses. Built by `selfhost/src/syntax/lexer.nra` and `selfhost/src/syntax/parser.nra` only when asked for.
 
 ## Interface
 
@@ -65,9 +65,9 @@ None; fmt-trivia lands before its consumers start.
 
 ## Changes
 
-- v2 (2026-11-05, frozen by fmt-trivia, PR #76): the change request from fmt-trivia is accepted. Where the text above differs, these rules win. `narrac trivia [--check] <file>` prints the side tables (format in `selfhost/src/triviadump.nra`).
+- v2 (2026-11-05, frozen by fmt-trivia, PR #76): the change request from fmt-trivia is accepted. Where the text above differs, these rules win. `narrac trivia [--check] <file>` prints the side tables (format in `selfhost/src/syntax/triviadump.nra`).
 
-- The types `CommentKind`, `Placement`, `Comment`, `Attached` and `Trivia` are exported from `narrac/trivia` (`selfhost/src/trivia.nra`), not from `narrac/parser`. The lexer must build `Comment`, and importing it from the parser would be an import cycle. `parseWithTrivia` stays in `parser.nra`, and `lexWithComments` is in `lexer.nra`.
+- The types `CommentKind`, `Placement`, `Comment`, `Attached` and `Trivia` are exported from `narrac/trivia` (`selfhost/src/syntax/trivia.nra`), not from `narrac/parser`. The lexer must build `Comment`, and importing it from the parser would be an import cycle. `parseWithTrivia` stays in `parser.nra`, and `lexWithComments` is in `lexer.nra`.
 - Extra anchor key `b<line>:<col>` for a block (the `{` position). A comment in an empty block is dangling on the block.
 - Extra `blankBefore` key `c<index>`: set when a blank line comes before comment `index`.
 - `blankBefore` for a node means a blank line between the node and what comes before it: its last leading comment, else the previous sibling (with that sibling's trailing comments). So a first list item can have it, when a blank line follows its leading comment. Only statements, declarations, fields, variants, arms and imports get it, not expressions.
@@ -77,8 +77,8 @@ None; fmt-trivia lands before its consumers start.
 - `parenthesized` holds expression ids only; Narra has no parenthesized patterns.
 - A comment in an empty call `f(/* c */)` is trailing on the callee, not dangling on the call.
 
-- v2 note (2026-11-05, maintainer approved; implemented in PR #80 and PR #81): the Behavior rules for `Leading` and `Trailing` overlap when a comment sits between two nodes on one line (`x /* c */ y`). The tie-break: a block comment is `Trailing` of the node on its left when the rest of its line holds only whitespace, a closer (`,` `)` `]` `}` `;`), or a run of further comments separated from it by blanks alone, where the last comment of the run ends the line or comes before a closer (`endsLineAfterComments` in `selfhost/src/trivia.nra`). Otherwise it is `Leading` of the node that follows. A line comment always ends the line, so it is `Trailing` of the node on its left. The interface is unchanged.
+- v2 note (2026-11-05, maintainer approved; implemented in PR #80 and PR #81): the Behavior rules for `Leading` and `Trailing` overlap when a comment sits between two nodes on one line (`x /* c */ y`). The tie-break: a block comment is `Trailing` of the node on its left when the rest of its line holds only whitespace, a closer (`,` `)` `]` `}` `;`), or a run of further comments separated from it by blanks alone, where the last comment of the run ends the line or comes before a closer (`endsLineAfterComments` in `selfhost/src/syntax/trivia.nra`). Otherwise it is `Leading` of the node that follows. A line comment always ends the line, so it is `Trailing` of the node on its left. The interface is unchanged.
 
-- v2 note (2026-11-05, implemented in PR #83): inside a function declaration or an arrow function, a comment whose next code (past blanks, line ends and further comments) is `)`, `]` or `}` has no following node, even when the function has a child after that bracket (a result type or a body). It is `Trailing` of the preceding node, or `Dangling` on the function or arrow when there is none; the printers print such dangling comments inside the empty parameter list. Every other node keeps the rules above (`isParameterScope` and `isBeforeCloser` in `selfhost/src/trivia.nra`). The interface is unchanged.
+- v2 note (2026-11-05, implemented in PR #83): inside a function declaration or an arrow function, a comment whose next code (past blanks, line ends and further comments) is `)`, `]` or `}` has no following node, even when the function has a child after that bracket (a result type or a body). It is `Trailing` of the preceding node, or `Dangling` on the function or arrow when there is none; the printers print such dangling comments inside the empty parameter list. Every other node keeps the rules above (`isParameterScope` and `isBeforeCloser` in `selfhost/src/syntax/trivia.nra`). The interface is unchanged.
 
 - v2 note (2026-11-05, implemented in PR #84, following oxfmt; replaces the scope limit of the PR #83 note): for attachment, an expression's range leaves out the grouping parentheses written around it and around its first and last operand, so the enclosing, preceding and following nodes are found on those inner ranges, and a comment inside such parentheses leads or trails the expression. A comment whose next code (past blanks, line ends and further comments) is `)`, `]` or `}` has no following node in every node, not only in function declarations and arrows, unless that closer closes parentheses written around the preceding node. The `if` that `return c ? a : b` is converted to keeps its full range; statements and other non-expression nodes are unchanged. The printers break a bracket pair that holds a line comment and keep the comment inside it; redundant grouping parentheses are dropped and their comments move to the expression. The interface is unchanged.

@@ -1,0 +1,383 @@
+// The registry rows, checks and emitters of std/internal (cell, coroutine, float, probe, math, clock, terminal and entropy).
+import { StdFunc } from "narrac/std/builtins"
+import { Type } from "narrac/check/types"
+import { Checker, Walker, getExpressionId } from "narrac/check/check"
+import { Pos, Arg } from "narrac/syntax/ast"
+import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/check/exprs"
+import { cachedCType } from "narrac/emit/cnames"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  reportUnsupported,
+  writeLine,
+  temp,
+  ownedTemp,
+  readNodeType,
+  declareUnset,
+  consume,
+  releaseCode,
+} from "narrac/emit/emitstate"
+import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/std/stdcheckhelp"
+import {
+  NODE,
+  FixedCall,
+  plain,
+  owned,
+  argumentText,
+  emitFixedCall,
+  findVariant,
+  ioEither,
+} from "narrac/std/stdemithelp"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+export const INTERNAL_CELL_FUNCS: Array<StdFunc> = [
+  // Writes the slot of a Cell in place, whatever the reference count of its box.
+  StdFunc {
+    name: "CellSlot.store",
+    module: "std/internal/cell",
+    key: "store",
+    check: "checkCellStore",
+  },
+]
+
+export const INTERNAL_COROUTINE_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Co.next",
+    module: "std/internal/coroutine",
+    key: "next",
+    mutables: [true],
+    effects: ["alloc"],
+    check: "checkCoResume",
+  },
+  StdFunc {
+    name: "Co.panicMessage",
+    module: "std/internal/coroutine",
+    key: "panicMessage",
+    parameters: [],
+    result: "string",
+    effects: ["alloc"],
+  },
+  StdFunc {
+    name: "Co.panicked",
+    module: "std/internal/coroutine",
+    key: "panicked",
+    parameters: [],
+    result: "bool",
+  },
+  StdFunc {
+    name: "Co.resume",
+    module: "std/internal/coroutine",
+    key: "resume",
+    mutables: [true, false],
+    effects: ["alloc"],
+    check: "checkCoResume",
+  },
+]
+
+export const INTERNAL_FLOAT_FUNCS: Array<StdFunc> = [
+  // The text must already follow the JSON number grammar; strtod reads all of it.
+  StdFunc {
+    name: "FloatText.parse",
+    module: "std/internal/float",
+    key: "parse",
+    parameters: ["string"],
+    result: "f64",
+  },
+]
+
+export const INTERNAL_PROBE_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Probe.code",
+    module: "std/internal/probe",
+    key: "code",
+    parameters: ["char"],
+    result: "int",
+  },
+]
+
+const MATH_UNARY_NAMES: Array<string> = [
+  "floor",
+  "ceil",
+  "round",
+  "trunc",
+  "sin",
+  "cos",
+  "tan",
+  "exp",
+  "log",
+]
+
+const MATH_BINARY_NAMES: Array<string> = ["atan2", "pow"]
+
+export function internalMathFuncs(): Array<StdFunc> uses alloc {
+  // Each calls the C function of its name.
+  let rows: Array<StdFunc> = []
+  for (const key of Arrays.values(MATH_UNARY_NAMES)) {
+    Arrays.push(mutable rows, StdFunc {
+      name: `Libm.${key}`,
+      module: "std/internal/math",
+      key,
+      parameters: ["f64"],
+      result: "f64",
+    })
+  }
+  for (const key of Arrays.values(MATH_BINARY_NAMES)) {
+    Arrays.push(mutable rows, StdFunc {
+      name: `Libm.${key}`,
+      module: "std/internal/math",
+      key,
+      parameters: ["f64", "f64"],
+      result: "f64",
+    })
+  }
+  return rows
+}
+
+export const INTERNAL_CLOCK_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Clock.monotonicNanos",
+    module: "std/internal/clock",
+    key: "monotonicNanos",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Clock.sleepNanos",
+    module: "std/internal/clock",
+    key: "sleepNanos",
+    parameters: ["int"],
+    result: "void",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Clock.wallMillis",
+    module: "std/internal/clock",
+    key: "wallMillis",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+]
+
+export const INTERNAL_TERMINAL_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Tty.isTerminal",
+    module: "std/internal/terminal",
+    key: "isTerminal",
+    parameters: ["int"],
+    result: "bool",
+    effects: ["io"],
+  },
+  StdFunc {
+    name: "Tty.columns",
+    module: "std/internal/terminal",
+    key: "columns",
+    parameters: ["int"],
+    result: "int",
+    effects: ["io"],
+  },
+]
+
+export const INTERNAL_ENTROPY_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Entropy.seed",
+    module: "std/internal/entropy",
+    key: "seed",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+]
+
+function checkCoResume<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type from checker uses alloc {
+  let count = 1
+  if (name == "Co.resume") {
+    count = 2
+  }
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, count)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TGenerator(element, _, _, _, input)) {
+    checkMutableArgument(mutable checker, arguments[0].value)
+    if (count == 2) {
+      checkArgumentAgainst(mutable checker, walker, arguments[1].value, input)
+    }
+    checkExclusive(mutable checker, arguments, [0])
+    return makePreludeEnum(mutable checker, "Option", [element])
+  }
+  // Only std/coroutine calls these, with the right arguments.
+  panic(`internal error: ${name} needs a generator`)
+}
+
+function checkCellStore<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TBox(element)) {
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, element)
+    return Type.TVoid
+  }
+  // Only std/cell calls this, with a box.
+  panic(`internal error: ${name} needs a box`)
+}
+
+export function checkInternalCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+): Type from checker uses alloc {
+  if (kind == "checkCellStore") {
+    return checkCellStore(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkCoResume") {
+    return checkCoResume(mutable checker, walker, pos, arguments, name)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+}
+
+function emitCoResume<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  // Only a test build catches a panic of the coroutine.
+  const optionType = copy(readNodeType(emitter, nodeId))
+  const generatorType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  let inputPointer = "NULL"
+  let elementType = Type.TVoid
+  if (generatorType is Type.TGenerator(element, _, _, _, input)) {
+    elementType = copy(element)
+    if (input != Type.TVoid) {
+      const inputCode = argumentText(walker, mutable emitter, arguments, 1)
+      inputPointer = `&${temp(mutable emitter, input, inputCode)}`
+    }
+  }
+  const generator = EmitWalker.emitLvaluePointer(walker, mutable emitter, arguments[0].value)
+  const elementName = cachedCType(emitter.checker, emitter.typeNames, elementType)
+  emitter.tempCount++
+  const outputName = `t${Int.toString(emitter.tempCount)}`
+  const output = declareUnset(mutable emitter, elementName, outputName)
+  emitter.tempCount++
+  const statusName = `t${Int.toString(emitter.tempCount)}`
+  const status = declareUnset(mutable emitter, "int", statusName)
+  let guard = "false"
+  if (emitter.tests) {
+    guard = "true"
+  }
+  writeLine(
+    mutable emitter,
+    `${status} = narra_co_next(${generator}, &${output}, ${inputPointer}, ${guard});`,
+  )
+  const some = findVariant(emitter, optionType, "Some")
+  const none = findVariant(emitter, optionType, "None")
+  return ioEither(mutable emitter, optionType, `${status} > 0`, some, [output], none, [])
+}
+
+function emitCellStore<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const boxType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+  if (boxType is Type.TBox(element)) {
+    const boxCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[0].value)
+    const box = temp(mutable emitter, boxType, boxCode.text)
+    const valueCode = EmitWalker.emitExpression(walker, mutable emitter, arguments[1].value)
+    const consumed = consume(mutable emitter, valueCode.text, valueCode.owned, element)
+    // The old value is read after the new one is computed, which may have changed the slot.
+    const previous = temp(mutable emitter, element, `${box}->f_value`)
+    writeLine(mutable emitter, `${box}->f_value = ${consumed};`)
+    const release = releaseCode(emitter, element, previous)
+    if (release != "") {
+      writeLine(mutable emitter, release)
+    }
+    return plain("((void)0)")
+  }
+  return plain(reportUnsupported(mutable emitter, "CellSlot.store needs a box", NODE))
+}
+
+export function emitInternalCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  if (name == "CellSlot.store") {
+    return emitCellStore(walker, mutable emitter, arguments)
+  }
+  if (name == "Co.next" || name == "Co.resume") {
+    return emitCoResume(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Co.panicked") {
+    return plain("narra_co_panicked")
+  }
+  if (name == "Co.panicMessage") {
+    return owned(ownedTemp(mutable emitter, Type.TStr, "lstr_from_cstr(narra_panic_text)"))
+  }
+  if (name == "FloatText.parse") {
+    const text = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`strtod((${text})->data, NULL)`)
+  }
+  if (Str.startsWith(name, "Libm.")) {
+    // The C function has the name of the key: Libm.floor calls floor.
+    const fixed = FixedCall {
+      name,
+      call: Str.sliceFrom(name, 5),
+      withPos: false,
+      owned: false,
+      temporary: false,
+    }
+    return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+  }
+  if (name == "Clock.monotonicNanos") {
+    return plain("narra_clock_monotonic_nanos()")
+  }
+  if (name == "Clock.wallMillis") {
+    return plain("narra_clock_wall_millis()")
+  }
+  if (name == "Clock.sleepNanos") {
+    const nanos = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`narra_clock_sleep_nanos(${nanos})`)
+  }
+  if (name == "Tty.isTerminal") {
+    const descriptor = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`narra_terminal_is_terminal(${descriptor})`)
+  }
+  if (name == "Tty.columns") {
+    const descriptor = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`narra_terminal_columns(${descriptor})`)
+  }
+  if (name == "Entropy.seed") {
+    return plain("narra_entropy_seed()")
+  }
+  if (name == "Probe.code") {
+    const character = argumentText(walker, mutable emitter, arguments, 0)
+    return plain(`((int64_t)${character})`)
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

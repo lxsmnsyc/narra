@@ -13,7 +13,7 @@ How the statement printer of fmt-cli and the expression printer of fmt-exprs cal
 
 ## Interface
 
-`selfhost/src/fmtprinter.nra` (written by fmt-cli; fmt-exprs writes the same file from this text if it needs it before fmt-cli lands, and takes fmt-cli's on rebase):
+`selfhost/src/tools/fmtprinter.nra` (written by fmt-cli; fmt-exprs writes the same file from this text if it needs it before fmt-cli lands, and takes fmt-cli's on rebase):
 
 ```ts
 import * as Doc from "narrac/fmtdoc"
@@ -44,7 +44,7 @@ export function printDangling(printer: Printer, anchor: string): Doc.Doc uses al
 export function trailingComma(printer: Printer): Doc.Doc uses alloc
 ```
 
-`selfhost/src/fmtexprs.nra` (fmt-exprs) exports `printExpression`, `printPattern` and `printType` with the field types above. `selfhost/src/fmt.nra` (fmt-cli) builds the `Printer` and exports `printBlock`.
+`selfhost/src/tools/fmtexprs.nra` (fmt-exprs) exports `printExpression`, `printPattern` and `printType` with the field types above. `selfhost/src/tools/fmt.nra` (fmt-cli) builds the `Printer` and exports `printBlock`.
 
 ## Behavior
 

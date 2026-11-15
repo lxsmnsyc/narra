@@ -1,0 +1,1066 @@
+// Integer divisors and shift counts that the checker proves. A divisor is a
+// non-zero constant or a local that a check narrowed; a shift count is a
+// constant inside the bit width or a local checked against both ends. The
+// facts about a local live in checker.localNames next to the variant
+// narrowing, so they end together (see endNarrowing in patterns.nra).
+import { Expr, Stmt, Block } from "narrac/syntax/ast"
+import { substring } from "narrac/driver/textops"
+import { Type, isInteger, isUnsignedInteger } from "narrac/check/types"
+import {
+  Checker,
+  Ref,
+  getRef,
+  getLocal,
+  bindName,
+  reportError,
+  getExpressionPos,
+  findLocal,
+} from "narrac/check/check"
+import {
+  factKey,
+  endNarrowing,
+  relationKey,
+  relationPartnerKey,
+  relationCountKey,
+  findRelationCount,
+} from "narrac/check/patterns"
+import { isCapturedByArrow } from "narrac/check/funcvalues"
+import {
+  findConstantValue,
+  isOpenConstant,
+  describeConstantOperand,
+} from "narrac/check/constgenerics"
+import * as Int from "std/int"
+import * as Math from "std/math"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+const UNBOUNDED_LOW = -9223372036854775807
+const UNBOUNDED_HIGH = 9223372036854775807
+const MAXIMUM_CONSTANT_DEPTH = 8
+
+// The orders a relation between two locals still allows, as bits of a set.
+const RELATION_LESS = 1
+const RELATION_EQUAL = 2
+const RELATION_GREATER = 4
+const RELATION_ANY = 7
+
+export struct Fact {
+  low: int
+  high: int
+  nonzero: bool
+}
+
+export function splitIntLiteral(text: string): #[int, string] uses alloc {
+  let base = 10
+  let digits = text
+  if (Str.length(text) >= 1 && Str.startsWith(text, "0")) {
+    if (Str.length(text) >= 3 && (Str.startsWith(text, "0x") || Str.startsWith(text, "0X"))) {
+      base = 16
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0b") || Str.startsWith(text, "0B"))
+    ) {
+      base = 2
+      digits = Str.sliceFrom(text, 2)
+    } else if (
+      Str.length(text) >= 3 && (Str.startsWith(text, "0o") || Str.startsWith(text, "0O"))
+    ) {
+      base = 8
+      digits = Str.sliceFrom(text, 2)
+    } else {
+      base = 8
+      digits = Str.sliceFrom(text, 1)
+    }
+  }
+  return #[base, Str.replace(digits, "_", "")]
+}
+
+export function parseLiteral(text: string): Option<int> uses alloc {
+  const #[base, digits] = splitIntLiteral(text)
+  if (digits == "") {
+    return Some(0)
+  }
+  if (Int.parse(digits, base) is Ok(value)) {
+    return Some(value)
+  }
+  // A u64 literal from 2^63 up does not fit an int, but its bits do: the last
+  // digit is added to the rest with wrapping arithmetic.
+  const length = Str.length(digits)
+  if (length >= 2) {
+    if (Int.parse(substring(digits, 0, length - 1), base) is Ok(rest)) {
+      if (Int.parse(Str.sliceFrom(digits, length - 1), base) is Ok(last)) {
+        return Some(rest * base + last)
+      }
+    }
+  }
+  return None
+}
+
+function findConstant(checker: Checker, expression: Expr, depth: int): Option<int> uses alloc {
+  // A literal, a negated or combined constant, or a top-level constant whose value is one.
+  if (depth > MAXIMUM_CONSTANT_DEPTH) {
+    return None
+  }
+  if (expression is Expr.IntLit(_, _, text)) {
+    return parseLiteral(text)
+  }
+  if (expression is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "-") {
+      if (findConstant(checker, operand, depth + 1) is Some(value)) {
+        return Some(0 - value)
+      }
+    }
+    return None
+  }
+  if (expression is Expr.BinaryExpr(_, _, operator, left, right)) {
+    return combineConstants(checker, operator, left, right, depth)
+  }
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    return findNamedConstant(checker, nodeId, depth)
+  }
+  if (expression is Expr.FieldExpr(nodeId, _, _, _)) {
+    return findNamedConstant(checker, nodeId, depth)
+  }
+  return None
+}
+
+function findNamedConstant(checker: Checker, nodeId: int, depth: int): Option<int> uses alloc {
+  // A constant type parameter has its instance's value.
+  if (findConstantValue(checker, nodeId) is Some(value)) {
+    return Some(value)
+  }
+  if (getRef(checker, nodeId) is Ref.Const(index)) {
+    return findConstant(checker, checker.consts[index].declaration.value, depth + 1)
+  }
+  return None
+}
+
+function combineConstants(
+  checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+  depth: int,
+): Option<int> uses alloc {
+  if (findConstant(checker, left, depth + 1) is Some(leftValue)) {
+    if (findConstant(checker, right, depth + 1) is Some(rightValue)) {
+      if (operator == "+") {
+        return Some(leftValue + rightValue)
+      }
+      if (operator == "-") {
+        return Some(leftValue - rightValue)
+      }
+      if (operator == "*") {
+        return Some(leftValue * rightValue)
+      }
+      if (operator == "<<" && rightValue >= 0 && rightValue < 63) {
+        return Some(leftValue << rightValue)
+      }
+    }
+  }
+  return None
+}
+
+export function wrapConstant(value: int, type: Type): int {
+  // A folded constant takes the value it has in its own type: 65536 * 65536 is 0 as an i32.
+  const width = findBitWidth(type)
+  if (width < 1 || width >= 64) {
+    return value
+  }
+  const modulus = 1 << width
+  let reduced = value & (modulus - 1)
+  if (!isUnsignedInteger(type) && reduced >= modulus / 2) {
+    reduced = reduced - modulus
+  }
+  return reduced
+}
+
+export function findTypedConstant(
+  checker: Checker,
+  expression: Expr,
+  type: Type,
+): Option<int> uses alloc {
+  if (findConstant(checker, expression, 0) is Some(value)) {
+    return Some(wrapConstant(value, type))
+  }
+  return None
+}
+
+export function findFactLocal(checker: Checker, expression: Expr): int {
+  // Only a plain name carries facts; a field path does not.
+  if (expression is Expr.Ident(nodeId, _, _)) {
+    if (getRef(checker, nodeId) is Ref.Local(index)) {
+      if (isInteger(getLocal(checker, index).localType)) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+function readFact(checker: Checker, local: int): Fact uses alloc {
+  const key = factKey(local)
+  if (checker.localNames[key] is Some(present)) {
+    if (present == 1) {
+      let low = UNBOUNDED_LOW
+      let high = UNBOUNDED_HIGH
+      let nonzero = false
+      if (checker.localNames[`${key}|low`] is Some(storedLow)) {
+        low = storedLow
+      }
+      if (checker.localNames[`${key}|high`] is Some(storedHigh)) {
+        high = storedHigh
+      }
+      if (checker.localNames[`${key}|nonzero`] is Some(storedNonzero)) {
+        nonzero = storedNonzero == 1
+      }
+      return Fact { low, high, nonzero }
+    }
+  }
+  return Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+}
+
+function writeFact(mutable checker: Checker, local: int, fact: Fact) uses alloc {
+  const key = factKey(local)
+  let nonzero = 0
+  if (fact.nonzero) {
+    nonzero = 1
+  }
+  bindName(mutable checker, `${key}|low`, fact.low)
+  bindName(mutable checker, `${key}|high`, fact.high)
+  bindName(mutable checker, `${key}|nonzero`, nonzero)
+  bindName(mutable checker, key, 1)
+}
+
+export function recordConstantLocal(mutable checker: Checker, local: int, value: Expr) uses alloc {
+  // A `const` local that holds a constant is that constant wherever it is read.
+  const info = copy(getLocal(checker, local))
+  if (info.isMutable || !isInteger(info.localType)) {
+    return
+  }
+  if (findTypedConstant(checker, value, info.localType) is Some(known)) {
+    if (info.localType == Type.TU64 && known < 0) {
+      // A u64 from 2^63 up is negative as an int; it is non-zero and proves no bound.
+      writeFact(mutable checker, local, Fact {
+        low: UNBOUNDED_LOW,
+        high: UNBOUNDED_HIGH,
+        nonzero: true,
+      })
+      return
+    }
+    writeFact(mutable checker, local, Fact { low: known, high: known, nonzero: known != 0 })
+  }
+}
+
+export function flipComparison(operator: string): string {
+  // The operator seen from the other operand: `0 < n` is `n > 0`.
+  if (operator == "<") {
+    return ">"
+  }
+  if (operator == "<=") {
+    return ">="
+  }
+  if (operator == ">") {
+    return "<"
+  }
+  if (operator == ">=") {
+    return "<="
+  }
+  return operator
+}
+
+export function negateComparison(operator: string): string {
+  if (operator == "<") {
+    return ">="
+  }
+  if (operator == "<=") {
+    return ">"
+  }
+  if (operator == ">") {
+    return "<="
+  }
+  if (operator == ">=") {
+    return "<"
+  }
+  if (operator == "==") {
+    return "!="
+  }
+  return "=="
+}
+
+export function isComparisonOperator(operator: string): bool {
+  return (operator == "<" ||
+    operator == "<=" ||
+    operator == ">" ||
+    operator == ">=" ||
+    operator == "==" ||
+    operator == "!=")
+}
+
+export function narrowByCondition(
+  mutable checker: Checker,
+  condition: Expr,
+  holds: bool,
+) uses alloc {
+  // Records what a true (or false) condition says about integer locals.
+  if (condition is Expr.UnaryExpr(_, _, operator, operand)) {
+    if (operator == "!") {
+      narrowByCondition(mutable checker, operand, !holds)
+    }
+    return
+  }
+  if (condition is Expr.BinaryExpr(_, _, operator, left, right)) {
+    narrowByBinary(mutable checker, operator, left, right, holds)
+  }
+}
+
+function narrowByBinary(
+  mutable checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+  holds: bool,
+) uses alloc {
+  const isBoth = (operator == "&&" && holds) || (operator == "||" && !holds)
+  const isEither = (operator == "||" && holds) || (operator == "&&" && !holds)
+  if (isEither) {
+    narrowByHull(mutable checker, operator, left, right, holds)
+    return
+  }
+  if (isBoth) {
+    // The right side runs after the left one, so a closure in it may assign a name the
+    // left side narrowed; such a name keeps only what the right side says.
+    narrowByCondition(mutable checker, left, holds)
+    let assigned: Array<string> = []
+    collectAssignedInExpr(right, mutable assigned)
+    for (const name of Arrays.values(assigned)) {
+      const local = findLocal(checker, name)
+      endNarrowing(mutable checker, local)
+    }
+    narrowByCondition(mutable checker, right, holds)
+    return
+  }
+  if (!isComparisonOperator(operator)) {
+    return
+  }
+  // A check between two integer locals of one type is a relation between them.
+  const leftLocal = findFactLocal(checker, left)
+  const rightLocal = findFactLocal(checker, right)
+  if (leftLocal >= 0 && rightLocal >= 0) {
+    const leftType = getLocal(checker, leftLocal).localType
+    if (leftLocal != rightLocal && leftType == getLocal(checker, rightLocal).localType) {
+      let comparison = operator
+      if (!holds) {
+        comparison = negateComparison(operator)
+      }
+      recordRelation(mutable checker, leftLocal, rightLocal, findRelationSet(comparison))
+    }
+    return
+  }
+  let local = leftLocal
+  let constantSide = right
+  let comparison = operator
+  if (local < 0) {
+    local = rightLocal
+    constantSide = left
+    comparison = flipComparison(operator)
+  }
+  if (local < 0) {
+    return
+  }
+  if (findTypedConstant(checker, constantSide, getLocal(checker, local).localType) is Some(bound)) {
+    if (!holds) {
+      comparison = negateComparison(comparison)
+    }
+    refineFact(mutable checker, local, comparison, bound)
+  }
+}
+
+function narrowByHull(
+  mutable checker: Checker,
+  operator: string,
+  left: Expr,
+  right: Expr,
+  holds: bool,
+) uses alloc {
+  // One side of a true `||` (or a false `&&`) holds. When every side compares the same
+  // local with a constant, the local is in the hull of the sides; anything else says nothing.
+  let sides: Array<Expr> = []
+  collectChainSides(operator, left, mutable sides)
+  collectChainSides(operator, right, mutable sides)
+  let local = -1
+  let hull = createUnknownFact()
+  for (const side of Arrays.values(sides)) {
+    const sideLocal = findComparedLocal(checker, side)
+    if (sideLocal < 0 || (local >= 0 && sideLocal != local)) {
+      return
+    }
+    if (buildComparisonFact(checker, side, sideLocal, holds) is Some(sideFact)) {
+      if (local < 0) {
+        hull = sideFact
+      } else {
+        hull = joinFacts(hull, sideFact)
+      }
+    } else {
+      return
+    }
+    local = sideLocal
+  }
+  if (local >= 0) {
+    narrowFact(mutable checker, local, hull)
+  }
+}
+
+function findComparedLocal(checker: Checker, side: Expr): int {
+  if (side is Expr.BinaryExpr(_, _, operator, left, right)) {
+    if (isComparisonOperator(operator)) {
+      const local = findFactLocal(checker, left)
+      if (local >= 0) {
+        return local
+      }
+      return findFactLocal(checker, right)
+    }
+  }
+  return -1
+}
+
+function buildComparisonFact(
+  checker: Checker,
+  side: Expr,
+  local: int,
+  holds: bool,
+): Option<Fact> uses alloc {
+  // The fact a comparison of the local with a constant gives when it holds (or fails).
+  if (side is Expr.BinaryExpr(_, _, operator, left, right)) {
+    let constantSide = right
+    let comparison = operator
+    if (findFactLocal(checker, left) != local) {
+      constantSide = left
+      comparison = flipComparison(operator)
+    }
+    const type = getLocal(checker, local).localType
+    if (findTypedConstant(checker, constantSide, type) is Some(bound)) {
+      if (!holds) {
+        comparison = negateComparison(comparison)
+      }
+      return Some(buildSideFact(type, comparison, bound))
+    }
+  }
+  return None
+}
+
+function collectChainSides(
+  operator: string,
+  expression: Expr,
+  mutable sides: Array<Expr>,
+) uses alloc {
+  if (expression is Expr.BinaryExpr(_, _, inner, left, right)) {
+    if (inner == operator) {
+      collectChainSides(operator, left, mutable sides)
+      collectChainSides(operator, right, mutable sides)
+      return
+    }
+  }
+  Arrays.push(mutable sides, expression)
+}
+
+export function buildSideFact(type: Type, comparison: string, bound: int): Fact {
+  // One side of a hull, built as refineFact builds a fact: on a u64 a bound from 2^63 up
+  // is negative as an int and proves nothing.
+  if (type == Type.TU64 && bound < 0) {
+    return createUnknownFact()
+  }
+  return refineBounds(createUnknownFact(), comparison, bound)
+}
+
+export function findRelationSet(comparison: string): int {
+  if (comparison == "<") {
+    return RELATION_LESS
+  }
+  if (comparison == "<=") {
+    return RELATION_LESS | RELATION_EQUAL
+  }
+  if (comparison == ">") {
+    return RELATION_GREATER
+  }
+  if (comparison == ">=") {
+    return RELATION_GREATER | RELATION_EQUAL
+  }
+  if (comparison == "==") {
+    return RELATION_EQUAL
+  }
+  return RELATION_LESS | RELATION_GREATER
+}
+
+export function isRelationProven(known: int, comparison: string): bool {
+  // A set proves a comparison when every order it allows meets the comparison.
+  return (known & (RELATION_ANY - findRelationSet(comparison))) == 0
+}
+
+function flipRelation(relation: int): int {
+  // The set seen from the other local: less and greater swap.
+  return ((relation & RELATION_EQUAL) |
+    ((relation & RELATION_LESS) << 2) |
+    ((relation & RELATION_GREATER) >> 2))
+}
+
+function readRelation(checker: Checker, first: int, second: int): int uses alloc {
+  // The orders still possible between first and second, seen from first.
+  if (first == second) {
+    return RELATION_EQUAL
+  }
+  let relation = RELATION_ANY
+  if (checker.localNames[relationKey(first, second)] is Some(stored)) {
+    if (stored >= 0) {
+      relation = stored
+    }
+  }
+  if (first > second) {
+    return flipRelation(relation)
+  }
+  return relation
+}
+
+export function recordRelation(
+  mutable checker: Checker,
+  first: int,
+  second: int,
+  relation: int,
+) uses alloc {
+  // The pair key holds the set seen from the smaller local, intersected with what is known.
+  if (first == second) {
+    return
+  }
+  const key = relationKey(first, second)
+  let isNew = true
+  if (checker.localNames[key] is Some(stored)) {
+    isNew = stored < 0
+  }
+  let narrowed = readRelation(checker, first, second) & relation
+  if (first > second) {
+    narrowed = flipRelation(narrowed)
+  }
+  if (isNew) {
+    addRelationPartner(mutable checker, first, second)
+    addRelationPartner(mutable checker, second, first)
+  }
+  bindName(mutable checker, key, narrowed)
+  passBounds(mutable checker, first, second)
+  passBounds(mutable checker, second, first)
+}
+
+function addRelationPartner(mutable checker: Checker, local: int, partner: int) uses alloc {
+  const count = findRelationCount(checker, local)
+  bindName(mutable checker, relationPartnerKey(local, count), partner)
+  bindName(mutable checker, relationCountKey(local), count + 1)
+}
+
+function passBoundsToPartners(mutable checker: Checker, local: int) uses alloc {
+  // One step only: the partners' own partners are not visited.
+  const count = findRelationCount(checker, local)
+  for (const index of Ranges.upTo(count)) {
+    if (checker.localNames[relationPartnerKey(local, index)] is Some(partner)) {
+      passBounds(mutable checker, local, partner)
+    }
+  }
+}
+
+function passBounds(mutable checker: Checker, source: int, target: int) uses alloc {
+  // With source <= target, target is at least source's low end; with source >= target,
+  // at most its high end; `<` and `>` pass the end plus or minus one.
+  const relation = readRelation(checker, source, target)
+  if (relation == RELATION_ANY) {
+    return
+  }
+  if (isCapturedByArrow(checker, source) || isCapturedByArrow(checker, target)) {
+    return
+  }
+  const type = getLocal(checker, source).localType
+  const fact = readFact(checker, source)
+  let passed = createUnknownFact()
+  if ((relation & RELATION_GREATER) == 0 && isPassableEnd(fact.low, type)) {
+    passed.low = fact.low
+    if ((relation & RELATION_EQUAL) == 0) {
+      passed.low = fact.low + 1
+    }
+  }
+  if ((relation & RELATION_LESS) == 0 && isPassableEnd(fact.high, type)) {
+    passed.high = fact.high
+    if ((relation & RELATION_EQUAL) == 0) {
+      passed.high = fact.high - 1
+    }
+  }
+  if (relation == RELATION_EQUAL) {
+    passed.nonzero = fact.nonzero
+  }
+  if (!isUnboundedEnd(passed.low) || !isUnboundedEnd(passed.high) || passed.nonzero) {
+    intersectFact(mutable checker, target, passed)
+  }
+}
+
+function isPassableEnd(value: int, type: Type): bool {
+  // A u64 end from 2^63 up is negative as an int, so it is no bound to pass on.
+  return !isUnboundedEnd(value) && !(type == Type.TU64 && value < 0)
+}
+
+export function findArgumentRelation(
+  checker: Checker,
+  left: Expr,
+  right: Expr,
+  type: Type,
+): int uses alloc {
+  // What a call knows about the order of two arguments: from constants, from intervals
+  // whose bounded ends settle it, from one local passed twice, or from a relation fact.
+  if (!isInteger(type)) {
+    return RELATION_ANY
+  }
+  if (findTypedConstant(checker, left, type) is Some(leftValue)) {
+    if (findTypedConstant(checker, right, type) is Some(rightValue)) {
+      return compareConstants(leftValue, rightValue, type)
+    }
+  }
+  const leftLocal = findFactLocal(checker, left)
+  const rightLocal = findFactLocal(checker, right)
+  if (leftLocal >= 0 && leftLocal == rightLocal) {
+    return RELATION_EQUAL
+  }
+  let relation = RELATION_ANY
+  const leftFact = findOperandFact(checker, left, type)
+  const rightFact = findOperandFact(checker, right, type)
+  if (isPassableEnd(leftFact.high, type) && isPassableEnd(rightFact.low, type)) {
+    if (leftFact.high < rightFact.low) {
+      relation = relation & RELATION_LESS
+    } else if (leftFact.high == rightFact.low) {
+      relation = relation & (RELATION_LESS | RELATION_EQUAL)
+    }
+  }
+  if (isPassableEnd(leftFact.low, type) && isPassableEnd(rightFact.high, type)) {
+    if (leftFact.low > rightFact.high) {
+      relation = relation & RELATION_GREATER
+    } else if (leftFact.low == rightFact.high) {
+      relation = relation & (RELATION_GREATER | RELATION_EQUAL)
+    }
+  }
+  if (leftLocal >= 0 && rightLocal >= 0) {
+    if (!isCapturedByArrow(checker, leftLocal) && !isCapturedByArrow(checker, rightLocal)) {
+      relation = relation & readRelation(checker, leftLocal, rightLocal)
+    }
+  }
+  return relation
+}
+
+function compareConstants(leftValue: int, rightValue: int, type: Type): int {
+  // A u64 from 2^63 up is negative as an int and above every smaller u64.
+  if (type == Type.TU64 && (leftValue < 0) != (rightValue < 0)) {
+    if (leftValue < 0) {
+      return RELATION_GREATER
+    }
+    return RELATION_LESS
+  }
+  if (leftValue < rightValue) {
+    return RELATION_LESS
+  }
+  if (leftValue > rightValue) {
+    return RELATION_GREATER
+  }
+  return RELATION_EQUAL
+}
+
+export function refineFact(
+  mutable checker: Checker,
+  local: int,
+  comparison: string,
+  bound: int,
+) uses alloc {
+  if (getLocal(checker, local).localType == Type.TU64 && bound < 0) {
+    // The bound is 2^63 or more, which an int cannot order against; it proves nothing.
+    return
+  }
+  const refined = refineBounds(readFact(checker, local), comparison, bound)
+  writeFact(mutable checker, local, refined)
+  passBoundsToPartners(mutable checker, local)
+}
+
+export function refineBounds(fact: Fact, comparison: string, bound: int): Fact {
+  // What a comparison that holds adds to the fact. `> max` and `< min` hold for no
+  // value; they add nothing rather than wrap.
+  let refined = copy(fact)
+  if (comparison == "==") {
+    refined.low = Math.max(fact.low, bound)
+    refined.high = Math.min(fact.high, bound)
+  } else if (comparison == "!=") {
+    if (bound == 0) {
+      refined.nonzero = true
+    }
+  } else if (comparison == "<") {
+    if (bound > UNBOUNDED_LOW - 1) {
+      refined.high = Math.min(fact.high, bound - 1)
+    }
+  } else if (comparison == "<=") {
+    refined.high = Math.min(fact.high, bound)
+  } else if (comparison == ">") {
+    if (bound < UNBOUNDED_HIGH) {
+      refined.low = Math.max(fact.low, bound + 1)
+    }
+  } else {
+    refined.low = Math.max(fact.low, bound)
+  }
+  return refined
+}
+
+export function isUnboundedEnd(value: int): bool {
+  return value == UNBOUNDED_LOW || value == UNBOUNDED_HIGH
+}
+
+export function createUnknownFact(): Fact {
+  return Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+}
+
+export function joinFacts(left: Fact, right: Fact): Fact {
+  // What holds for a value that meets one of the two facts.
+  return Fact {
+    low: Math.min(left.low, right.low),
+    high: Math.max(left.high, right.high),
+    nonzero: isNonzeroFact(left) && isNonzeroFact(right),
+  }
+}
+
+export function narrowFact(mutable checker: Checker, local: int, fact: Fact) uses alloc {
+  // Adds a fact to what is known about an integer local, and passes its bounds one step.
+  if (intersectFact(mutable checker, local, fact)) {
+    passBoundsToPartners(mutable checker, local)
+  }
+}
+
+function intersectFact(mutable checker: Checker, local: int, fact: Fact): bool uses alloc {
+  const info = copy(getLocal(checker, local))
+  if (!isInteger(info.localType)) {
+    return false
+  }
+  let added = copy(fact)
+  if (info.localType == Type.TU64) {
+    // A u64 end from 2^63 up is negative as an int and cannot be ordered, so such an
+    // end is no bound; whether the value is zero is still known.
+    if (added.low < 0) {
+      added.low = UNBOUNDED_LOW
+    }
+    if (added.high < 0) {
+      added.high = UNBOUNDED_HIGH
+    }
+  }
+  const known = readFact(checker, local)
+  writeFact(mutable checker, local, Fact {
+    low: Math.max(known.low, added.low),
+    high: Math.min(known.high, added.high),
+    nonzero: known.nonzero || added.nonzero,
+  })
+  return true
+}
+
+function isNonzeroFact(fact: Fact): bool {
+  return fact.nonzero || fact.low > 0 || fact.high < 0
+}
+
+export function findOperandFact(checker: Checker, operand: Expr, type: Type): Fact uses alloc {
+  const unknown = Fact { low: UNBOUNDED_LOW, high: UNBOUNDED_HIGH, nonzero: false }
+  if (!isInteger(type)) {
+    return unknown
+  }
+  // A constant is its own bounds. A u64 from 2^63 up is negative as an int:
+  // it is above every bound an int can hold, so its low end is the largest int.
+  if (findTypedConstant(checker, operand, type) is Some(value)) {
+    if (type == Type.TU64 && value < 0) {
+      return Fact { low: UNBOUNDED_HIGH, high: UNBOUNDED_HIGH, nonzero: true }
+    }
+    return Fact { low: value, high: value, nonzero: value != 0 }
+  }
+  if (findRefinedFact(checker, operand) is Some(refined)) {
+    return refined
+  }
+  // A name has the facts its checks recorded.
+  const local = findFactLocal(checker, operand)
+  if (local < 0 || isCapturedByArrow(checker, local)) {
+    return unknown
+  }
+  return readFact(checker, local)
+}
+
+export function findRefinedFact(checker: Checker, operand: Expr): Option<Fact> uses alloc {
+  // `Port.toInt(e)` of a refined integer type has the hull of Port's items, whatever e is (D116).
+  if (operand is Expr.CallExpr(callId, _, Expr.FieldExpr(_, _, _, name), _, _)) {
+    if (name != "from" && name != "check") {
+      if (getRef(checker, callId) is Ref.Distinct(distinctIndex)) {
+        if (checker.distincts[distinctIndex].hull is Some(hull)) {
+          return Some(Fact { low: hull.low, high: hull.high, nonzero: hull.nonzero })
+        }
+      }
+    }
+  }
+  return None
+}
+
+export function isComparisonProven(fact: Fact, comparison: string, bound: int): bool {
+  // The unbounded ends stand for "no fact", so they prove nothing, even when they equal the bound.
+  const hasLow = fact.low != UNBOUNDED_LOW
+  const hasHigh = fact.high != UNBOUNDED_HIGH
+  if (comparison == ">=") {
+    return hasLow && fact.low >= bound
+  }
+  if (comparison == ">") {
+    return hasLow && fact.low > bound
+  }
+  if (comparison == "<=") {
+    return hasHigh && fact.high <= bound
+  }
+  if (comparison == "<") {
+    return hasHigh && fact.high < bound
+  }
+  if (comparison == "==") {
+    return hasLow && hasHigh && fact.low == bound && fact.high == bound
+  }
+  return ((bound == 0 && isNonzeroFact(fact)) ||
+    (hasLow && fact.low > bound) ||
+    (hasHigh && fact.high < bound))
+}
+
+function findBitWidth(type: Type): int {
+  return match (type) {
+    Type.TI8 | Type.TU8 => 8
+    Type.TI16 | Type.TU16 => 16
+    Type.TI32 | Type.TU32 => 32
+    _ => 64
+  }
+}
+
+function isProvenDivisor(checker: Checker, divisor: Expr, operandType: Type): bool uses alloc {
+  if (findTypedConstant(checker, divisor, operandType) is Some(value)) {
+    return value != 0
+  }
+  if (findRefinedFact(checker, divisor) is Some(refined)) {
+    return isNonzeroFact(refined)
+  }
+  const local = findFactLocal(checker, divisor)
+  if (local < 0 || isCapturedByArrow(checker, local)) {
+    return false
+  }
+  return isNonzeroFact(readFact(checker, local))
+}
+
+function isProvenCount(checker: Checker, count: Expr, operandType: Type): bool uses alloc {
+  const width = findBitWidth(operandType)
+  if (findTypedConstant(checker, count, operandType) is Some(value)) {
+    return value >= 0 && value < width
+  }
+  let fact = createUnknownFact()
+  if (findRefinedFact(checker, count) is Some(refined)) {
+    fact = refined
+  } else {
+    const local = findFactLocal(checker, count)
+    if (local < 0 || isCapturedByArrow(checker, local)) {
+      return false
+    }
+    fact = readFact(checker, local)
+  }
+  return (fact.low >= 0 || isUnsignedInteger(operandType)) && fact.high < width
+}
+
+function describeOperandHint(
+  checker: Checker,
+  operand: Expr,
+  reason: string,
+  example: string,
+): string uses alloc {
+  if (findConstant(checker, operand, 0) is Some(_)) {
+    return reason
+  }
+  if (operand is Expr.FieldExpr(_, _, _, _) || operand is Expr.IndexExpr(_, _, _, _)) {
+    return "copy it into a local first, then check the local"
+  }
+  if (operand is Expr.Ident(_, _, _)) {
+    return `check the name first, as in \`${example}\``
+  }
+  return "put the value in a local and check the local first"
+}
+
+export function checkDivisor(
+  mutable checker: Checker,
+  divisor: Expr,
+  operandType: Type,
+) uses alloc {
+  // An open constant parameter is checked in each instance, where it has a value.
+  if (isOpenConstant(checker, divisor)) {
+    return
+  }
+  if (!isInteger(operandType) || isProvenDivisor(checker, divisor, operandType)) {
+    return
+  }
+  const hint = describeOperandHint(checker, divisor, "this constant is zero", "if (d != 0) { ... }")
+  const instance = describeConstantOperand(checker, divisor)
+  reportError(
+    mutable checker,
+    getExpressionPos(divisor),
+    "E0979",
+    `the divisor must be a non-zero constant or a name checked against zero first; ${hint}${instance}`,
+  )
+}
+
+export function checkShiftCount(
+  mutable checker: Checker,
+  count: Expr,
+  operandType: Type,
+) uses alloc {
+  if (isOpenConstant(checker, count)) {
+    return
+  }
+  if (!isInteger(operandType) || isProvenCount(checker, count, operandType)) {
+    return
+  }
+  const width = findBitWidth(operandType)
+  const example = `if (n >= 0 && n < ${Int.toString(width)}) { ... }`
+  const hint = describeOperandHint(checker, count, "this constant is out of range", example)
+  const instance = describeConstantOperand(checker, count)
+  reportError(
+    mutable checker,
+    getExpressionPos(count),
+    "E0980",
+    `the shift count must be a constant from 0 to ${Int.toString(width - 1)} or a name checked against both ends first; ${hint}${instance}`,
+  )
+}
+
+export function findRootName(expression: Expr): string {
+  return match (expression) {
+    Expr.Ident(_, _, name) => name
+    Expr.FieldExpr(_, _, target, _) | Expr.IndexExpr(_, _, target, _) => findRootName(target)
+    _ => ""
+  }
+}
+
+export function collectAssignedInBlock(block: Block, mutable names: Array<string>) uses alloc {
+  for (const statement of Arrays.values(block.statements)) {
+    collectAssignedInStatement(statement, mutable names)
+  }
+}
+
+export function collectAssignedInStatement(
+  statement: Stmt,
+  mutable names: Array<string>,
+) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => collectAssignedInBlock(block, mutable names)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => collectAssignedInExpr(value, mutable names)
+    Stmt.AssignStmt(_, target, value) | Stmt.CompoundAssignStmt(_, target, _, value) => {
+      Arrays.push(mutable names, findRootName(target))
+      collectAssignedInExpr(target, mutable names)
+      collectAssignedInExpr(value, mutable names)
+    }
+    Stmt.ExprStmt(_, expression) => collectAssignedInExpr(expression, mutable names)
+    Stmt.ReturnStmt(_, value) => {
+      if (value is Some(returned)) {
+        collectAssignedInExpr(returned, mutable names)
+      }
+    }
+    Stmt.IfStmt(_, condition, then, orElse) => {
+      collectAssignedInExpr(condition, mutable names)
+      collectAssignedInBlock(then, mutable names)
+      if (orElse is Some(other)) {
+        collectAssignedInStatement(other, mutable names)
+      }
+    }
+    Stmt.WhileStmt(_, _, condition, body) => {
+      collectAssignedInExpr(condition, mutable names)
+      collectAssignedInBlock(body, mutable names)
+    }
+    Stmt.CForStmt(_, _, init, condition, step, body) => {
+      if (init is Some(declaration)) {
+        collectAssignedInStatement(declaration, mutable names)
+      }
+      if (condition is Some(loopCondition)) {
+        collectAssignedInExpr(loopCondition, mutable names)
+      }
+      if (step is Some(stepStatement)) {
+        collectAssignedInStatement(stepStatement, mutable names)
+      }
+      collectAssignedInBlock(body, mutable names)
+    }
+    Stmt.ForStmt(_, _, _, _, iterable, body, _, _) => {
+      collectAssignedInExpr(iterable, mutable names)
+      collectAssignedInBlock(body, mutable names)
+    }
+    Stmt.YieldStmt(_, value, _, _) => collectAssignedInExpr(value, mutable names)
+    _ => {}
+  }
+}
+
+function collectAssignedInExprs(expressions: Array<Expr>, mutable names: Array<string>) uses alloc {
+  for (const expression of Arrays.values(expressions)) {
+    collectAssignedInExpr(expression, mutable names)
+  }
+}
+
+export function collectAssignedInExpr(expression: Expr, mutable names: Array<string>) uses alloc {
+  match (expression) {
+    Expr.TemplateLit(_, _, parts) => collectAssignedInExprs(parts, mutable names)
+    Expr.FieldExpr(_, _, target, _) => collectAssignedInExpr(target, mutable names)
+    Expr.IsExpr(_, _, subject, _) => collectAssignedInExpr(subject, mutable names)
+    Expr.IndexExpr(_, _, target, index) => {
+      collectAssignedInExpr(target, mutable names)
+      collectAssignedInExpr(index, mutable names)
+    }
+    Expr.MapLit(_, _, _, keys, values) => {
+      collectAssignedInExprs(keys, mutable names)
+      collectAssignedInExprs(values, mutable names)
+    }
+    Expr.UnaryExpr(_, _, _, operand) => collectAssignedInExpr(operand, mutable names)
+    Expr.AwaitExpr(_, _, operand) => collectAssignedInExpr(operand, mutable names)
+    Expr.AsyncExpr(_, _, operand) => collectAssignedInExpr(operand, mutable names)
+    Expr.BinaryExpr(_, _, _, left, right) => {
+      collectAssignedInExpr(left, mutable names)
+      collectAssignedInExpr(right, mutable names)
+    }
+    Expr.StructLit(_, _, _, _, fields, spread) => {
+      for (const field of Arrays.values(fields)) {
+        collectAssignedInExpr(field.value, mutable names)
+      }
+      if (spread is Some(source)) {
+        collectAssignedInExpr(source, mutable names)
+      }
+    }
+    Expr.ArrayLit(_, _, elements, _) => collectAssignedInExprs(elements, mutable names)
+    Expr.BlockExpr(_, _, block) => collectAssignedInBlock(block, mutable names)
+    Expr.ArrowExpr(_, _, _, _, bodyExpr, block) => {
+      // A closure passed to a call may assign what it captures.
+      if (bodyExpr is Some(arrowBody)) {
+        collectAssignedInExpr(arrowBody, mutable names)
+      }
+      if (block is Some(arrowBlock)) {
+        collectAssignedInBlock(arrowBlock, mutable names)
+      }
+    }
+    Expr.MatchExpr(_, _, subject, arms) => {
+      collectAssignedInExpr(subject, mutable names)
+      for (const arm of Arrays.values(arms)) {
+        if (arm.guard is Some(guard)) {
+          collectAssignedInExpr(guard, mutable names)
+        }
+        if (arm.body is Some(armBody)) {
+          collectAssignedInExpr(armBody, mutable names)
+        }
+        if (arm.block is Some(armBlock)) {
+          collectAssignedInBlock(armBlock, mutable names)
+        }
+      }
+    }
+    Expr.CallExpr(_, _, callee, _, arguments) => {
+      collectAssignedInExpr(callee, mutable names)
+      for (const argument of Arrays.values(arguments)) {
+        if (argument.isMutable) {
+          Arrays.push(mutable names, findRootName(argument.value))
+        }
+        collectAssignedInExpr(argument.value, mutable names)
+      }
+    }
+    _ => {}
+  }
+}

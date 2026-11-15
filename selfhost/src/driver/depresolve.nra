@@ -1,0 +1,325 @@
+// Minimal version selection. The walk starts at the root manifests and reads the narra.toml of
+// each dependency at each version some manifest names. Every package ends at the highest version
+// that any manifest in the graph requires as its minimum, so no solver is needed. [overrides] of
+// the root of the build replace the URL and the version of every requirement on their names.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Ranges from "std/range"
+import { Dependency, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
+import {
+  Fetched,
+  checkoutPath,
+  fetchVersion,
+  isVersionBefore,
+  listVersions,
+} from "narrac/driver/depcache"
+
+struct Requirement {
+  name: string
+  git: string
+  version: string
+}
+
+function createResolveError(code: string, message: string): LoadError {
+  return LoadError { code, file: "", line: 0, column: 1, message }
+}
+
+function findTag(
+  git: string,
+  name: string,
+  version: string,
+  isOverride: bool,
+): Result<Fetched, LoadError> uses io, alloc {
+  const memberTag = `${name}/v${version}`
+  const plainTag = `v${version}`
+  // A version already in the cache needs no git command.
+  if (Fs.isDir(checkoutPath(git, memberTag))) {
+    return fetchVersion(git, memberTag)
+  }
+  if (Fs.isDir(checkoutPath(git, plainTag))) {
+    return fetchVersion(git, plainTag)
+  }
+  const listed = listVersions(git, name)
+  if (listed is Err(error)) {
+    return Err(error)
+  }
+  let found = false
+  for (const candidate of Arrays.values(listed.value)) {
+    if (candidate == version) {
+      found = true
+    }
+  }
+  if (!found && isOverride) {
+    return Err(
+      createResolveError(
+        "E0456",
+        `the override for ${name} names version ${version}, which has no tag in ${git}`,
+      ),
+    )
+  }
+  if (!found) {
+    return Err(
+      createResolveError(
+        "E0451",
+        `the repository ${git} has no tag for version ${version} of ${name}`,
+      ),
+    )
+  }
+  // The version is listed, so one of the two tags exists. Member tags win, as in listVersions.
+  const member = fetchVersion(git, memberTag)
+  if (member is Err(error)) {
+    if (error.code == "E0442") {
+      return fetchVersion(git, plainTag)
+    }
+    return Err(error)
+  }
+  return member
+}
+
+function readPackageManifest(
+  fetched: Fetched,
+  name: string,
+  version: string,
+): Result<Manifest, LoadError> uses io, alloc {
+  const text = Fs.readText(`${fetched.path}/narra.toml`)
+  if (text is Err(_)) {
+    return Err(createResolveError("E0457", `${name} ${version} has no narra.toml`))
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(error)) {
+    return Err(LoadError {
+      code: error.code,
+      file: `${name} ${version}/narra.toml`,
+      line: error.line,
+      column: error.column,
+      message: error.message,
+    })
+  }
+  if (parsed.value.name != name) {
+    return Err(
+      createResolveError(
+        "E0453",
+        `the manifest of ${name} ${version} names the package "${parsed.value.name}"`,
+      ),
+    )
+  }
+  if (Arrays.length(parsed.value.overrides) > 0) {
+    return Err(
+      createResolveError(
+        "E0454",
+        `[overrides] is allowed in the root manifest of a build only, not in ${name} ${version}`,
+      ),
+    )
+  }
+  return parsed
+}
+
+function pushRequirements(mutable queue: Array<Requirement>, manifest: Manifest) uses alloc {
+  for (const dependency of Arrays.values(manifest.dependencies)) {
+    Arrays.push(mutable queue, Requirement {
+      name: dependency.name,
+      git: dependency.git,
+      version: dependency.version,
+    })
+  }
+}
+
+export function resolveDependencies(
+  roots: Array<Manifest>,
+  overrides: Array<Dependency>,
+): Result<Array<LockEntry>, LoadError> uses io, alloc {
+  let overrideByName: Map<string, Dependency> = Map {}
+  for (const override of Arrays.values(overrides)) {
+    overrideByName[override.name] = override
+  }
+  let overrideUsed: Map<string, bool> = Map {}
+  let queue: Array<Requirement> = []
+  for (const root of Arrays.values(roots)) {
+    pushRequirements(mutable queue, root)
+  }
+  let firstGit: Map<string, string> = Map {}
+  let selected: Map<string, LockEntry> = Map {}
+  let names: Array<string> = []
+  let visited: Map<string, bool> = Map {}
+  let position = 0
+  while (position < Arrays.length(queue)) {
+    const requirement = copy(queue[position])
+    position++
+    let git = requirement.git
+    let version = requirement.version
+    let isOverride = false
+    if (overrideByName[requirement.name] is Some(override)) {
+      git = override.git
+      version = override.version
+      isOverride = true
+      overrideUsed[requirement.name] = true
+    }
+    if (firstGit[requirement.name] is Some(knownGit)) {
+      if (knownGit != git) {
+        return Err(
+          createResolveError(
+            "E0450",
+            `package ${requirement.name} is required from two repositories, ${knownGit} and ${git}, and [overrides] has no entry for it`,
+          ),
+        )
+      }
+    } else {
+      firstGit[requirement.name] = git
+      Arrays.push(mutable names, requirement.name)
+    }
+    const key = `${requirement.name} ${version}`
+    if (visited[key] is Some(_)) {
+      continue
+    }
+    visited[key] = true
+    const fetched = findTag(git, requirement.name, version, isOverride)
+    if (fetched is Err(error)) {
+      return Err(error)
+    }
+    const manifest = readPackageManifest(fetched.value, requirement.name, version)
+    if (manifest is Err(error)) {
+      return Err(error)
+    }
+    pushRequirements(mutable queue, manifest.value)
+    const entry = LockEntry {
+      name: requirement.name,
+      git,
+      version,
+      commit: fetched.value.commit,
+      content: fetched.value.tree,
+    }
+    if (selected[requirement.name] is Some(current)) {
+      if (isVersionBefore(current.version, version)) {
+        selected[requirement.name] = entry
+      }
+    } else {
+      selected[requirement.name] = entry
+    }
+  }
+  for (const override of Arrays.values(overrides)) {
+    if (overrideUsed[override.name] is None) {
+      return Err(
+        createResolveError(
+          "E0455",
+          `[overrides] has an entry for ${override.name}, but no package requires it`,
+        ),
+      )
+    }
+  }
+  let entries: Array<LockEntry> = []
+  for (const name of Arrays.values(names)) {
+    if (selected[name] is Some(entry)) {
+      Arrays.push(mutable entries, entry)
+    }
+  }
+  return Ok(entries)
+}
+
+export function checkAgainstLock(
+  resolved: Array<LockEntry>,
+  locked: Array<LockEntry>,
+): Result<bool, LoadError> uses alloc {
+  for (const entry of Arrays.values(resolved)) {
+    for (const old of Arrays.values(locked)) {
+      if (old.name != entry.name || old.git != entry.git || old.version != entry.version) {
+        continue
+      }
+      if (old.commit != entry.commit || old.content != entry.content) {
+        return Err(
+          createResolveError(
+            "E0452",
+            `narra.lock records commit ${old.commit} and tree ${old.content} for ${entry.name} ${entry.version}, but the repository has commit ${entry.commit} and tree ${entry.content}`,
+          ),
+        )
+      }
+    }
+  }
+  return Ok(true)
+}
+
+function printFailure(error: LoadError): int uses io, alloc {
+  const _ = Fs.writeText("/dev/stderr", `error ${error.code}: ${error.message}\n`)
+  return 1
+}
+
+function readRootManifest(directory: string): Result<Manifest, LoadError> uses io, alloc {
+  const text = Fs.readText(`${directory}/narra.toml`)
+  if (text is Err(message)) {
+    return Err(
+      createResolveError("E0458", `cannot read or write ${directory}/narra.toml: ${message}`),
+    )
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(error)) {
+    return Err(LoadError {
+      code: error.code,
+      file: `${directory}/narra.toml`,
+      line: error.line,
+      column: error.column,
+      message: error.message,
+    })
+  }
+  return parsed
+}
+
+export function runResolveCommand(arguments: Array<string>): int uses io, alloc {
+  let roots: Array<Manifest> = []
+  for (const index of Ranges.between(3, Arrays.length(arguments))) {
+    const manifest = readRootManifest(arguments[index])
+    if (manifest is Err(error)) {
+      return printFailure(error)
+    }
+    Arrays.push(mutable roots, manifest.value)
+  }
+  // The first directory is the root of the build; the others may not have [overrides].
+  for (const index of Ranges.between(1, Arrays.length(roots))) {
+    if (Arrays.length(roots[index].overrides) > 0) {
+      return printFailure(
+        createResolveError(
+          "E0454",
+          `[overrides] is allowed in the root manifest of a build only, not in ${arguments[index + 3]}`,
+        ),
+      )
+    }
+  }
+  const lockPath = `${arguments[3]}/narra.lock`
+  let locked: Array<LockEntry> = []
+  let oldText = ""
+  if (Fs.exists(lockPath)) {
+    const lockText = Fs.readText(lockPath)
+    if (lockText is Err(message)) {
+      return printFailure(
+        createResolveError("E0458", `cannot read or write ${lockPath}: ${message}`),
+      )
+    }
+    const parsed = parseLock(lockText.value)
+    if (parsed is Err(error)) {
+      return printFailure(error)
+    }
+    locked = parsed.value
+    oldText = lockText.value
+  }
+  const resolved = resolveDependencies(roots, roots[0].overrides)
+  if (resolved is Err(error)) {
+    return printFailure(error)
+  }
+  const checked = checkAgainstLock(resolved.value, locked)
+  if (checked is Err(error)) {
+    return printFailure(error)
+  }
+  const text = formatLock(resolved.value)
+  if (text != oldText) {
+    const written = Fs.writeText(lockPath, text)
+    if (written is Err(message)) {
+      return printFailure(
+        createResolveError("E0458", `cannot read or write ${lockPath}: ${message}`),
+      )
+    }
+  }
+  const printed = Fs.writeText("/dev/stdout", text)
+  if (printed is Err(_)) {
+    return 1
+  }
+  return 0
+}

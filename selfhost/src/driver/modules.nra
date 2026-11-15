@@ -1,0 +1,840 @@
+// Package loading, ported from compiler/internal/narra/modules.go: read
+// narra.toml, walk src/, parse each module, order modules by imports and
+// resolve binaries. dump prints the format defined at the top of
+// compiler/internal/narra/pkgdump.go.
+import { splitString, substring } from "narrac/driver/textops"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Lexer from "narrac/syntax/lexer"
+import { File, Decl } from "narrac/syntax/ast"
+import { parse } from "narrac/syntax/parser"
+import { hashModule } from "narrac/driver/hash"
+import { findUndeclaredImports, prepareDependencies } from "narrac/driver/depload"
+import { ExportTable, checkExportFiles, rewriteImports } from "narrac/driver/exports"
+import { Binary, LoadError, parseManifest } from "narrac/driver/manifest"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import { stdSourceFor } from "narrac/std/stdtext"
+import { addShapeDerives } from "narrac/check/deriveshape"
+
+// One module of a package: one file under src/.
+export struct SourceModule {
+  path: string // "app/text"
+  file: string // the path shown in diagnostics: "src/text.nra"
+  ast: File
+  exports: Array<string> // exported names, sorted, without duplicates
+  firstId: int // the node ids of this file are in [firstId, endId)
+  endId: int
+}
+
+export struct Package {
+  name: string
+  directory: string
+  modules: Array<SourceModule> // dependency order, imports first
+  binaries: Array<Binary>
+  search: Array<string>
+  nextId: int // the next free node id after all files (one sequence)
+  single: bool // loaded from one .nra file, without narra.toml
+  dependencyNames: Array<string> // the packages fetched for this build; their C names carry the package name
+}
+
+function plain(message: string): Array<LoadError> {
+  return [LoadError { code: "", file: "", line: 0, column: 0, message }]
+}
+
+export function load(path: string): Result<Package, Array<LoadError>> uses io, alloc {
+  return loadWith(path, Map {})
+}
+
+// The parsed sources narrac lsp keeps between loads, by source path (std
+// modules by import path). A source whose text is unchanged keeps its tree and
+// its node ids. A changed one is parsed with ids from nextId on, so the ids of
+// the others stay where they are, and the ids of a package are no longer one
+// gapless sequence. An empty cache numbers the files as load does.
+export struct ParseCache {
+  sources: Map<string, CachedSource>
+  nextId: int
+}
+
+// One parsed source: the tree after the shape derives, and its ids
+// [firstId, endId).
+export struct CachedSource {
+  text: string
+  ast: File
+  firstId: int
+  endId: int
+}
+
+export function createParseCache(): ParseCache uses alloc {
+  return ParseCache { sources: Map {}, nextId: 0 }
+}
+
+export function loadWith(
+  path: string,
+  overrides: Map<string, string>,
+): Result<Package, Array<LoadError>> uses io, alloc {
+  // A source file whose path (as read from disk, `DIR/src/text.nra` or the single file's own path)
+  // is a key of overrides is taken from the map instead; narrac lsp passes the text of the
+  // documents the editor holds.
+  let cache = createParseCache()
+  return loadSources(path, overrides, mutable cache, true)
+}
+
+export function loadCached(
+  path: string,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
+  return loadSources(path, overrides, mutable cache, false)
+}
+
+function loadSources(
+  path: string,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+  fetch: bool,
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
+  // Unchanged sources come from cache, and the sources parsed here are added to it.
+  if (Fs.listDir(path) is Ok(_)) {
+    return loadPackage(path, overrides, mutable cache, fetch)
+  }
+  if (!Fs.exists(path) && overrides[path] is None) {
+    return Err(plain(`stat ${path}: no such file or directory`))
+  }
+  // A single .nra file loads as a package with one module and one binary whose entry is `run`.
+  return loadFile(path, overrides, mutable cache)
+}
+
+function parseSource(
+  mutable cache: ParseCache,
+  key: string,
+  text: string,
+  file: string,
+  derive: bool,
+): Result<CachedSource, LoadError> from cache uses alloc {
+  // An unchanged text is taken from cache.
+  if (cache.sources[key] is Some(cached)) {
+    if (cached.text == text) {
+      return Ok(cached)
+    }
+  }
+  const parsed = parse(text, cache.nextId)
+  if (parsed is Err(diagnostic)) {
+    return Err(LoadError {
+      code: diagnostic.code,
+      file,
+      line: diagnostic.pos.line,
+      column: diagnostic.pos.column,
+      message: diagnostic.message,
+      fixes: diagnostic.fixes,
+    })
+  }
+  let result = parsed.value
+  if (derive) {
+    const derived = addShapeDerives(parsed.value, text)
+    if (derived is Err(diagnostic)) {
+      return Err(LoadError {
+        code: diagnostic.code,
+        file,
+        line: diagnostic.pos.line,
+        column: diagnostic.pos.column,
+        message: diagnostic.message,
+        fixes: diagnostic.fixes,
+      })
+    }
+    result = derived.value
+  }
+  const source = CachedSource {
+    text,
+    ast: result.file,
+    firstId: cache.nextId,
+    endId: result.nextId,
+  }
+  cache.sources[key] = source
+  cache.nextId = result.nextId
+  return Ok(source)
+}
+
+function readSource(
+  path: string,
+  overrides: Map<string, string>,
+): Result<string, string> uses io, alloc {
+  if (overrides[path] is Some(text)) {
+    return Ok(text)
+  }
+  return Fs.readText(path)
+}
+
+function baseName(path: string): string uses alloc {
+  const parts = splitString(path, "/")
+  return parts[Arrays.length(parts) - 1]
+}
+
+function dirName(path: string): string uses alloc {
+  const parts = splitString(path, "/")
+  if (Arrays.length(parts) == 1) {
+    return "."
+  }
+  let keep: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(parts) - 1)) {
+    Arrays.push(mutable keep, parts[index])
+  }
+  return Str.join(keep, "/")
+}
+
+function loadFile(
+  path: string,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
+  const read = readSource(path, overrides)
+  if (read is Err(message)) {
+    return Err(plain(message))
+  }
+  const base = baseName(path)
+  let stem = base
+  if (Str.endsWith(base, ".nra")) {
+    stem = substring(base, 0, Str.length(base) - 4)
+  }
+  const parsed = parseSource(mutable cache, path, read.value, base, true)
+  if (parsed is Err(error)) {
+    return Err([error])
+  }
+  const source = parsed.value
+  const module = newModule(stem, base, source.ast, source.firstId, source.endId)
+  // The loaded std modules stay in `load`, so the push below does not copy the array.
+  let load = loadStdModules([module], mutable cache)
+  Arrays.push(mutable load.modules, module)
+  return Ok(Package {
+    name: stem,
+    directory: dirName(path),
+    modules: load.modules,
+    binaries: [Binary { name: stem, entry: `${stem}.run` }],
+    search: [],
+    nextId: cache.nextId,
+    single: true,
+    dependencyNames: [],
+  })
+}
+
+function loadPackage(
+  directory: string,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+  fetch: bool,
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
+  const text = Fs.readText(`${directory}/narra.toml`)
+  if (text is Err(message)) {
+    return Err(plain(message))
+  }
+  const manifest = parseManifest(text.value)
+  if (manifest is Err(error)) {
+    return Err([error])
+  }
+  const config = manifest.value
+  const prepared = prepareDependencies(directory, config, fetch)
+  if (prepared is Err(error)) {
+    return Err([error])
+  }
+  // The files are numbered in one id sequence, in sorted path order (not load order); the package
+  // being built comes first, then each dependency.
+  let hashes: Map<string, string> = Map {}
+  let modules: Array<SourceModule> = []
+  let errors: Array<LoadError> = []
+  let dependencyNames: Array<string> = []
+  let dependencyTable: Map<string, bool> = Map {}
+  for (const dependency of Arrays.values(prepared.value)) {
+    Arrays.push(mutable dependencyNames, dependency.name)
+    dependencyTable[dependency.name] = true
+  }
+  const own = loadPackageModules(
+    config.name,
+    directory,
+    "",
+    false,
+    dependencyTable,
+    overrides,
+    mutable cache,
+    mutable hashes,
+  )
+  if (own is Err(found)) {
+    return Err(found)
+  }
+  let declaredNames: Array<string> = []
+  for (const dependency of Arrays.values(config.dependencies)) {
+    Arrays.push(mutable declaredNames, dependency.name)
+  }
+  let exportTables: Array<ExportTable> = []
+  for (const dependency of Arrays.values(prepared.value)) {
+    if (Arrays.length(dependency.exports) > 0) {
+      Arrays.push(mutable exportTables, ExportTable {
+        name: dependency.name,
+        entries: dependency.exports,
+      })
+    }
+  }
+  let ownPaths: Array<string> = []
+  for (const module of Arrays.values(own.value)) {
+    Arrays.push(mutable ownPaths, module.path)
+  }
+  for (const problem of Arrays.values(
+    checkExportFiles(config.name, "narra.toml", config.exports, ownPaths),
+  )) {
+    Arrays.push(mutable errors, problem)
+  }
+  for (const module of Arrays.values(own.value)) {
+    const undeclared = findUndeclaredImports(
+      module.file,
+      module.ast.imports,
+      config.name,
+      declaredNames,
+      dependencyNames,
+    )
+    for (const problem of Arrays.values(undeclared)) {
+      Arrays.push(mutable errors, problem)
+    }
+    const exposed = exposeImports(module, config.name, declaredNames, exportTables)
+    for (const problem of Arrays.values(exposed.errors)) {
+      Arrays.push(mutable errors, problem)
+    }
+    Arrays.push(mutable modules, exposed.module)
+  }
+  for (const dependency of Arrays.values(prepared.value)) {
+    const loaded = loadPackageModules(
+      dependency.name,
+      dependency.directory,
+      `${dependency.name}/`,
+      true,
+      dependencyTable,
+      overrides,
+      mutable cache,
+      mutable hashes,
+    )
+    if (loaded is Err(found)) {
+      return Err(found)
+    }
+    let dependencyPaths: Array<string> = []
+    for (const module of Arrays.values(loaded.value)) {
+      Arrays.push(mutable dependencyPaths, module.path)
+    }
+    const manifestFile = `${dependency.name}/narra.toml`
+    for (const problem of Arrays.values(
+      checkExportFiles(dependency.name, manifestFile, dependency.exports, dependencyPaths),
+    )) {
+      Arrays.push(mutable errors, problem)
+    }
+    for (const module of Arrays.values(loaded.value)) {
+      const undeclared = findUndeclaredImports(
+        module.file,
+        module.ast.imports,
+        dependency.name,
+        dependency.declared,
+        dependencyNames,
+      )
+      for (const problem of Arrays.values(undeclared)) {
+        Arrays.push(mutable errors, problem)
+      }
+      const exposed = exposeImports(module, dependency.name, dependency.declared, exportTables)
+      for (const problem of Arrays.values(exposed.errors)) {
+        Arrays.push(mutable errors, problem)
+      }
+      Arrays.push(mutable modules, exposed.module)
+    }
+  }
+  if (Arrays.length(errors) > 0) {
+    return Err(errors)
+  }
+  let load = copy(loadStdModules(modules, mutable cache))
+  for (const module of Arrays.values(modules)) {
+    Arrays.push(mutable load.modules, module)
+  }
+  const ordered = orderModules(load.modules)
+  if (Arrays.length(ordered.errors) > 0) {
+    return Err(ordered.errors)
+  }
+  return Ok(Package {
+    name: config.name,
+    directory,
+    modules: ordered.modules,
+    binaries: config.binaries,
+    search: config.search,
+    nextId: cache.nextId,
+    single: false,
+    dependencyNames,
+  })
+}
+
+struct ExposedModule {
+  module: SourceModule
+  errors: Array<LoadError>
+}
+
+function exposeImports(
+  module: SourceModule,
+  ownName: string,
+  declared: Array<string>,
+  tables: Array<ExportTable>,
+): ExposedModule from module uses alloc {
+  const rewritten = rewriteImports(module.file, module.ast.imports, ownName, declared, tables)
+  let exposed = copy(module)
+  if (rewritten.changed) {
+    exposed.ast.imports = rewritten.imports
+  }
+  return ExposedModule { module: exposed, errors: rewritten.errors }
+}
+
+function loadPackageModules(
+  name: string,
+  directory: string,
+  displayPrefix: string,
+  isDependency: bool,
+  dependencyNames: Map<string, bool>,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+  mutable hashes: Map<string, string>,
+): Result<Array<SourceModule>, Array<LoadError>> from cache uses io, alloc {
+  let paths: Array<string> = []
+  const listed = Fs.listDir(`${directory}/src`)
+  if (listed is Err(message)) {
+    return Err(plain(message))
+  }
+  collect(`${directory}/src`, "", mutable paths)
+  if (Arrays.length(paths) == 0) {
+    if (isDependency) {
+      return Err([
+        LoadError {
+          code: "E0462",
+          file: "",
+          line: 0,
+          column: 1,
+          message: `the dependency ${name} has no .nra files in src/`,
+        },
+      ])
+    }
+    return Err(plain(`narra.toml: package ${name} has no .nra files in src/`))
+  }
+  sortStrings(mutable paths)
+  let modules: Array<SourceModule> = []
+  let errors: Array<LoadError> = []
+  for (const path of Arrays.values(paths)) {
+    const relative = substring(path, 0, Str.length(path) - 4)
+    const display = `${displayPrefix}src/${path}`
+    const read = readSource(`${directory}/src/${path}`, overrides)
+    if (read is Err(message)) {
+      return Err(plain(message))
+    }
+    const parsed = parseSource(mutable cache, `${directory}/src/${path}`, read.value, display, true)
+    if (parsed is Err(error)) {
+      Arrays.push(mutable errors, error)
+      continue
+    }
+    const modulePath = `${name}/${relative}`
+    // Two modules whose hashes agree would share C names.
+    const hash = hashModule(dependencyNames, modulePath)
+    if (hashes[hash] is Some(other)) {
+      Arrays.push(mutable errors, LoadError {
+        code: "E0417",
+        file: display,
+        line: 0,
+        column: 0,
+        message: `modules "${other}" and "${modulePath}" have the same C name hash; rename one file`,
+      })
+    }
+    hashes[hash] = modulePath
+    const source = parsed.value
+    Arrays.push(
+      mutable modules,
+      newModule(modulePath, display, source.ast, source.firstId, source.endId),
+    )
+  }
+  if (Arrays.length(errors) > 0) {
+    return Err(errors)
+  }
+  return Ok(modules)
+}
+
+function collect(root: string, relative: string, mutable out: Array<string>) uses io, alloc {
+  let here = root
+  if (relative != "") {
+    here = `${root}/${relative}`
+  }
+  const names = Fs.listDir(here)
+  if (names is Ok(list)) {
+    for (const name of Arrays.values(list)) {
+      let child = name
+      if (relative != "") {
+        child = `${relative}/${name}`
+      }
+      collectEntry(root, child, mutable out)
+    }
+  }
+}
+
+function collectEntry(root: string, relative: string, mutable out: Array<string>) uses io, alloc {
+  if (Fs.listDir(`${root}/${relative}`) is Ok(_)) {
+    collect(root, relative, mutable out)
+  } else if (Str.endsWith(relative, ".nra")) {
+    Arrays.push(mutable out, relative)
+  }
+}
+
+function sortStrings(mutable items: Array<string>) {
+  for (const start of Ranges.between(1, Arrays.length(items))) {
+    for (let index = start; index > 0 && items[index] < items[index - 1]; index--) {
+      const swap = items[index]
+      items[index] = items[index - 1]
+      items[index - 1] = swap
+    }
+  }
+}
+
+function newModule(
+  path: string,
+  file: string,
+  ast: File,
+  firstId: int,
+  endId: int,
+): SourceModule from ast uses alloc {
+  let names: Array<string> = []
+  for (const declaration of Arrays.values(ast.declarations)) {
+    const name = exportedName(declaration)
+    if (name != "") {
+      Arrays.push(mutable names, name)
+    }
+  }
+  sortStrings(mutable names)
+  let unique: Array<string> = []
+  for (const name of Arrays.values(names)) {
+    if (Arrays.length(unique) == 0 || unique[Arrays.length(unique) - 1] != name) {
+      Arrays.push(mutable unique, name)
+    }
+  }
+  return SourceModule {
+    path,
+    file,
+    ast,
+    exports: unique,
+    firstId,
+    endId,
+  }
+}
+
+function exportedName(declaration: Decl): string {
+  match (declaration) {
+    Decl.Func(funcDecl) => {
+      if (funcDecl.exported) {
+        return funcDecl.name
+      }
+    }
+    Decl.Const(constDecl) => {
+      if (constDecl.exported) {
+        return constDecl.name
+      }
+    }
+    Decl.Struct(structDecl) => {
+      if (structDecl.exported) {
+        return structDecl.name
+      }
+    }
+    Decl.Enum(enumDecl) => {
+      if (enumDecl.exported) {
+        return enumDecl.name
+      }
+    }
+    Decl.Trait(traitDecl) => {
+      if (traitDecl.exported) {
+        return traitDecl.name
+      }
+    }
+    Decl.Distinct(distinctDecl) => {
+      if (distinctDecl.exported) {
+        return distinctDecl.name
+      }
+    }
+    Decl.Alias(aliasDecl) => {
+      if (aliasDecl.exported) {
+        return aliasDecl.name
+      }
+    }
+    _ => {}
+  }
+  return ""
+}
+
+// The std modules written in Narra that a package imports (Go's
+// stdSourceModules), in first-import order, with node ids after the
+// package's files.
+struct StdLoad {
+  modules: Array<SourceModule>
+  seen: Map<string, bool>
+}
+
+function loadStdModules(
+  modules: Array<SourceModule>,
+  mutable cache: ParseCache,
+): StdLoad from modules uses alloc {
+  let load = StdLoad { modules: [], seen: Map {} }
+  for (const module of Arrays.values(modules)) {
+    addStdImports(mutable load, mutable cache, module.ast)
+  }
+  return load
+}
+
+export function extensionPath(path: string): string uses alloc {
+  // The Narra part of a builtin std module std/<name> is std/ext/<name>; "" for any other path.
+  if (Str.startsWith(path, "std/") && !Str.startsWith(path, "std/ext/")) {
+    return `std/ext/${Str.sliceFrom(path, 4)}`
+  }
+  return ""
+}
+
+function addStdImports(mutable load: StdLoad, mutable cache: ParseCache, ast: File) uses alloc {
+  for (const importDecl of Arrays.values(ast.imports)) {
+    addStdModule(mutable load, mutable cache, importDecl.path)
+    // A builtin std module may have a Narra part, std/ext/<name> for std/<name>.
+    const extension = extensionPath(importDecl.path)
+    if (extension != "") {
+      addStdModule(mutable load, mutable cache, extension)
+    }
+  }
+}
+
+function addStdModule(mutable load: StdLoad, mutable cache: ParseCache, path: string) uses alloc {
+  const text = stdSourceFor(path)
+  if (text == "" || load.seen[path] is Some(_)) {
+    return
+  }
+  load.seen[path] = true
+  const file = `std/src/${Str.replace(Str.sliceFrom(path, 4), "/", "__")}.nra`
+  const parsed = parseSource(mutable cache, path, text, file, false)
+  match (parsed) {
+    Ok(source) => {
+      const module = newModule(path, file, source.ast, source.firstId, source.endId)
+      // The imports of a std module come before it.
+      addStdImports(mutable load, mutable cache, source.ast)
+      Arrays.push(mutable load.modules, module)
+    }
+    Err(error) => panic(`std source ${path}: ${error.message}`)
+  }
+}
+
+struct Ordered {
+  modules: Array<SourceModule>
+  errors: Array<LoadError>
+}
+
+struct Walk {
+  modules: Array<SourceModule>
+  index: Map<string, int> // module path -> position in mods
+  state: Array<int> // 0 new, 1 visiting, 2 done
+  order: Array<SourceModule>
+  stack: Array<string>
+  errors: Array<LoadError>
+}
+
+function orderModules(modules: Array<SourceModule>): Ordered from modules uses alloc {
+  let walk = Walk {
+    modules: copy(modules),
+    index: Map {},
+    state: [],
+    order: [],
+    stack: [],
+    errors: [],
+  }
+  // The walk owns its tables, so visit writes them in place.
+  for (const i of Ranges.between(0, Arrays.length(modules))) {
+    walk.index[modules[i].path] = i
+    Arrays.push(mutable walk.state, 0)
+  }
+  for (const i of Ranges.between(0, Arrays.length(modules))) {
+    // Imports of modules outside the package are skipped; the checker reports unknown modules.
+    if (walk.state[i] == 0) {
+      visit(mutable walk, i)
+    }
+  }
+  return Ordered { modules: walk.order, errors: walk.errors }
+}
+
+function visit(mutable walk: Walk, index: int) uses alloc {
+  const module = copy(walk.modules[index])
+  walk.state[index] = 1
+  Arrays.push(mutable walk.stack, module.path)
+  for (const importDecl of Arrays.values(module.ast.imports)) {
+    const found = walk.index[importDecl.path]
+    if (found is None) {
+      continue
+    }
+    const dependency = found.value
+    const visitState = walk.state[dependency]
+    if (visitState == 1) {
+      let start = 0
+      for (const i of Ranges.between(0, Arrays.length(walk.stack))) {
+        if (walk.stack[i] == importDecl.path) {
+          start = i
+        }
+      }
+      let cycle: Array<string> = []
+      for (const i of Ranges.between(start, Arrays.length(walk.stack))) {
+        Arrays.push(mutable cycle, walk.stack[i])
+      }
+      Arrays.push(mutable cycle, importDecl.path)
+      Arrays.push(mutable walk.errors, LoadError {
+        code: "E0418",
+        file: module.file,
+        line: importDecl.pos.line,
+        column: importDecl.pos.column,
+        message: `import cycle: ${Str.join(cycle, " -> ")}`,
+      })
+    } else if (visitState == 0) {
+      visit(mutable walk, dependency)
+    }
+  }
+  walk.stack = popLast(walk.stack)
+  walk.state[index] = 2
+  Arrays.push(mutable walk.order, module)
+}
+
+function popLast(items: Array<string>): Array<string> uses alloc {
+  let out: Array<string> = []
+  for (const index of Ranges.between(0, Arrays.length(items) - 1)) {
+    Arrays.push(mutable out, items[index])
+  }
+  return out
+}
+
+export function binary(
+  package: Package,
+  name: string,
+): Result<Binary, string> from package uses alloc {
+  if (name != "") {
+    for (const candidate of Arrays.values(package.binaries)) {
+      if (candidate.name == name) {
+        return Ok(candidate)
+      }
+    }
+    return Err(`narra.toml: package ${package.name} has no binary ${quoteDump(name)}`)
+  }
+  // An empty name selects the only binary.
+  const count = Arrays.length(package.binaries)
+  if (count == 0) {
+    return Err(`narra.toml: package ${package.name} has no [[binary]]; it is a library`)
+  }
+  if (count == 1) {
+    return Ok(package.binaries[0])
+  }
+  let names: Array<string> = []
+  for (const candidate of Arrays.values(package.binaries)) {
+    Arrays.push(mutable names, candidate.name)
+  }
+  return Err(
+    `narra.toml: package ${package.name} has several binaries (${Str.join(names, ", ")}); choose one with -bin`,
+  )
+}
+
+export function entryModule(package: Package, entry: string): #[string, string] uses alloc {
+  let last = -1
+  for (const index of Ranges.between(0, Str.length(entry))) {
+    if (Str.byteAt(entry, index) == 46) {
+      last = index
+    }
+  }
+  if (last < 0) {
+    return #["", entry]
+  }
+  // Accepts the contract form "cli.run" and the spec form "app/cli.run".
+  const modulePath = substring(entry, 0, last)
+  const functionName = Str.sliceFrom(entry, last + 1)
+  for (const module of Arrays.values(package.modules)) {
+    if (module.path == `${package.name}/${modulePath}`) {
+      return #[module.path, functionName]
+    }
+  }
+  // No module of the package matches: the module is returned as written.
+  return #[modulePath, functionName]
+}
+
+export function quoteDump(text: string): string uses alloc {
+  const parts = splitString(Lexer.escapeText(text), "\"")
+  return `"${Str.join(parts, "\\\"")}"`
+}
+
+export function errorText(errors: Array<LoadError>): string uses alloc {
+  let builder = Str.builder()
+  for (const error of Arrays.values(errors)) {
+    if (error.file == "" && error.line == 0) {
+      Str.append(mutable builder, `error ${error.message}\n`)
+    } else {
+      Str.append(
+        mutable builder,
+        `error ${error.file}:${Int.toString(error.line)}:${Int.toString(error.column)}: ${error.message}\n`,
+      )
+    }
+  }
+  return Str.build(builder)
+}
+
+function listLine(mutable builder: StringBuilder, name: string, items: Array<string>) uses alloc {
+  if (Arrays.length(items) == 0) {
+    return
+  }
+  Str.append(mutable builder, name)
+  for (const item of Arrays.values(items)) {
+    Str.append(mutable builder, ` ${quoteDump(item)}`)
+  }
+  Str.append(mutable builder, "\n")
+}
+
+export function dump(package: Package): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, `package ${quoteDump(package.name)}\n`)
+  for (const binaryInfo of Arrays.values(package.binaries)) {
+    const #[modulePath, functionName] = entryModule(package, binaryInfo.entry)
+    Str.append(
+      mutable builder,
+      `binary ${quoteDump(binaryInfo.name)} entry=${quoteDump(binaryInfo.entry)} module=${quoteDump(modulePath)} fn=${quoteDump(functionName)}\n`,
+    )
+  }
+  listLine(mutable builder, "search", package.search)
+  for (const module of Arrays.values(package.modules)) {
+    Str.append(mutable builder, `module ${quoteDump(module.path)} file=${quoteDump(module.file)}\n`)
+    if (Arrays.length(module.exports) > 0) {
+      Str.append(mutable builder, `  exports ${Str.join(module.exports, ",")}\n`)
+    }
+    for (const importDecl of Arrays.values(module.ast.imports)) {
+      Str.append(
+        mutable builder,
+        `  import ${Int.toString(importDecl.pos.line)}:${Int.toString(importDecl.pos.column)} ${quoteDump(importDecl.path)}\n`,
+      )
+    }
+  }
+  return Str.build(builder)
+}
+
+export function checkIds(package: Package): Result<string, string> uses alloc {
+  // The id ranges of the files must be disjoint, together cover [0, nextId) with no gap, and none
+  // may pass nextId.
+  let total = 0
+  const count = Arrays.length(package.modules)
+  for (const first of Ranges.between(0, count)) {
+    const module = package.modules[first]
+    if (module.firstId < 0 || module.endId < module.firstId || module.endId > package.nextId) {
+      return Err(
+        `ids bad: ${module.path} has ${Int.toString(module.firstId)}..${Int.toString(module.endId)} with nextId ${Int.toString(package.nextId)}`,
+      )
+    }
+    total = total + module.endId - module.firstId
+    for (const second of Ranges.between(first + 1, count)) {
+      const other = package.modules[second]
+      if (module.firstId < other.endId && other.firstId < module.endId) {
+        return Err(`ids bad: ${module.path} and ${other.path} overlap`)
+      }
+    }
+  }
+  if (total != package.nextId) {
+    return Err(
+      `ids bad: the files use ${Int.toString(total)} ids but nextId is ${Int.toString(package.nextId)}`,
+    )
+  }
+  return Ok(`ids ok ${Int.toString(package.nextId)}`)
+}

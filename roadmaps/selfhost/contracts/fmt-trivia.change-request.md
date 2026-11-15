@@ -7,7 +7,7 @@
 
 The implementation differs from `contracts/fmt-trivia.md` v1 in these ways. The contract file is not edited.
 
-- The types `CommentKind`, `Placement`, `Comment`, `Attached` and `Trivia` are exported from `narrac/trivia` (`selfhost/src/trivia.nra`), not from `narrac/parser`. The lexer must build `Comment`, and importing it from the parser would be an import cycle. `parseWithTrivia` stays in `parser.nra`, and `lexWithComments` is in `lexer.nra`.
+- The types `CommentKind`, `Placement`, `Comment`, `Attached` and `Trivia` are exported from `narrac/trivia` (`selfhost/src/syntax/trivia.nra`), not from `narrac/parser`. The lexer must build `Comment`, and importing it from the parser would be an import cycle. `parseWithTrivia` stays in `parser.nra`, and `lexWithComments` is in `lexer.nra`.
 - Extra anchor key `b<line>:<col>` for a block (the `{` position). A comment in an empty block is dangling on the block.
 - Extra `blankBefore` key `c<index>`: set when a blank line comes before comment `index`.
 - `blankBefore` for a node means a blank line between the node and what comes before it: its last leading comment, else the previous sibling (with that sibling's trailing comments). So a first list item can have it, when a blank line follows its leading comment. Only statements, declarations, fields, variants, arms and imports get it, not expressions.
@@ -19,7 +19,7 @@ The implementation differs from `contracts/fmt-trivia.md` v1 in these ways. The 
 
 ## Proposed change
 
-Freeze the interface as implemented: types in `narrac/trivia`, `parseWithTrivia` in `narrac/parser`, the `b` and `c` keys, and the blankBefore meaning above. `narrac trivia [--check] <file>` prints the side tables (format in `selfhost/src/triviadump.nra`).
+Freeze the interface as implemented: types in `narrac/trivia`, `parseWithTrivia` in `narrac/parser`, the `b` and `c` keys, and the blankBefore meaning above. `narrac trivia [--check] <file>` prints the side tables (format in `selfhost/src/syntax/triviadump.nra`).
 
 ## Affected nodes
 

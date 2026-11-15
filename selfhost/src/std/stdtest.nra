@@ -1,0 +1,144 @@
+// The registry rows, checks of std/test.
+import { StdFunc } from "narrac/std/builtins"
+import { Type } from "narrac/check/types"
+import { Checker, typeString, Walker, reportError, lookupTrait } from "narrac/check/check"
+import { Pos, Arg } from "narrac/syntax/ast"
+import { typeImplements } from "narrac/check/traits"
+import { checkExpression, checkFixedCall } from "narrac/check/exprs"
+import { checkArgumentCount, checkArgumentAgainst } from "narrac/std/stdcheckhelp"
+import * as Arrays from "std/array"
+
+export const TEST_FUNCS: Array<StdFunc> = [
+  StdFunc {
+    name: "Test.eq",
+    module: "std/test",
+    key: "eq",
+    effects: ["alloc"],
+    check: "checkTestCompare",
+  },
+  StdFunc {
+    name: "Test.golden",
+    module: "std/test",
+    key: "golden",
+    effects: ["io"],
+    check: "checkTestGolden",
+  },
+  StdFunc {
+    name: "Test.ne",
+    module: "std/test",
+    key: "ne",
+    effects: ["alloc"],
+    check: "checkTestCompare",
+  },
+  StdFunc {
+    name: "Test.panics",
+    module: "std/test",
+    key: "panics",
+    effects: ["io"],
+    check: "checkTestPanics",
+  },
+  StdFunc {
+    name: "Test.panicsWith",
+    module: "std/test",
+    key: "panicsWith",
+    effects: ["io"],
+    check: "checkTestPanics",
+  },
+]
+
+function checkTestOnly(mutable checker: Checker, pos: Pos, name: string) uses alloc {
+  if (!checker.inTest) {
+    reportError(mutable checker, pos, "E0907", `${name} can only be called inside a \`test\` block`)
+  }
+}
+
+function checkTestCompare<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  checkTestOnly(mutable checker, pos, name)
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  for (const arg of Arrays.values(arguments)) {
+    if (arg.isMutable) {
+      reportError(
+        mutable checker,
+        pos,
+        "E0313",
+        `${name} does not change its arguments; remove \`mutable\``,
+      )
+    }
+  }
+  const first = checkExpression(mutable checker, walker, arguments[0].value, None)
+  checkArgumentAgainst(mutable checker, walker, arguments[1].value, first)
+  if (first == Type.TVoid) {
+    return Type.TVoid
+  }
+  // Both values need Equatable and Show.
+  for (const traitName of Arrays.values(["Equatable", "Show"])) {
+    const traitIndex = lookupTrait(checker, traitName)
+    if (!typeImplements(mutable checker, first, traitIndex)) {
+      const message = `${typeString(checker, first)} does not implement ${traitName}`
+      reportError(mutable checker, pos, "E0524", message)
+    }
+  }
+  return Type.TVoid
+}
+
+function checkTestPanics<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  checkTestOnly(mutable checker, pos, name)
+  let parameters = [Type.TFunc([], Type.TVoid, [], -1, -1)]
+  if (name == "Test.panicsWith") {
+    Arrays.push(mutable parameters, Type.TStr)
+  }
+  return checkFixedCall(mutable checker, walker, pos, arguments, name, parameters, Type.TVoid)
+}
+
+function checkTestGolden<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  checkTestOnly(mutable checker, pos, name)
+  return checkFixedCall(
+    mutable checker,
+    walker,
+    pos,
+    arguments,
+    name,
+    [Type.TStr, Type.TStr],
+    Type.TVoid,
+  )
+}
+
+export function checkTestCall<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+  kind: string,
+): Type uses alloc {
+  if (kind == "checkTestCompare") {
+    return checkTestCompare(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkTestPanics") {
+    return checkTestPanics(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkTestGolden") {
+    return checkTestGolden(mutable checker, walker, pos, arguments, name)
+  }
+  panic(`checkStdCall: no port of the check ${kind} (${name})`)
+}

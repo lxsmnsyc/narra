@@ -1,0 +1,1023 @@
+// The state of the C emitter and the helpers every emit module shares, ported
+// from emit.go (the Emitter, line, where, temp, consume, scopes, unwind),
+// retain and release (emit_types.go), needsRC (types.go) and cString and
+// literal (emit_expr.go). The contract is contracts/emitter.md.
+//
+// Ownership rules for reference-counted values in generated C:
+//   - A local variable owns one reference. It is released when its scope ends.
+//   - Parameters are borrowed. The caller keeps them alive for the call. A
+//     constant parameter over 16 bytes is a pointer to the caller's value.
+//   - A call returns an owned reference.
+//   - Each expression produces either an owned temporary or a borrowed value.
+//     Owned temporaries are released at the end of the statement unless a
+//     binding, field or return takes them over.
+//   - A for-of item borrows from the array the loop holds. Items are
+//     read-only, and a write to the source copies the array first.
+//   - An `is` or `match` binding borrows from the subject. The statement holds
+//     the subject: an owned temporary, a local that cannot be assigned, or
+//     else a retained copy. A destructuring binding owns its part.
+//   - An enum without a heap payload is copied like a struct: its retain and
+//     release count the fields of the variant its tag names. A variant
+//     without fields holds nothing and takes no retain.
+//
+// The Emitter holds the Checker read-only. Never pass `emitter.checker` as
+// `mutable`: a write would copy every checker table.
+import { substring } from "narrac/driver/textops"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import { Pos, Expr, Stmt, Block } from "narrac/syntax/ast"
+import { Type } from "narrac/check/types"
+import {
+  Checker,
+  LocalInfo,
+  Ref,
+  ProgramFunc,
+  BindingKind,
+  findBodySlot,
+  isHeapEnum,
+  isCountedType,
+  isPassedByPointer,
+} from "narrac/check/check"
+import { cachedCType, cachedTypeId, opFuncName } from "narrac/emit/cnames"
+import * as Cells from "std/cell"
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+
+// An expression's C text and whether it is an owned reference (Go's (string, bool)).
+export struct Code {
+  text: string
+  owned: bool
+}
+
+export struct TempVar {
+  name: string
+  tempType: Type
+}
+
+// locals are BodyInfo.locals indexes that need a release when the scope ends.
+export struct ScopeFrame {
+  locals: Array<int>
+  loop: bool
+  // Values the scope holds without a BodyInfo local, such as the subject of
+  // `if (x is P)`; released after the locals (selfhost-emit-match).
+  held: Array<TempVar> = []
+}
+
+export struct TraitNeed {
+  operation: string
+  needType: Type
+  name: string
+}
+
+// A Dynamic<Trait> cell type to write (emitdynamic.nra): the trait, the type
+// of the stored value and the cell's C name.
+export struct DynamicNeed {
+  traitIndex: int
+  valueType: Type
+  name: string
+}
+
+// The helper functions and std runtime sections the emitted code names, in
+// note order. A cell, so code that holds the Emitter read-only can note.
+export struct HelperNotes {
+  seen: Map<string, bool>
+  names: Array<string>
+}
+
+export struct Emitter {
+  checker: Checker
+  typeNames: Cells.Cell<Map<string, string>>
+  helpers: Cells.Cell<HelperNotes>
+  entry: int
+  tests: bool
+  file: string
+  body: int
+  owner: string
+  resultType: Type
+  literals: StringBuilder
+  literalCount: int
+  out: StringBuilder
+  indent: int
+  tempCount: int
+  frames: Array<Array<TempVar>>
+  scopes: Array<ScopeFrame>
+  loopFrames: Array<int>
+  traitNeeds: Array<TraitNeed>
+  // The prototype and definition of each trait function written so far,
+  // parallel to the start of traitNeeds.
+  traitPrototypes: Array<string> = []
+  traitDefinitions: Array<string> = []
+  traitSeen: Map<string, bool>
+  closureCounts: Map<string, int>
+  thunks: Map<string, bool>
+  closureEnvs: StringBuilder
+  closurePrototypes: StringBuilder
+  closureDefinitions: StringBuilder
+  unsupported: Array<string>
+  // The function being emitted when it has self tail calls, and the node ids
+  // of those calls (Go: tailCalls). A call inside a closure is never listed.
+  tailProgram: Option<ProgramFunc> = None
+  tailCalls: Array<int> = []
+  // The enclosing loops, parallel to loopFrames (Go: loops).
+  loopInfos: Array<LoopInfo> = []
+  // The block expressions being emitted, innermost last (Go: blocks).
+  blocks: Array<BlockInfo> = []
+  // Set while a function* body or a task body is emitted (Go: gen,
+  // emitgenerators.nra, emitasync.nra): its C variables are fields of the
+  // frame f, listed in frameFields as "type name" in first-use order.
+  // liveValues holds, for state 0 and each yield or await, what the frame
+  // holds while it waits there.
+  inFrame: bool = false
+  // Set while a task body is emitted (an async function, arrow or block);
+  // taskValue is the type of its result slot.
+  inAsync: bool = false
+  taskValue: Type
+  // Set while an async generator body is emitted (emitasyncgenerators.nra);
+  // streamOption is the Option<T> of its steps.
+  inStream: bool = false
+  streamOption: Type
+  // The `let` variables (BodyInfo.locals indexes) that the closure being
+  // emitted captures by reference; its C variables are pointers (Go:
+  // refCaptures).
+  refCaptures: Array<int> = []
+  // The array locals made unique before the loop being emitted, whose index
+  // writes skip the sharing test.
+  hoistedArrays: Array<int> = []
+  frameFields: Array<string> = []
+  frameSeen: Map<string, bool>
+  liveValues: Array<Array<TempVar>> = []
+  generatorElement: Type
+  // Arguments evaluated early to keep the written order, by expression id; an
+  // entry with empty text was taken already. heldPending counts the entries
+  // not taken yet (Go: held).
+  heldArguments: Map<int, Code>
+  heldPending: int = 0
+  // The C names of the functions and constant getters the emitted code calls,
+  // in the order the calls were written; emitProgram emits only these.
+  references: Array<string> = []
+  // The nodes of a thunk that calls a std function: negative ids with a type, a
+  // reference and the C text of the value, so the call emitters read them like
+  // the nodes of a body.
+  syntheticTypes: Map<int, Type>
+  syntheticRefs: Map<int, Ref>
+  syntheticCode: Map<int, string>
+  // The Dynamic cells the emitted code makes, in first-use order, and the C
+  // text written for them so far (emitdynamic.nra).
+  dynamicNeeds: Array<DynamicNeed> = []
+  dynamicTexts: Array<string> = []
+  // Thread mode (D111 item 2): the program imports std/thread, so the C file
+  // defines NARRA_THREADS and counted values get share functions.
+  threads: bool = false
+}
+
+export struct BodyContext {
+  out: StringBuilder
+  indent: int
+  frames: Array<Array<TempVar>>
+  scopes: Array<ScopeFrame>
+  loopFrames: Array<int>
+  loopInfos: Array<LoopInfo>
+  blocks: Array<BlockInfo>
+  resultType: Type
+  inFrame: bool
+  inAsync: bool
+  taskValue: Type
+  inStream: bool
+  frameFields: Array<string>
+  frameSeen: Map<string, bool>
+  liveValues: Array<Array<TempVar>>
+  refCaptures: Array<int>
+  syntheticTypes: Map<int, Type>
+  syntheticRefs: Map<int, Ref>
+  syntheticCode: Map<int, string>
+}
+
+export function enterBodyContext(
+  mutable emitter: Emitter,
+  resultType: Type,
+): BodyContext from emitter uses alloc {
+  // A function written in the middle of another body starts with no frames, scopes, loops or
+  // blocks, and its own output. The context returned is what leaveBodyContext puts back.
+  const saved = BodyContext {
+    out: emitter.out,
+    indent: emitter.indent,
+    frames: emitter.frames,
+    scopes: emitter.scopes,
+    loopFrames: emitter.loopFrames,
+    loopInfos: emitter.loopInfos,
+    blocks: emitter.blocks,
+    resultType: emitter.resultType,
+    inFrame: emitter.inFrame,
+    inAsync: emitter.inAsync,
+    taskValue: emitter.taskValue,
+    inStream: emitter.inStream,
+    frameFields: emitter.frameFields,
+    frameSeen: emitter.frameSeen,
+    liveValues: emitter.liveValues,
+    refCaptures: emitter.refCaptures,
+    syntheticTypes: emitter.syntheticTypes,
+    syntheticRefs: emitter.syntheticRefs,
+    syntheticCode: emitter.syntheticCode,
+  }
+  emitter.scopes = [ScopeFrame { locals: [], loop: false }]
+  emitter.frames = []
+  emitter.loopFrames = []
+  emitter.loopInfos = []
+  emitter.blocks = []
+  emitter.refCaptures = []
+  emitter.inFrame = false
+  emitter.inAsync = false
+  emitter.inStream = false
+  emitter.frameFields = []
+  emitter.frameSeen = Map {}
+  emitter.liveValues = []
+  emitter.out = Str.builder()
+  emitter.indent = 0
+  emitter.resultType = resultType
+  emitter.syntheticTypes = Map {}
+  emitter.syntheticRefs = Map {}
+  emitter.syntheticCode = Map {}
+  return saved
+}
+
+export function leaveBodyContext(mutable emitter: Emitter, saved: BodyContext) {
+  emitter.out = saved.out
+  emitter.indent = saved.indent
+  emitter.frames = saved.frames
+  emitter.scopes = saved.scopes
+  emitter.loopFrames = saved.loopFrames
+  emitter.loopInfos = saved.loopInfos
+  emitter.blocks = saved.blocks
+  emitter.resultType = saved.resultType
+  emitter.inFrame = saved.inFrame
+  emitter.inAsync = saved.inAsync
+  emitter.taskValue = saved.taskValue
+  emitter.inStream = saved.inStream
+  emitter.frameFields = saved.frameFields
+  emitter.frameSeen = saved.frameSeen
+  emitter.liveValues = saved.liveValues
+  emitter.refCaptures = saved.refCaptures
+  emitter.syntheticTypes = saved.syntheticTypes
+  emitter.syntheticRefs = saved.syntheticRefs
+  emitter.syntheticCode = saved.syntheticCode
+}
+
+export function findSyntheticCode(emitter: Emitter, nodeId: int): Option<string> from emitter {
+  if (nodeId >= -1) {
+    return None
+  }
+  return emitter.syntheticCode[nodeId]
+}
+
+// BlockInfo is a block expression being emitted: where a return stores its
+// value and jumps to, and how deep the frames and scopes were at its start
+// (Go's blockInfo).
+export struct BlockInfo {
+  result: string
+  label: string
+  frames: int
+  scopes: int
+}
+
+// LoopInfo is an enclosing loop: its label and the C labels that a labeled
+// break or continue jumps to. A C label is written only when used.
+export struct LoopInfo {
+  label: string
+  line: int
+  column: int
+  breakUsed: bool
+  continueUsed: bool
+  // A C-style for loop: continue jumps to its step.
+  hasStep: bool
+}
+
+// The recursion entry points of the body emitter. Narra function types cannot
+// take `mutable` and modules cannot import in a cycle, so modules that
+// recurse take `<W: EmitWalker>` (the same pattern as the checker's Walker).
+export trait EmitWalker {
+  function emitExpression(walker: Self, mutable emitter: Emitter, expression: Expr): Code uses alloc
+  function emitStatement(walker: Self, mutable emitter: Emitter, statement: Stmt) uses alloc
+  function emitBlock(walker: Self, mutable emitter: Emitter, block: Block, loop: bool) uses alloc
+  function emitBlockInScope(walker: Self, mutable emitter: Emitter, block: Block) uses alloc
+  function emitLvaluePointer(
+    walker: Self,
+    mutable emitter: Emitter,
+    expression: Expr,
+  ): string uses alloc
+}
+
+export function newEmitter(
+  checker: Checker,
+  entry: int,
+  tests: bool,
+): Emitter from checker uses alloc {
+  // The checker is shared, not copied.
+  return Emitter {
+    checker,
+    typeNames: Cells.create(Map {}),
+    helpers: Cells.create(HelperNotes { seen: Map {}, names: [] }),
+    entry,
+    tests,
+    file: "",
+    body: -1,
+    owner: "",
+    resultType: Type.TVoid,
+    literals: Str.builder(),
+    literalCount: 0,
+    out: Str.builder(),
+    indent: 0,
+    tempCount: 0,
+    frames: [],
+    scopes: [],
+    loopFrames: [],
+    traitNeeds: [],
+    traitSeen: Map {},
+    closureCounts: Map {},
+    thunks: Map {},
+    closureEnvs: Str.builder(),
+    closurePrototypes: Str.builder(),
+    closureDefinitions: Str.builder(),
+    unsupported: [],
+    frameSeen: Map {},
+    generatorElement: Type.TVoid,
+    taskValue: Type.TVoid,
+    streamOption: Type.TVoid,
+    heldArguments: Map {},
+    syntheticTypes: Map {},
+    syntheticRefs: Map {},
+    syntheticCode: Map {},
+    threads: usesThreads(checker),
+  }
+}
+
+function usesThreads(checker: Checker): bool {
+  for (const path of Arrays.values(checker.used)) {
+    if (path == "std/internal/thread") {
+      return true
+    }
+  }
+  return false
+}
+
+export function noteReference(mutable emitter: Emitter, name: string) uses alloc {
+  Arrays.push(mutable emitter.references, name)
+}
+
+export function noteHelper(emitter: Emitter, name: string) uses alloc {
+  if (Cells.get(emitter.helpers).seen[name] is Some(_)) {
+    return
+  }
+  // Take the notes out of the cell, so the write does not copy them.
+  let notes = copy(Cells.get(emitter.helpers))
+  Cells.set(emitter.helpers, HelperNotes { seen: Map {}, names: [] })
+  notes.seen[name] = true
+  Arrays.push(mutable notes.names, name)
+  Cells.set(emitter.helpers, notes)
+}
+
+export function useHelper(
+  emitter: Emitter,
+  container: string,
+  operation: string,
+): string uses alloc {
+  const name = `${container}_${operation}`
+  noteHelper(emitter, name)
+  return name
+}
+
+export function reportUnsupported(
+  mutable emitter: Emitter,
+  construct: string,
+  node: string,
+): string uses alloc {
+  // A construct is recorded once per distinct text.
+  const text = `${construct} (${node})`
+  let seen = false
+  for (const known of Arrays.values(emitter.unsupported)) {
+    if (known == text) {
+      seen = true
+    }
+  }
+  if (!seen) {
+    Arrays.push(mutable emitter.unsupported, text)
+  }
+  return `/* unsupported: ${text} */`
+}
+
+export function writeLine(mutable emitter: Emitter, text: string) uses alloc {
+  // Append the indent, the text and the newline straight to the output.
+  for (const _level of Ranges.between(0, emitter.indent)) {
+    Str.append(mutable emitter.out, "  ")
+  }
+  Str.append(mutable emitter.out, text)
+  Str.append(mutable emitter.out, "\n")
+}
+
+export function cString(text: string): string uses alloc {
+  // Bytes outside printable ASCII and `?` become octal escapes.
+  let builder = Str.builder()
+  Str.append(mutable builder, "\"")
+  const length = Str.length(text)
+  // Start of the run of bytes that copy unchanged.
+  let runStart = 0
+  for (const index of Ranges.between(0, length)) {
+    const byte = Str.byteAt(text, index)
+    const copies = byte >= 32 && byte < 127 && byte != 63 && byte != 34 && byte != 92
+    if (!copies) {
+      if (runStart < index) {
+        Str.append(mutable builder, substring(text, runStart, index))
+      }
+      runStart = index + 1
+      Str.append(mutable builder, "\\")
+      if (byte == 34 || byte == 92) {
+        Str.append(mutable builder, substring(text, index, index + 1))
+      } else {
+        Str.append(mutable builder, Int.toString(byte / 64))
+        Str.append(mutable builder, Int.toString((byte / 8) % 8))
+        Str.append(mutable builder, Int.toString(byte % 8))
+      }
+    }
+  }
+  if (runStart < length) {
+    Str.append(mutable builder, substring(text, runStart, length))
+  }
+  Str.append(mutable builder, "\"")
+  return Str.build(builder)
+}
+
+export function literal(mutable emitter: Emitter, text: string): string uses alloc {
+  emitter.literalCount++
+  const name = `L${Int.toString(emitter.literalCount)}`
+  Str.append(
+    mutable emitter.literals,
+    `static lstr ${name} = {0, ${Int.toString(Str.length(text))}, ${cString(text)}};\n`,
+  )
+  return `(&${name})`
+}
+
+export function where(emitter: Emitter, pos: Pos): string uses alloc {
+  return cString(`${emitter.file}:${Int.toString(pos.line)}:${Int.toString(pos.column)}`)
+}
+
+export function readNodeType(emitter: Emitter, nodeId: int): Type from emitter {
+  if (emitter.syntheticTypes[nodeId] is Some(synthetic)) {
+    return synthetic
+  }
+  const info = emitter.checker.bodies[emitter.body]
+  const slot = findBodySlot(info, nodeId)
+  if (slot >= 0) {
+    if (info.types[slot] is Some(found)) {
+      return found
+    }
+  }
+  return Type.TVoid
+}
+
+export function readNodeRef(emitter: Emitter, nodeId: int): Ref {
+  if (emitter.syntheticRefs[nodeId] is Some(synthetic)) {
+    return synthetic
+  }
+  const info = emitter.checker.bodies[emitter.body]
+  const slot = findBodySlot(info, nodeId)
+  if (slot < 0) {
+    return Ref.Unresolved
+  }
+  return info.refs[slot]
+}
+
+export function readLocal(emitter: Emitter, index: int): LocalInfo from emitter {
+  return emitter.checker.bodies[emitter.body].locals[index]
+}
+
+export function isReference(emitter: Emitter, index: int): bool {
+  // A mutable parameter, the element of a `for (mutable ...)` loop, or a `let`
+  // captured by reference inside the closure being emitted holds a pointer.
+  const local = readLocal(emitter, index)
+  if ((local.param && local.isMutable) || local.binding == BindingKind.Reference) {
+    return true
+  }
+  for (const captured of Arrays.values(emitter.refCaptures)) {
+    if (captured == index) {
+      return true
+    }
+  }
+  return false
+}
+
+export function isPointerParameter(emitter: Emitter, index: int): bool uses alloc {
+  // A large constant parameter points at the caller's value. A generator frame
+  // holds a copy instead.
+  const local = readLocal(emitter, index)
+  return local.param &&
+    !local.isMutable &&
+    !emitter.inFrame &&
+    isPassedByPointer(emitter.checker, local.localType)
+}
+
+export function localRef(emitter: Emitter, index: int): string uses alloc {
+  const local = readLocal(emitter, index)
+  const name = localName(local)
+  if (isReference(emitter, index) || isPointerParameter(emitter, index)) {
+    return `(*${name})`
+  }
+  return variableRef(emitter, name)
+}
+
+export function declareVariable(
+  mutable emitter: Emitter,
+  typeName: string,
+  name: string,
+): string uses alloc {
+  // In a generator body this adds a frame field to the frame and returns the
+  // field access instead of a C declaration.
+  if (!emitter.inFrame) {
+    return `${typeName} ${name}`
+  }
+  if (emitter.frameSeen[name] is None) {
+    emitter.frameSeen[name] = true
+    Arrays.push(mutable emitter.frameFields, `${typeName} ${name}`)
+  }
+  return `f->${name}`
+}
+
+export function declareUnset(
+  mutable emitter: Emitter,
+  typeName: string,
+  name: string,
+): string uses alloc {
+  // A frame field needs no line.
+  const declaration = declareVariable(mutable emitter, typeName, name)
+  if (!emitter.inFrame) {
+    writeLine(mutable emitter, `${declaration};`)
+  }
+  return variableRef(emitter, name)
+}
+
+export function variableRef(emitter: Emitter, name: string): string uses alloc {
+  if (emitter.inFrame) {
+    return `f->${name}`
+  }
+  return name
+}
+
+export function declareLocalVariable(mutable emitter: Emitter, localIndex: int): string uses alloc {
+  const local = copy(readLocal(emitter, localIndex))
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, local.localType)
+  return declareVariable(mutable emitter, typeName, localName(local))
+}
+
+export function declareLocal(mutable emitter: Emitter, localIndex: int, value: string) uses alloc {
+  const declaration = declareLocalVariable(mutable emitter, localIndex)
+  writeLine(mutable emitter, `${declaration} = ${value};`)
+}
+
+export function findDeclaredLocal(emitter: Emitter, nodeId: int): int {
+  const info = emitter.checker.bodies[emitter.body]
+  // Only a parameter, VarStmt or ForStmt node declares a local.
+  const slot = findBodySlot(info, nodeId)
+  if (slot < 0) {
+    return -1
+  }
+  return info.declared[slot]
+}
+
+export function switchBody(mutable emitter: Emitter, body: int): int {
+  const saved = emitter.body
+  emitter.body = body
+  return saved
+}
+
+export function underlyingType(emitter: Emitter, type: Type): Type from type {
+  if (type is Type.TDistinct(index)) {
+    if (emitter.checker.distincts[index].base is Some(base)) {
+      return copy(underlyingType(emitter, base))
+    }
+  }
+  return type
+}
+
+export function needsRc(emitter: Emitter, type: Type): bool {
+  return isCountedType(emitter.checker, type)
+}
+
+export function buildVariantFieldPath(
+  emitter: Emitter,
+  enumIndex: int,
+  variantName: string,
+  fieldName: string,
+  value: string,
+): string uses alloc {
+  // u is a pointer to a heap payload, or the union of an inline one.
+  if (isHeapEnum(emitter.checker, enumIndex)) {
+    return `${value}.u->v_${variantName}.f_${fieldName}`
+  }
+  return `${value}.u.v_${variantName}.f_${fieldName}`
+}
+
+export function containerName(emitter: Emitter, type: Type): string uses alloc {
+  const name = cachedCType(emitter.checker, emitter.typeNames, type)
+  return substring(name, 0, Str.length(name) - 1)
+}
+
+export function retainCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  return refCountCode(emitter, "retain", type, value)
+}
+
+export function releaseCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  return refCountCode(emitter, "release", type, value)
+}
+
+export function shareCode(emitter: Emitter, type: Type, value: string): string uses alloc {
+  // Thread mode only: marks value and what it holds shared (D111 item 2).
+  // Values that cannot cross a thread have nothing to mark.
+  const base = underlyingType(emitter, type)
+  return match (base) {
+    Type.TGenerator(_, _, _, _, _) | Type.TAsync(_) | Type.THandle | Type.TDynamic(_) => ""
+    _ => refCountCode(emitter, "share", base, value)
+  }
+}
+
+function refCountCode(
+  emitter: Emitter,
+  operation: string,
+  type: Type,
+  value: string,
+): string uses alloc {
+  const base = underlyingType(emitter, type)
+  return match (base) {
+    Type.TStr | Type.TBytes => `lstr_${operation}(${value});`
+    Type.TStringBuilder => {
+      noteHelper(emitter, "std/string")
+      return `narra_sb_${operation}(${value});`
+    }
+    Type.TArray(_) | Type.TBox(_) | Type.TMap(_, _) => {
+      const name = `${containerName(emitter, base)}_${operation}`
+      noteHelper(emitter, name)
+      return `${name}(${value});`
+    }
+    Type.TFunc(_, _, _, _, _) => `narra_env_${operation}((${value}).env);`
+    Type.TGenerator(_, _, _, _, _) => `narra_gen_${operation}(${value});`
+    Type.TAsync(_) | Type.TAsyncGenerator(_, _, _, _) => {
+      noteHelper(emitter, "std/internal/async")
+      return `narra_task_${operation}(${value});`
+    }
+    Type.THandle => {
+      noteHelper(emitter, "std/internal/asyncio")
+      return `narra_handle_${operation}(${value});`
+    }
+    Type.TSync => {
+      noteHelper(emitter, "std/internal/thread")
+      return `narra_sync_${operation}(${value});`
+    }
+    Type.TDynamic(_) => {
+      noteHelper(emitter, "dynamic")
+      return `narra_dyn_${operation}(${value});`
+    }
+    Type.TStruct(_) | Type.TEnum(_) | Type.TFixedArray(_, _) => structOrEnumCode(
+      emitter,
+      operation,
+      base,
+      value,
+    )
+    _ => ""
+  }
+}
+
+function structOrEnumCode(
+  emitter: Emitter,
+  operation: string,
+  base: Type,
+  value: string,
+): string uses alloc {
+  if (!needsRc(emitter, base)) {
+    return ""
+  }
+  const name = opFuncName(operation, cachedTypeId(emitter.checker, emitter.typeNames, base))
+  noteHelper(emitter, name)
+  // A large value is passed by pointer, as to any function.
+  if (isPassedByPointer(emitter.checker, base)) {
+    return `${name}(&(${value}));`
+  }
+  return `${name}(${value});`
+}
+
+export function passArgument(
+  mutable emitter: Emitter,
+  type: Type,
+  text: string,
+): string uses alloc {
+  // A large constant argument is passed as a pointer to a place the caller
+  // keeps for the call; a value that is not a place is copied to a temporary.
+  if (!isPassedByPointer(emitter.checker, type)) {
+    return text
+  }
+  if (isPlace(text)) {
+    return `&${text}`
+  }
+  return `&${temp(mutable emitter, type, text)}`
+}
+
+function isPlace(text: string): bool {
+  // A name followed by fields, through `.`, `->` and `(*pointer)`, is a place.
+  let named = false
+  let index = 0
+  const length = Str.length(text)
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    let next = 0
+    if (index + 1 < length) {
+      next = Str.byteAt(text, index + 1)
+    }
+    if (byte == 40 && next == 42) {
+      // (*
+      index += 2
+    } else if (byte == 45 && next == 62) {
+      // ->
+      index += 2
+    } else if (byte == 41 || byte == 46) {
+      // ) and .
+      index++
+    } else if ((byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || byte == 95) {
+      named = true
+      index++
+    } else if (byte >= 48 && byte <= 57 && named) {
+      index++
+    } else {
+      return false
+    }
+  }
+  return named
+}
+
+export function temp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
+  // The counter is program-wide: it is never reset per function.
+  emitter.tempCount++
+  const name = `t${Int.toString(emitter.tempCount)}`
+  const typeName = cachedCType(emitter.checker, emitter.typeNames, type)
+  const declaration = declareVariable(mutable emitter, typeName, name)
+  writeLine(mutable emitter, `${declaration} = ${code};`)
+  return variableRef(emitter, name)
+}
+
+export function ownedTemp(mutable emitter: Emitter, type: Type, code: string): string uses alloc {
+  const name = temp(mutable emitter, type, code)
+  if (needsRc(emitter, type)) {
+    const top = Arrays.length(emitter.frames) - 1
+    Arrays.push(mutable emitter.frames[top], TempVar { name, tempType: type })
+  }
+  return name
+}
+
+export function beginStatement(mutable emitter: Emitter) uses alloc {
+  Arrays.push(mutable emitter.frames, [])
+}
+
+export function endStatement(mutable emitter: Emitter) uses alloc {
+  const top = copy(emitter.frames[Arrays.length(emitter.frames) - 1])
+  releaseTemporaries(mutable emitter, top)
+  emitter.frames = withoutLast(emitter.frames)
+}
+
+function withoutLast<T>(items: Array<Array<T>>): Array<Array<T>> from items uses alloc {
+  let kept: Array<Array<T>> = []
+  for (const index of Ranges.between(0, Arrays.length(items) - 1)) {
+    Arrays.push(mutable kept, items[index])
+  }
+  return kept
+}
+
+function releaseTemporaries(mutable emitter: Emitter, temporaries: Array<TempVar>) uses alloc {
+  for (let index = Arrays.length(temporaries) - 1; index >= 0; index--) {
+    const text = releaseCode(emitter, temporaries[index].tempType, temporaries[index].name)
+    if (text != "") {
+      writeLine(mutable emitter, text)
+    }
+  }
+}
+
+function isTagOnly(code: string): bool {
+  // Matches the ((Name){.tag = N}) that constructorValue writes.
+  return Str.startsWith(code, "((") &&
+    Str.endsWith(code, "})") &&
+    Str.contains(code, "){.tag = ") &&
+    !Str.contains(code, ",")
+}
+
+export function consume(
+  mutable emitter: Emitter,
+  code: string,
+  owned: bool,
+  type: Type,
+): string uses alloc {
+  if (!needsRc(emitter, type)) {
+    return code
+  }
+  if (isTagOnly(code)) {
+    // A variant without fields holds no reference.
+    return code
+  }
+  if (owned) {
+    const frame = Arrays.length(emitter.frames) - 1
+    const top = emitter.frames[frame]
+    for (const index of Ranges.between(0, Arrays.length(top))) {
+      if (top[index].name == code) {
+        // The statement no longer releases it.
+        let kept: Array<TempVar> = []
+        for (const other of Ranges.between(0, Arrays.length(top))) {
+          if (other != index) {
+            Arrays.push(mutable kept, top[other])
+          }
+        }
+        emitter.frames[frame] = kept
+        return code
+      }
+    }
+  }
+  const name = temp(mutable emitter, type, code)
+  const retainText = retainCode(emitter, type, name)
+  writeLine(mutable emitter, retainText)
+  return name
+}
+
+export function pushScope(mutable emitter: Emitter, loop: bool) uses alloc {
+  Arrays.push(mutable emitter.scopes, ScopeFrame { locals: [], loop })
+}
+
+export function popScope(mutable emitter: Emitter) uses alloc {
+  const top = copy(emitter.scopes[Arrays.length(emitter.scopes) - 1])
+  releaseLocals(mutable emitter, top)
+  let kept: Array<ScopeFrame> = []
+  for (const index of Ranges.between(0, Arrays.length(emitter.scopes) - 1)) {
+    Arrays.push(mutable kept, emitter.scopes[index])
+  }
+  emitter.scopes = kept
+}
+
+function releaseLocals(mutable emitter: Emitter, frame: ScopeFrame) uses alloc {
+  for (let index = Arrays.length(frame.locals) - 1; index >= 0; index--) {
+    const local = copy(readLocal(emitter, frame.locals[index]))
+    const text = releaseCode(emitter, local.localType, localRef(emitter, frame.locals[index]))
+    if (text != "") {
+      writeLine(mutable emitter, text)
+    }
+  }
+  for (let heldIndex = Arrays.length(frame.held) - 1; heldIndex >= 0; heldIndex--) {
+    const heldValue = frame.held[heldIndex]
+    const heldText = releaseCode(emitter, heldValue.tempType, heldValue.name)
+    if (heldText != "") {
+      writeLine(mutable emitter, heldText)
+    }
+  }
+}
+
+export function localName(local: LocalInfo): string uses alloc {
+  return `v_${local.name}_${Int.toString(local.number)}`
+}
+
+export function addLocal(mutable emitter: Emitter, localIndex: int) uses alloc {
+  const local = copy(readLocal(emitter, localIndex))
+  if (needsRc(emitter, local.localType)) {
+    const top = Arrays.length(emitter.scopes) - 1
+    Arrays.push(mutable emitter.scopes[top].locals, localIndex)
+  }
+}
+
+export function unwindAll(mutable emitter: Emitter) uses alloc {
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= 0; frame--) {
+    const temporaries = copy(emitter.frames[frame])
+    releaseTemporaries(mutable emitter, temporaries)
+  }
+  for (let scope = Arrays.length(emitter.scopes) - 1; scope >= 0; scope--) {
+    const frameScope = copy(emitter.scopes[scope])
+    releaseLocals(mutable emitter, frameScope)
+  }
+}
+
+export function unwindBlock(mutable emitter: Emitter, info: BlockInfo) uses alloc {
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= info.frames; frame--) {
+    const temporaries = copy(emitter.frames[frame])
+    releaseTemporaries(mutable emitter, temporaries)
+  }
+  for (let scope = Arrays.length(emitter.scopes) - 1; scope >= info.scopes; scope--) {
+    const frameScope = copy(emitter.scopes[scope])
+    releaseLocals(mutable emitter, frameScope)
+  }
+}
+
+export function withoutLastBlock(
+  blocks: Array<BlockInfo>,
+): Array<BlockInfo> from blocks uses alloc {
+  let kept: Array<BlockInfo> = []
+  for (const index of Ranges.upTo(Arrays.length(blocks) - 1)) {
+    Arrays.push(mutable kept, blocks[index])
+  }
+  return kept
+}
+
+export function unwindLoop(mutable emitter: Emitter) uses alloc {
+  const innermost = Arrays.length(emitter.loopFrames) - 1
+  unwindToLoop(mutable emitter, innermost)
+}
+
+export function enterLoop(mutable emitter: Emitter, label: string, pos: Pos) uses alloc {
+  const depth = Arrays.length(emitter.frames)
+  Arrays.push(mutable emitter.loopFrames, depth)
+  Arrays.push(mutable emitter.loopInfos, LoopInfo {
+    label,
+    line: pos.line,
+    column: pos.column,
+    breakUsed: false,
+    continueUsed: false,
+    hasStep: false,
+  })
+}
+
+export function leaveLoop(mutable emitter: Emitter): LoopInfo uses alloc {
+  const last = Arrays.length(emitter.loopInfos) - 1
+  const info = emitter.loopInfos[last]
+  let keptFrames: Array<int> = []
+  let keptInfos: Array<LoopInfo> = []
+  for (const index of Ranges.upTo(last)) {
+    Arrays.push(mutable keptFrames, emitter.loopFrames[index])
+    Arrays.push(mutable keptInfos, emitter.loopInfos[index])
+  }
+  emitter.loopFrames = keptFrames
+  emitter.loopInfos = keptInfos
+  return copy(info)
+}
+
+export function markStepLoop(mutable emitter: Emitter) {
+  emitter.loopInfos[Arrays.length(emitter.loopInfos) - 1].hasStep = true
+}
+
+export function hasStepLoop(emitter: Emitter): bool {
+  return emitter.loopInfos[Arrays.length(emitter.loopInfos) - 1].hasStep
+}
+
+export function emitStepJump(mutable emitter: Emitter) uses alloc {
+  const index = Arrays.length(emitter.loopInfos) - 1
+  const info = copy(emitter.loopInfos[index])
+  unwindToLoop(mutable emitter, index)
+  emitter.loopInfos[index].continueUsed = true
+  writeLine(
+    mutable emitter,
+    `goto narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)};`,
+  )
+}
+
+export function emitContinueLabel(mutable emitter: Emitter) uses alloc {
+  const info = emitter.loopInfos[Arrays.length(emitter.loopInfos) - 1]
+  if (info.continueUsed) {
+    writeLine(
+      mutable emitter,
+      `narra_continue_${Int.toString(info.line)}_${Int.toString(info.column)}:;`,
+    )
+  }
+}
+
+export function emitBreakLabel(mutable emitter: Emitter, info: LoopInfo) uses alloc {
+  if (info.breakUsed) {
+    writeLine(
+      mutable emitter,
+      `narra_break_${Int.toString(info.line)}_${Int.toString(info.column)}:;`,
+    )
+  }
+}
+
+export function emitLabeledExit(mutable emitter: Emitter, label: string, isBreak: bool) uses alloc {
+  for (let index = Arrays.length(emitter.loopInfos) - 1; index >= 0; index--) {
+    const info = copy(emitter.loopInfos[index])
+    if (info.label == label) {
+      unwindToLoop(mutable emitter, index)
+      const where = `${Int.toString(info.line)}_${Int.toString(info.column)}`
+      if (isBreak) {
+        emitter.loopInfos[index].breakUsed = true
+        writeLine(mutable emitter, `goto narra_break_${where};`)
+      } else {
+        emitter.loopInfos[index].continueUsed = true
+        writeLine(mutable emitter, `goto narra_continue_${where};`)
+      }
+      return
+    }
+  }
+}
+
+function unwindToLoop(mutable emitter: Emitter, loopIndex: int) uses alloc {
+  // The scope of loop k is the k-th loop scope from the outside.
+  const depth = emitter.loopFrames[loopIndex]
+  let remaining = Arrays.length(emitter.loopFrames) - 1 - loopIndex
+  for (let frame = Arrays.length(emitter.frames) - 1; frame >= depth; frame--) {
+    const temporaries = copy(emitter.frames[frame])
+    releaseTemporaries(mutable emitter, temporaries)
+  }
+  for (let scope = Arrays.length(emitter.scopes) - 1; scope >= 0; scope--) {
+    const frameScope = copy(emitter.scopes[scope])
+    releaseLocals(mutable emitter, frameScope)
+    if (frameScope.loop) {
+      if (remaining == 0) {
+        return
+      }
+      remaining--
+    }
+  }
+}

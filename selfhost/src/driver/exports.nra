@@ -1,0 +1,133 @@
+// The module paths a package exposes. A package with an [exports] table lets other packages import
+// only the keys of the table; the loader checks each import of a package against the table of the
+// package it names and replaces the key with the path of the module file. std has no table: every
+// std module is exposed except those under std/internal/ and std/ext/.
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+import { substring } from "narrac/driver/textops"
+import { ImportDecl } from "narrac/syntax/ast"
+import { quoteGo } from "narrac/syntax/parser"
+import { ExportEntry, LoadError } from "narrac/driver/manifest"
+
+export struct ExportTable {
+  name: string
+  entries: Array<ExportEntry>
+}
+
+export struct RewrittenImports {
+  imports: Array<ImportDecl>
+  changed: bool
+  errors: Array<LoadError>
+}
+
+export function isStdPathExposed(path: string): bool {
+  return !Str.startsWith(path, "std/internal/") && !Str.startsWith(path, "std/ext/")
+}
+
+export function buildModulePath(packageName: string, entry: ExportEntry): string uses alloc {
+  // "src/streaming/reader.nra" of package lib is the module lib/streaming/reader.
+  return `${packageName}/${substring(entry.file, 4, Str.length(entry.file) - 4)}`
+}
+
+export function checkExportFiles(
+  packageName: string,
+  manifestFile: string,
+  entries: Array<ExportEntry>,
+  modulePaths: Array<string>,
+): Array<LoadError> uses alloc {
+  let errors: Array<LoadError> = []
+  for (const entry of Arrays.values(entries)) {
+    const wanted = buildModulePath(packageName, entry)
+    let found = false
+    for (const modulePath of Arrays.values(modulePaths)) {
+      if (modulePath == wanted) {
+        found = true
+      }
+    }
+    if (!found) {
+      Arrays.push(mutable errors, LoadError {
+        code: "E0471",
+        file: manifestFile,
+        line: entry.line,
+        column: 1,
+        message: `export ${quoteGo(entry.key)} names ${quoteGo(entry.file)}, but the package has no such file`,
+      })
+    }
+  }
+  return errors
+}
+
+function findTable(tables: Array<ExportTable>, name: string): Array<ExportEntry> uses alloc {
+  for (const table of Arrays.values(tables)) {
+    if (table.name == name) {
+      return copy(table.entries)
+    }
+  }
+  return []
+}
+
+function hasName(names: Array<string>, name: string): bool {
+  for (const candidate of Arrays.values(names)) {
+    if (candidate == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function listKeys(entries: Array<ExportEntry>): string uses alloc {
+  let keys: Array<string> = []
+  for (const entry of Arrays.values(entries)) {
+    Arrays.push(mutable keys, quoteGo(entry.key))
+  }
+  return Str.join(keys, ", ")
+}
+
+export function rewriteImports(
+  file: string,
+  imports: Array<ImportDecl>,
+  ownName: string,
+  declared: Array<string>,
+  tables: Array<ExportTable>,
+): RewrittenImports from imports uses alloc {
+  let result = RewrittenImports { imports: [], changed: false, errors: [] }
+  for (const importDecl of Arrays.values(imports)) {
+    let segment = importDecl.path
+    const slash = Str.indexOf(importDecl.path, "/")
+    if (slash is Some(position)) {
+      segment = substring(importDecl.path, 0, position)
+    }
+    const entries = findTable(tables, segment)
+    if (segment == ownName || !hasName(declared, segment) || Arrays.length(entries) == 0) {
+      Arrays.push(mutable result.imports, importDecl)
+      continue
+    }
+    // Another package is imported only through the keys of its table.
+    let target = ""
+    for (const entry of Arrays.values(entries)) {
+      if (entry.key == importDecl.path) {
+        target = buildModulePath(segment, entry)
+      }
+    }
+    if (target == "") {
+      Arrays.push(mutable result.errors, LoadError {
+        code: "E0473",
+        file,
+        line: importDecl.pos.line,
+        column: importDecl.pos.column,
+        message: `package ${segment} does not expose ${quoteGo(importDecl.path)}; it exposes ${listKeys(entries)}`,
+      })
+      Arrays.push(mutable result.imports, importDecl)
+      continue
+    }
+    result.changed = true
+    Arrays.push(mutable result.imports, ImportDecl {
+      pos: importDecl.pos,
+      alias: importDecl.alias,
+      aliasPos: importDecl.aliasPos,
+      names: importDecl.names,
+      path: target,
+    })
+  }
+  return result
+}

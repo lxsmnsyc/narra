@@ -1,0 +1,823 @@
+// Prints the syntax tree in the dump format defined at the top of
+// compiler/internal/narra/astdump.go. Keep the two in step: selfhost-front diffs
+// this output against `narra parse`.
+//
+// A tagged template (D114) is a `call` node with the `tagged` flag. Its first
+// argument is a `template-parts` node with one `part line:column raw="..."`
+// line per text part, the source text between the delimiters, so an empty
+// part prints `raw=""`; its second argument is the array of the `${}` values.
+import { repeatString, splitString } from "narrac/driver/textops"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Lexer from "narrac/syntax/lexer"
+import {
+  Pos,
+  File,
+  TypeExpr,
+  Param,
+  FuncDecl,
+  Attribute,
+  FieldDecl,
+  Decl,
+  Block,
+  Stmt,
+  Expr,
+  Pattern,
+  isTaggedArguments,
+} from "narrac/syntax/ast"
+import * as Arrays from "std/array"
+
+export function dump(file: File): string uses alloc {
+  let builder = Str.builder()
+  dumpFile(mutable builder, file)
+  return Str.build(builder)
+}
+
+function writeLine(mutable builder: StringBuilder, depth: int, text: string) {
+  Str.append(mutable builder, repeatString("  ", depth))
+  Str.append(mutable builder, text)
+  Str.append(mutable builder, "\n")
+}
+
+function formatPos(pos: Pos): string {
+  return `${Int.toString(pos.line)}:${Int.toString(pos.column)}`
+}
+
+function writeNode(
+  mutable builder: StringBuilder,
+  depth: int,
+  kind: string,
+  pos: Pos,
+  attributes: string,
+) {
+  // Each attribute starts with a space.
+  writeLine(mutable builder, depth, `${kind} ${formatPos(pos)}${attributes}`)
+}
+
+function writeSlot(mutable builder: StringBuilder, depth: int, name: string, attributes: string) {
+  writeLine(mutable builder, depth, `.${name}${attributes}`)
+}
+
+function quoteText(text: string): string uses alloc {
+  // Escapes like the lex dump and also writes `"` as `\"`.
+  const parts = splitString(Lexer.escapeText(text), "\"")
+  return `"${Str.join(parts, "\\\"")}"`
+}
+
+function formatStringAttr(name: string, value: string): string uses alloc {
+  return ` ${name}=${quoteText(value)}`
+}
+
+function formatLabelAttr(label: string): string uses alloc {
+  if (label == "") {
+    return ""
+  }
+  return formatStringAttr("label", label)
+}
+
+function formatFlag(name: string, enabled: bool): string {
+  if (enabled) {
+    return ` ${name}`
+  }
+  return ""
+}
+
+function formatListAttr(name: string, values: Array<string>): string uses alloc {
+  if (Arrays.length(values) == 0) {
+    return ""
+  }
+  return ` ${name}=${Str.join(values, ",")}`
+}
+
+function dumpFile(mutable builder: StringBuilder, file: File) uses alloc {
+  writeLine(mutable builder, 0, "file")
+  if (Arrays.length(file.imports) > 0) {
+    writeSlot(mutable builder, 1, "imports", "")
+    for (const importDecl of Arrays.values(file.imports)) {
+      let alias = ""
+      if (importDecl.alias != "") {
+        alias = formatStringAttr("alias", importDecl.alias)
+      }
+      let names: Array<string> = []
+      for (const importName of Arrays.values(importDecl.names)) {
+        if (importName.local == importName.name) {
+          Arrays.push(mutable names, importName.name)
+        } else {
+          Arrays.push(mutable names, `${importName.name} as ${importName.local}`)
+        }
+      }
+      writeNode(
+        mutable builder,
+        2,
+        "import",
+        importDecl.pos,
+        `${alias}${formatListAttr("names", names)}${formatStringAttr("path", importDecl.path)}`,
+      )
+    }
+  }
+  if (Arrays.length(file.declarations) > 0) {
+    writeSlot(mutable builder, 1, "decls", "")
+    for (const declaration of Arrays.values(file.declarations)) {
+      dumpDecl(mutable builder, 2, declaration)
+    }
+  }
+}
+
+function dumpTypesSlot(
+  mutable builder: StringBuilder,
+  depth: int,
+  name: string,
+  attributes: string,
+  types: Array<TypeExpr>,
+) uses alloc {
+  if (Arrays.length(types) == 0) {
+    return
+  }
+  writeSlot(mutable builder, depth, name, attributes)
+  for (const typeExpr of Arrays.values(types)) {
+    dumpType(mutable builder, depth + 1, typeExpr)
+  }
+}
+
+function dumpTypeSlot(
+  mutable builder: StringBuilder,
+  depth: int,
+  name: string,
+  maybeType: Option<TypeExpr>,
+) uses alloc {
+  if (maybeType is Some(typeExpr)) {
+    writeSlot(mutable builder, depth, name, "")
+    dumpType(mutable builder, depth + 1, typeExpr)
+  }
+}
+
+function formatFromAttr(name: string): string uses alloc {
+  if (name == "") {
+    return ""
+  }
+  return formatStringAttr("from", name)
+}
+
+function dumpType(mutable builder: StringBuilder, depth: int, typeExpr: TypeExpr) uses alloc {
+  let name = ""
+  if (typeExpr.name != "") {
+    name = formatStringAttr("name", typeExpr.name)
+  }
+  if (typeExpr.typeofName != "") {
+    name = formatStringAttr("typeof", typeExpr.typeofName)
+  }
+  writeNode(
+    mutable builder,
+    depth,
+    "type",
+    typeExpr.pos,
+    `${name}${formatFlag("const", typeExpr.isConstant)}${formatFlag("func", typeExpr.isFunc)}${formatFlag("tuple", typeExpr.isTuple)}${formatListAttr("uses", typeExpr.effects)}${formatFromAttr(typeExpr.resultFrom)}`,
+  )
+  dumpTypesSlot(mutable builder, depth + 1, "args", "", typeExpr.arguments)
+  if (typeExpr.result is Some(result)) {
+    writeSlot(mutable builder, depth + 1, "result", "")
+    dumpType(mutable builder, depth + 2, result.value)
+  }
+}
+
+function dumpParameters(
+  mutable builder: StringBuilder,
+  depth: int,
+  parameters: Array<Param>,
+) uses alloc {
+  if (Arrays.length(parameters) == 0) {
+    return
+  }
+  writeSlot(mutable builder, depth, "params", "")
+  for (const parameter of Arrays.values(parameters)) {
+    writeNode(
+      mutable builder,
+      depth + 1,
+      "param",
+      parameter.pos,
+      `${formatStringAttr("name", parameter.name)}${formatFlag("mutable", parameter.isMutable)}${formatFlag("escaping", parameter.escaping)}`,
+    )
+    dumpTypeSlot(mutable builder, depth + 2, "type", parameter.type)
+    dumpExprSlot(mutable builder, depth + 2, "default", parameter.default)
+  }
+}
+
+function dumpBlockSlot(
+  mutable builder: StringBuilder,
+  depth: int,
+  name: string,
+  maybeBlock: Option<Block>,
+) uses alloc {
+  if (maybeBlock is Some(block)) {
+    writeSlot(mutable builder, depth, name, "")
+    dumpBlock(mutable builder, depth + 1, block)
+  }
+}
+
+function dumpExprSlot(
+  mutable builder: StringBuilder,
+  depth: int,
+  name: string,
+  maybeExpr: Option<Expr>,
+) uses alloc {
+  if (maybeExpr is Some(expression)) {
+    writeSlot(mutable builder, depth, name, "")
+    dumpExpr(mutable builder, depth + 1, expression)
+  }
+}
+
+function dumpPatternSlot(
+  mutable builder: StringBuilder,
+  depth: int,
+  name: string,
+  maybePattern: Option<Pattern>,
+) uses alloc {
+  if (maybePattern is Some(pattern)) {
+    writeSlot(mutable builder, depth, name, "")
+    dumpPattern(mutable builder, depth + 1, pattern)
+  }
+}
+
+function dumpBounds(
+  mutable builder: StringBuilder,
+  depth: int,
+  typeParameters: Array<string>,
+  bounds: Array<Array<TypeExpr>>,
+) uses alloc {
+  // One `bound` slot per type parameter that has constraints.
+  let index = 0
+  for (const traitBounds of Arrays.values(bounds)) {
+    if (Arrays.length(traitBounds) > 0 && index < Arrays.length(typeParameters)) {
+      dumpTypesSlot(
+        mutable builder,
+        depth,
+        "bound",
+        formatStringAttr("param", typeParameters[index]),
+        traitBounds,
+      )
+    }
+    index++
+  }
+}
+
+function dumpFunc(mutable builder: StringBuilder, depth: int, funcDecl: FuncDecl) uses alloc {
+  writeNode(
+    mutable builder,
+    depth,
+    "func",
+    funcDecl.pos,
+    `${formatStringAttr("name", funcDecl.name)}${formatFlag("export", funcDecl.exported)}${formatFlag("generator", funcDecl.generator)}${formatFlag("async", funcDecl.isAsync)}${formatListAttr("typeParams", funcDecl.typeParameters)}${formatListAttr("effectParams", funcDecl.effectParameters)}${formatListAttr("constParams", funcDecl.constantParameters)}${formatListAttr("uses", funcDecl.effects)}`,
+  )
+  dumpBounds(mutable builder, depth + 1, funcDecl.typeParameters, funcDecl.bounds)
+  dumpParameters(mutable builder, depth + 1, funcDecl.parameters)
+  dumpTypeSlot(mutable builder, depth + 1, "result", funcDecl.result)
+  if (Arrays.length(funcDecl.requires) > 0) {
+    writeSlot(mutable builder, depth + 1, "requires", "")
+    for (const condition of Arrays.values(funcDecl.requires)) {
+      dumpExpr(mutable builder, depth + 2, condition)
+    }
+  }
+  if (Arrays.length(funcDecl.ensures) > 0) {
+    writeSlot(mutable builder, depth + 1, "ensures", "")
+    for (const pattern of Arrays.values(funcDecl.ensures)) {
+      dumpPattern(mutable builder, depth + 2, pattern)
+    }
+  }
+  dumpBlockSlot(mutable builder, depth + 1, "body", funcDecl.body)
+}
+
+function dumpAttributeSlots(
+  mutable builder: StringBuilder,
+  depth: int,
+  attributes: Array<Attribute>,
+) uses alloc {
+  for (const attribute of Arrays.values(attributes)) {
+    writeSlot(mutable builder, depth, attribute.name, "")
+    writeNode(mutable builder, depth + 1, "attribute", attribute.pos, "")
+    for (const argument of Arrays.values(attribute.arguments)) {
+      if (argument.text is Some(written)) {
+        writeNode(
+          mutable builder,
+          depth + 2,
+          "arg",
+          argument.pos,
+          formatStringAttr("text", written),
+        )
+        continue
+      }
+      writeNode(
+        mutable builder,
+        depth + 2,
+        "arg",
+        argument.pos,
+        `${formatStringAttr("name", argument.name)}${formatStringAttr("type", argument.typeName)}${formatStringAttr("variant", argument.variant)}`,
+      )
+    }
+  }
+}
+
+function dumpFuncsSlot(
+  mutable builder: StringBuilder,
+  depth: int,
+  functions: Array<FuncDecl>,
+) uses alloc {
+  if (Arrays.length(functions) == 0) {
+    return
+  }
+  writeSlot(mutable builder, depth, "funcs", "")
+  for (const funcDecl of Arrays.values(functions)) {
+    dumpFunc(mutable builder, depth + 1, funcDecl)
+    dumpAttributeSlots(mutable builder, depth + 2, funcDecl.attributes)
+  }
+}
+
+function dumpFields(
+  mutable builder: StringBuilder,
+  depth: int,
+  fields: Array<FieldDecl>,
+) uses alloc {
+  for (const field of Arrays.values(fields)) {
+    writeNode(mutable builder, depth, "field", field.pos, formatStringAttr("name", field.name))
+    writeSlot(mutable builder, depth + 1, "type", "")
+    dumpType(mutable builder, depth + 2, field.type)
+    dumpExprSlot(mutable builder, depth + 1, "default", field.default)
+  }
+}
+
+function dumpDecl(mutable builder: StringBuilder, depth: int, declaration: Decl) uses alloc {
+  match (declaration) {
+    Decl.Func(funcDecl) => {
+      dumpFunc(mutable builder, depth, funcDecl)
+      dumpAttributeSlots(mutable builder, depth + 1, funcDecl.attributes)
+      // A member of an extern block names its block and library.
+      if (funcDecl.externBlock is Some(block)) {
+        writeSlot(mutable builder, depth + 1, "externBlock", "")
+        writeNode(
+          mutable builder,
+          depth + 2,
+          "extern",
+          block.pos,
+          formatStringAttr("library", block.library),
+        )
+      }
+    }
+    Decl.Const(constDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "const",
+        constDecl.pos,
+        `${formatStringAttr("name", constDecl.name)}${formatFlag("export", constDecl.exported)}`,
+      )
+      dumpTypeSlot(mutable builder, depth + 1, "type", constDecl.type)
+      dumpExprSlot(mutable builder, depth + 1, "value", Some(constDecl.value))
+    }
+    Decl.Struct(structDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "struct",
+        structDecl.pos,
+        `${formatStringAttr("name", structDecl.name)}${formatFlag("export", structDecl.exported)}${formatFlag("opaque", structDecl.opaque)}${formatListAttr("typeParams", structDecl.typeParameters)}${formatListAttr("constParams", structDecl.constantParameters)}`,
+      )
+      dumpBounds(mutable builder, depth + 1, structDecl.typeParameters, structDecl.bounds)
+      dumpTypesSlot(mutable builder, depth + 1, "implements", "", structDecl.implementations)
+      dumpTypesSlot(mutable builder, depth + 1, "derives", "", structDecl.derived)
+      if (Arrays.length(structDecl.fields) > 0) {
+        writeSlot(mutable builder, depth + 1, "fields", "")
+        dumpFields(mutable builder, depth + 2, structDecl.fields)
+      }
+    }
+    Decl.Enum(enumDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "enum",
+        enumDecl.pos,
+        `${formatStringAttr("name", enumDecl.name)}${formatFlag("export", enumDecl.exported)}${formatListAttr("typeParams", enumDecl.typeParameters)}`,
+      )
+      dumpBounds(mutable builder, depth + 1, enumDecl.typeParameters, enumDecl.bounds)
+      dumpTypesSlot(mutable builder, depth + 1, "implements", "", enumDecl.implementations)
+      dumpTypesSlot(mutable builder, depth + 1, "derives", "", enumDecl.derived)
+      if (Arrays.length(enumDecl.variants) > 0) {
+        writeSlot(mutable builder, depth + 1, "variants", "")
+        for (const variant of Arrays.values(enumDecl.variants)) {
+          writeNode(
+            mutable builder,
+            depth + 2,
+            "variant",
+            variant.pos,
+            formatStringAttr("name", variant.name),
+          )
+          dumpFields(mutable builder, depth + 3, variant.fields)
+        }
+      }
+    }
+    Decl.Distinct(distinctDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "distinct",
+        distinctDecl.pos,
+        `${formatStringAttr("name", distinctDecl.name)}${formatFlag("export", distinctDecl.exported)}${formatFlag("opaque", distinctDecl.opaque)}`,
+      )
+      dumpTypeSlot(mutable builder, depth + 1, "base", Some(distinctDecl.base))
+      dumpTypesSlot(mutable builder, depth + 1, "implements", "", distinctDecl.implementations)
+      dumpTypesSlot(mutable builder, depth + 1, "derives", "", distinctDecl.derived)
+      if (Arrays.length(distinctDecl.refinement) > 0) {
+        writeSlot(mutable builder, depth + 1, "refinement", "")
+        for (const pattern of Arrays.values(distinctDecl.refinement)) {
+          dumpPattern(mutable builder, depth + 2, pattern)
+        }
+      }
+    }
+    Decl.Alias(aliasDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "alias",
+        aliasDecl.pos,
+        `${formatStringAttr("name", aliasDecl.name)}${formatFlag("export", aliasDecl.exported)}${formatListAttr("typeParams", aliasDecl.typeParameters)}`,
+      )
+      dumpTypeSlot(mutable builder, depth + 1, "body", Some(aliasDecl.body))
+    }
+    Decl.Test(testDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "test",
+        testDecl.pos,
+        formatStringAttr("name", testDecl.name),
+      )
+      dumpBlockSlot(mutable builder, depth + 1, "body", Some(testDecl.body))
+    }
+    Decl.Trait(traitDecl) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "trait",
+        traitDecl.pos,
+        `${formatStringAttr("name", traitDecl.name)}${formatFlag("export", traitDecl.exported)}`,
+      )
+      dumpFuncsSlot(mutable builder, depth + 1, traitDecl.functions)
+    }
+    Decl.Impl(implDecl) => {
+      writeNode(mutable builder, depth, "impl", implDecl.pos, "")
+      dumpTypeSlot(mutable builder, depth + 1, "trait", Some(implDecl.traitType))
+      dumpTypeSlot(mutable builder, depth + 1, "type", Some(implDecl.type))
+      dumpFuncsSlot(mutable builder, depth + 1, implDecl.functions)
+    }
+  }
+}
+
+function dumpBlock(mutable builder: StringBuilder, depth: int, block: Block) uses alloc {
+  if (block.keywordPos is Some(keywordPos)) {
+    writeNode(mutable builder, depth, "block", keywordPos, " unsafe")
+  } else {
+    writeNode(mutable builder, depth, "block", block.pos, "")
+  }
+  for (const statement of Arrays.values(block.statements)) {
+    dumpStmt(mutable builder, depth + 1, statement)
+  }
+}
+
+function dumpStmt(mutable builder: StringBuilder, depth: int, statement: Stmt) uses alloc {
+  match (statement) {
+    Stmt.BlockStmt(block) => {
+      dumpBlock(mutable builder, depth, block)
+    }
+    Stmt.VarStmt(_, pos, isMutable, name, pattern, type, value) => {
+      let nameAttr = ""
+      if (name != "") {
+        nameAttr = formatStringAttr("name", name)
+      }
+      writeNode(mutable builder, depth, "var", pos, `${formatFlag("let", isMutable)}${nameAttr}`)
+      dumpPatternSlot(mutable builder, depth + 1, "pattern", pattern)
+      dumpTypeSlot(mutable builder, depth + 1, "type", type)
+      dumpExprSlot(mutable builder, depth + 1, "value", Some(value))
+    }
+    Stmt.AssignStmt(pos, target, value) => {
+      writeNode(mutable builder, depth, "assign", pos, "")
+      dumpExprSlot(mutable builder, depth + 1, "target", Some(target))
+      dumpExprSlot(mutable builder, depth + 1, "value", Some(value))
+    }
+    Stmt.CompoundAssignStmt(pos, target, operator, value) => {
+      writeNode(mutable builder, depth, "compound", pos, formatStringAttr("op", operator))
+      dumpExprSlot(mutable builder, depth + 1, "target", Some(target))
+      dumpExprSlot(mutable builder, depth + 1, "value", Some(value))
+    }
+    Stmt.ExprStmt(pos, expression) => {
+      writeNode(mutable builder, depth, "exprstmt", pos, "")
+      dumpExpr(mutable builder, depth + 1, expression)
+    }
+    Stmt.ReturnStmt(pos, value) => {
+      writeNode(mutable builder, depth, "return", pos, "")
+      if (value is Some(returned)) {
+        dumpExpr(mutable builder, depth + 1, returned)
+      }
+    }
+    Stmt.IfStmt(pos, condition, thenBlock, orElse) => {
+      writeNode(mutable builder, depth, "if", pos, "")
+      dumpExprSlot(mutable builder, depth + 1, "cond", Some(condition))
+      dumpBlockSlot(mutable builder, depth + 1, "then", Some(thenBlock))
+      if (orElse is Some(rest)) {
+        writeSlot(mutable builder, depth + 1, "else", "")
+        dumpStmt(mutable builder, depth + 2, rest)
+      }
+    }
+    Stmt.WhileStmt(pos, label, condition, body) => {
+      writeNode(mutable builder, depth, "while", pos, formatLabelAttr(label))
+      dumpExprSlot(mutable builder, depth + 1, "cond", Some(condition))
+      dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
+    }
+    Stmt.CForStmt(pos, label, init, condition, step, body) => {
+      writeNode(mutable builder, depth, "cfor", pos, formatLabelAttr(label))
+      if (init is Some(declaration)) {
+        writeSlot(mutable builder, depth + 1, "init", "")
+        dumpStmt(mutable builder, depth + 2, declaration)
+      }
+      dumpExprSlot(mutable builder, depth + 1, "cond", condition)
+      if (step is Some(stepStatement)) {
+        writeSlot(mutable builder, depth + 1, "step", "")
+        dumpStmt(mutable builder, depth + 2, stepStatement)
+      }
+      dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
+    }
+    Stmt.ForStmt(_, pos, label, name, iterable, body, reference, awaitPos) => {
+      // The `mutable` marker adds ` mutable`, and the entries form its
+      // index name. `for await` adds ` await`.
+      let referenceAttr = ""
+      if (reference is Some(marker)) {
+        referenceAttr = " mutable"
+        if (marker.indexName != "") {
+          referenceAttr = `${referenceAttr}${formatStringAttr("index", marker.indexName)}`
+        }
+      }
+      writeNode(
+        mutable builder,
+        depth,
+        "for",
+        pos,
+        `${formatStringAttr("name", name)}${referenceAttr}${formatFlag("await", awaitPos is Some(_))}${formatLabelAttr(label)}`,
+      )
+      dumpExprSlot(mutable builder, depth + 1, "iter", Some(iterable))
+      dumpBlockSlot(mutable builder, depth + 1, "body", Some(body))
+    }
+    Stmt.BreakStmt(pos, label) => {
+      writeNode(mutable builder, depth, "break", pos, formatLabelAttr(label))
+    }
+    Stmt.ContinueStmt(pos, label) => {
+      writeNode(mutable builder, depth, "continue", pos, formatLabelAttr(label))
+    }
+    Stmt.YieldStmt(pos, value, delegate, binding) => {
+      let bindingAttr = ""
+      if (binding is Some(bound)) {
+        bindingAttr = `${formatFlag("let", bound.isMutable)}${formatStringAttr("name", bound.name)}`
+      }
+      writeNode(
+        mutable builder,
+        depth,
+        "yield",
+        pos,
+        `${formatFlag("delegate", delegate)}${bindingAttr}`,
+      )
+      dumpExpr(mutable builder, depth + 1, value)
+    }
+  }
+}
+
+function dumpExpr(mutable builder: StringBuilder, depth: int, expression: Expr) uses alloc {
+  match (expression) {
+    Expr.IntLit(_, pos, text) => {
+      writeNode(mutable builder, depth, "int", pos, formatStringAttr("text", text))
+    }
+    Expr.FloatLit(_, pos, text) => {
+      writeNode(mutable builder, depth, "float", pos, formatStringAttr("text", text))
+    }
+    Expr.StringLit(_, pos, value, end) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "string",
+        pos,
+        `${formatStringAttr("value", value)} end=${formatPos(end)}`,
+      )
+    }
+    Expr.CharLit(_, pos, value) => {
+      writeNode(mutable builder, depth, "char", pos, formatStringAttr("value", value))
+    }
+    Expr.BoolLit(_, pos, value) => {
+      let text = "false"
+      if (value) {
+        text = "true"
+      }
+      writeNode(mutable builder, depth, "bool", pos, ` value=${text}`)
+    }
+    Expr.TemplateLit(_, pos, parts) => {
+      writeNode(mutable builder, depth, "template", pos, "")
+      for (const part of Arrays.values(parts)) {
+        dumpExpr(mutable builder, depth + 1, part)
+      }
+    }
+    Expr.TemplateParts(_, pos, parts) => {
+      writeNode(mutable builder, depth, "template-parts", pos, "")
+      for (const part of Arrays.values(parts)) {
+        writeLine(
+          mutable builder,
+          depth + 1,
+          `part ${formatPos(part.pos)}${formatStringAttr("raw", part.raw)}`,
+        )
+      }
+    }
+    Expr.Ident(_, pos, name) => {
+      writeNode(mutable builder, depth, "ident", pos, formatStringAttr("name", name))
+    }
+    Expr.FieldExpr(_, pos, target, name) => {
+      writeNode(mutable builder, depth, "field-expr", pos, formatStringAttr("name", name))
+      dumpExpr(mutable builder, depth + 1, target)
+    }
+    Expr.IsExpr(_, pos, subject, pattern) => {
+      writeNode(mutable builder, depth, "is", pos, "")
+      dumpExprSlot(mutable builder, depth + 1, "subject", Some(subject))
+      dumpPatternSlot(mutable builder, depth + 1, "pattern", Some(pattern))
+    }
+    Expr.IndexExpr(_, pos, target, index) => {
+      writeNode(mutable builder, depth, "index", pos, "")
+      dumpExprSlot(mutable builder, depth + 1, "target", Some(target))
+      dumpExprSlot(mutable builder, depth + 1, "index", Some(index))
+    }
+    Expr.MapLit(_, pos, typeArguments, keys, values) => {
+      writeNode(mutable builder, depth, "map", pos, "")
+      dumpTypesSlot(mutable builder, depth + 1, "typeargs", "", typeArguments)
+      let index = 0
+      for (const key of Arrays.values(keys)) {
+        dumpExprSlot(mutable builder, depth + 1, "key", Some(key))
+        dumpExprSlot(mutable builder, depth + 1, "val", Some(values[index]))
+        index++
+      }
+    }
+    Expr.CallExpr(_, pos, callee, typeArguments, arguments) => {
+      writeNode(
+        mutable builder,
+        depth,
+        "call",
+        pos,
+        formatFlag("tagged", isTaggedArguments(arguments)),
+      )
+      dumpExprSlot(mutable builder, depth + 1, "callee", Some(callee))
+      dumpTypesSlot(mutable builder, depth + 1, "typeargs", "", typeArguments)
+      if (Arrays.length(arguments) > 0) {
+        writeSlot(mutable builder, depth + 1, "args", "")
+        for (const argument of Arrays.values(arguments)) {
+          let nameAttr = ""
+          if (argument.name is Some(argumentName)) {
+            nameAttr = formatStringAttr("name", argumentName)
+          }
+          writeLine(
+            mutable builder,
+            depth + 2,
+            `arg${nameAttr}${formatFlag("mutable", argument.isMutable)}`,
+          )
+          dumpExpr(mutable builder, depth + 3, argument.value)
+        }
+      }
+    }
+    Expr.UnaryExpr(_, pos, operator, operand) => {
+      writeNode(mutable builder, depth, "unary", pos, formatStringAttr("op", operator))
+      dumpExpr(mutable builder, depth + 1, operand)
+    }
+    Expr.BinaryExpr(_, pos, operator, left, right) => {
+      writeNode(mutable builder, depth, "binary", pos, formatStringAttr("op", operator))
+      dumpExprSlot(mutable builder, depth + 1, "left", Some(left))
+      dumpExprSlot(mutable builder, depth + 1, "right", Some(right))
+    }
+    Expr.StructLit(_, pos, typeName, typeArguments, fields, spread) => {
+      let typeAttr = ""
+      if (typeName != "") {
+        typeAttr = formatStringAttr("type", typeName)
+      }
+      writeNode(mutable builder, depth, "structlit", pos, typeAttr)
+      dumpTypesSlot(mutable builder, depth + 1, "typeargs", "", typeArguments)
+      dumpExprSlot(mutable builder, depth + 1, "spread", spread)
+      if (Arrays.length(fields) > 0) {
+        writeSlot(mutable builder, depth + 1, "fields", "")
+        for (const field of Arrays.values(fields)) {
+          writeNode(
+            mutable builder,
+            depth + 2,
+            "init",
+            field.pos,
+            `${formatStringAttr("name", field.name)}${formatFlag("shorthand", field.isShorthand)}`,
+          )
+          dumpExpr(mutable builder, depth + 3, field.value)
+        }
+      }
+    }
+    Expr.ArrayLit(_, pos, elements, isTuple) => {
+      writeNode(mutable builder, depth, "array", pos, formatFlag("tuple", isTuple))
+      for (const element of Arrays.values(elements)) {
+        dumpExpr(mutable builder, depth + 1, element)
+      }
+    }
+    Expr.MatchExpr(_, pos, subject, arms) => {
+      writeNode(mutable builder, depth, "match", pos, "")
+      dumpExprSlot(mutable builder, depth + 1, "subject", Some(subject))
+      if (Arrays.length(arms) > 0) {
+        writeSlot(mutable builder, depth + 1, "arms", "")
+        for (const arm of Arrays.values(arms)) {
+          writeNode(mutable builder, depth + 2, "arm", arm.pos, "")
+          dumpPatternSlot(mutable builder, depth + 3, "pattern", Some(arm.pattern))
+          dumpExprSlot(mutable builder, depth + 3, "guard", arm.guard)
+          dumpExprSlot(mutable builder, depth + 3, "body", arm.body)
+          dumpBlockSlot(mutable builder, depth + 3, "block", arm.block)
+        }
+      }
+    }
+    Expr.BlockExpr(_, pos, block) => {
+      writeNode(mutable builder, depth, "blockexpr", pos, "")
+      dumpBlock(mutable builder, depth + 1, block)
+    }
+    Expr.ArrowExpr(_, pos, parameters, result, body, block) => {
+      writeNode(mutable builder, depth, "arrow", pos, "")
+      dumpParameters(mutable builder, depth + 1, parameters)
+      dumpTypeSlot(mutable builder, depth + 1, "result", result)
+      dumpExprSlot(mutable builder, depth + 1, "body", body)
+      dumpBlockSlot(mutable builder, depth + 1, "block", block)
+    }
+    Expr.AwaitExpr(_, pos, operand) => {
+      writeNode(mutable builder, depth, "await", pos, "")
+      dumpExpr(mutable builder, depth + 1, operand)
+    }
+    Expr.AsyncExpr(_, pos, body) => {
+      writeNode(mutable builder, depth, "async", pos, "")
+      dumpExpr(mutable builder, depth + 1, body)
+    }
+  }
+}
+
+function dumpPattern(mutable builder: StringBuilder, depth: int, pattern: Pattern) uses alloc {
+  match (pattern) {
+    Pattern.PatWildcard(_, pos) => {
+      writeNode(mutable builder, depth, "pat-wildcard", pos, "")
+    }
+    Pattern.PatName(_, pos, name) => {
+      writeNode(mutable builder, depth, "pat-name", pos, formatStringAttr("name", name))
+    }
+    Pattern.PatCtor(_, pos, enumName, name, arguments, bare) => {
+      let enumAttr = ""
+      if (enumName != "") {
+        enumAttr = formatStringAttr("enum", enumName)
+      }
+      writeNode(
+        mutable builder,
+        depth,
+        "pat-ctor",
+        pos,
+        `${enumAttr}${formatStringAttr("name", name)}${formatFlag("bare", bare)}`,
+      )
+      for (const argument of Arrays.values(arguments)) {
+        dumpPattern(mutable builder, depth + 1, argument)
+      }
+    }
+    Pattern.PatStruct(_, pos, fields) => {
+      writeNode(mutable builder, depth, "pat-struct", pos, "")
+      for (const field of Arrays.values(fields)) {
+        writeNode(
+          mutable builder,
+          depth + 1,
+          "fieldpat",
+          field.pos,
+          formatStringAttr("name", field.name),
+        )
+        dumpPattern(mutable builder, depth + 2, field.pattern)
+      }
+    }
+    Pattern.PatTuple(_, pos, arguments) => {
+      writeNode(mutable builder, depth, "pat-tuple", pos, "")
+      for (const argument of Arrays.values(arguments)) {
+        dumpPattern(mutable builder, depth + 1, argument)
+      }
+    }
+    Pattern.PatArray(_, pos, elements, rest) => {
+      writeNode(mutable builder, depth, "pat-array", pos, "")
+      for (const element of Arrays.values(elements)) {
+        dumpPattern(mutable builder, depth + 1, element)
+      }
+      dumpPatternSlot(mutable builder, depth + 1, "rest", rest)
+    }
+    Pattern.PatLit(_, pos, literal) => {
+      writeNode(mutable builder, depth, "pat-lit", pos, "")
+      dumpExpr(mutable builder, depth + 1, literal)
+    }
+    Pattern.PatOr(_, pos, alternatives) => {
+      writeNode(mutable builder, depth, "pat-or", pos, "")
+      for (const alternative of Arrays.values(alternatives)) {
+        dumpPattern(mutable builder, depth + 1, alternative)
+      }
+    }
+    Pattern.PatCompare(_, pos, operator, bound) => {
+      writeNode(mutable builder, depth, "pat-compare", pos, formatStringAttr("op", operator))
+      dumpExpr(mutable builder, depth + 1, bound)
+    }
+  }
+}

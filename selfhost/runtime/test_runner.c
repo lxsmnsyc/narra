@@ -1,13 +1,18 @@
 
 // Test runner
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#else
+#include <sys/wait.h>
 #include <signal.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
+#endif
 
 typedef struct narra_test_case {
   const char* name;
@@ -37,7 +42,9 @@ static void narra_test_child(const narra_test_case* c, int wfd) {
   narra_panic_pos = 1;
   // Line buffering keeps the output of a test that crashes.
   setvbuf(stdout, NULL, _IOLBF, 0);
+#ifndef _WIN32
   alarm(narra_test_limit());
+#endif
   NARRA_COPY_START();
   c->fn();
   narra_consts_release();
@@ -60,6 +67,7 @@ static const char* narra_test_opt(const char* a) {
   return a[1] == '-' ? a + 2 : a + 1;
 }
 
+#ifndef _WIN32
 // While a call runs, SIGTERM, SIGINT and SIGHUP are passed on to its child, so
 // killing this process does not orphan the child. Several threads may call at
 // once: a count of active calls (under a mutex) installs the handlers for the
@@ -153,8 +161,10 @@ static void narra_runner_detach(narra_runner_guard* guard) {
   pthread_mutex_unlock(&narra_runner_lock);
   pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);
 }
-// narra_test_run returns the exit code of the run.
-static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
+#endif
+// narra_test_parse reads the options; it returns -1 when the run goes on and
+// the exit code otherwise.
+static int narra_test_parse(int argc, char** argv, const char** filter_out, int* timing_out) {
   const char* filter = NULL;
   int timing = 0;
   for (int i = 1; i < argc; i++) {
@@ -175,6 +185,200 @@ static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
       return 2;
     }
   }
+  *filter_out = filter;
+  *timing_out = timing;
+  return -1;
+}
+
+#ifdef _WIN32
+// There is no fork on Windows. The runner starts the binary again for each
+// test, with NARRA_TEST_CHILD set to the number of the case and
+// NARRA_TEST_PIPE to an inheritable handle that takes the panic message. A
+// job object ends the child, and what it started, on a timeout or when this
+// process ends.
+typedef struct narra_test_reader {
+  HANDLE pipe;
+  char* text;
+  size_t length, capacity;
+} narra_test_reader;
+
+static DWORD WINAPI narra_test_drain(LPVOID argument) {
+  narra_test_reader* reader = (narra_test_reader*)argument;
+  char chunk[1024];
+  DWORD count;
+  while (ReadFile(reader->pipe, chunk, sizeof chunk, &count, NULL) && count > 0) {
+    if (reader->length + count + 1 > reader->capacity) {
+      size_t capacity = reader->capacity ? reader->capacity * 2 : 1024;
+      while (capacity < reader->length + count + 1) capacity *= 2;
+      char* bigger = realloc(reader->text, capacity);
+      if (!bigger) break;
+      reader->text = bigger;
+      reader->capacity = capacity;
+    }
+    memcpy(reader->text + reader->length, chunk, count);
+    reader->length += count;
+  }
+  return 0;
+}
+
+// Runs the case named by NARRA_TEST_CHILD, or returns -1 in the parent.
+static int narra_test_child_main(const narra_test_case* cases) {
+  const char* number = getenv("NARRA_TEST_CHILD");
+  if (!number || !*number) return -1;
+  const char* handle_text = getenv("NARRA_TEST_PIPE");
+  if (!handle_text) return 2;
+  long index = strtol(number, NULL, 10);
+  HANDLE handle = (HANDLE)(uintptr_t)_strtoui64(handle_text, NULL, 10);
+  // A test that starts this binary again must not run as a child itself.
+  _putenv("NARRA_TEST_CHILD=");
+  _putenv("NARRA_TEST_PIPE=");
+  int descriptor = _open_osfhandle((intptr_t)handle, _O_BINARY);
+  if (descriptor < 0) return 2;
+  narra_test_child(&cases[index], descriptor);
+  return 0;
+}
+
+// Starts the child for case index. Returns false when it cannot start.
+static bool narra_test_start(int index, HANDLE* process, HANDLE* job, HANDLE* read_end) {
+  SECURITY_ATTRIBUTES attributes;
+  memset(&attributes, 0, sizeof attributes);
+  attributes.nLength = sizeof attributes;
+  attributes.bInheritHandle = TRUE;
+  HANDLE write_end = NULL;
+  if (!CreatePipe(read_end, &write_end, &attributes, 0)) return false;
+  SetHandleInformation(*read_end, HANDLE_FLAG_INHERIT, 0);
+  char number[32], handle_text[32];
+  snprintf(number, sizeof number, "%d", index);
+  snprintf(handle_text, sizeof handle_text, "%llu", (unsigned long long)(uintptr_t)write_end);
+  wchar_t path[MAX_PATH * 4];
+  DWORD length = GetModuleFileNameW(NULL, path, (DWORD)(sizeof path / sizeof path[0]));
+  const wchar_t* original = GetCommandLineW();
+  size_t line_length = wcslen(original);
+  wchar_t* line = malloc((line_length + 1) * sizeof(wchar_t));
+  if (!line || length == 0 || length >= sizeof path / sizeof path[0]) {
+    CloseHandle(*read_end);
+    CloseHandle(write_end);
+    free(line);
+    return false;
+  }
+  memcpy(line, original, (line_length + 1) * sizeof(wchar_t));
+  SetEnvironmentVariableA("NARRA_TEST_CHILD", number);
+  SetEnvironmentVariableA("NARRA_TEST_PIPE", handle_text);
+  STARTUPINFOW startup;
+  memset(&startup, 0, sizeof startup);
+  startup.cb = sizeof startup;
+  PROCESS_INFORMATION information;
+  memset(&information, 0, sizeof information);
+  BOOL started = CreateProcessW(path, line, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &startup, &information);
+  free(line);
+  SetEnvironmentVariableA("NARRA_TEST_CHILD", NULL);
+  SetEnvironmentVariableA("NARRA_TEST_PIPE", NULL);
+  CloseHandle(write_end);
+  if (!started) {
+    CloseHandle(*read_end);
+    return false;
+  }
+  *job = CreateJobObjectW(NULL, NULL);
+  if (*job) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+    memset(&limits, 0, sizeof limits);
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    SetInformationJobObject(*job, JobObjectExtendedLimitInformation, &limits, sizeof limits);
+    AssignProcessToJobObject(*job, information.hProcess);
+  }
+  ResumeThread(information.hThread);
+  CloseHandle(information.hThread);
+  *process = information.hProcess;
+  return true;
+}
+
+// narra_test_run returns the exit code of the run.
+static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
+  const char* filter = NULL;
+  int timing = 0;
+  int parsed = narra_test_parse(argc, argv, &filter, &timing);
+  if (parsed >= 0) return parsed;
+  int child = narra_test_child_main(cases);
+  if (child >= 0) return child;
+  int passed = 0, failed = 0;
+  unsigned limit = narra_test_limit();
+  int index = 0;
+  for (const narra_test_case* c = cases; c->name; c++, index++) {
+    if (filter && !strstr(c->name, filter)) continue;
+    fflush(stdout);
+    fflush(stderr);
+    int64_t start = narra_test_now_ms();
+    HANDLE process = NULL, job = NULL, read_end = NULL;
+    if (!narra_test_start(index, &process, &job, &read_end)) {
+      fprintf(stderr, "cannot start a child process\n");
+      return 1;
+    }
+    narra_test_reader reader;
+    memset(&reader, 0, sizeof reader);
+    reader.pipe = read_end;
+    HANDLE thread = CreateThread(NULL, 0, narra_test_drain, &reader, 0, NULL);
+    bool timed_out = WaitForSingleObject(process, (DWORD)limit * 1000) == WAIT_TIMEOUT;
+    if (timed_out) {
+      if (job) TerminateJobObject(job, 3);
+      else TerminateProcess(process, 3);
+      WaitForSingleObject(process, INFINITE);
+    }
+    if (thread) {
+      WaitForSingleObject(thread, INFINITE);
+      CloseHandle(thread);
+    }
+    DWORD status = 0;
+    GetExitCodeProcess(process, &status);
+    CloseHandle(process);
+    if (job) CloseHandle(job);
+    CloseHandle(read_end);
+    char* msg = reader.text;
+    if (!msg) {
+      msg = malloc(1);
+      reader.length = 0;
+    }
+    msg[reader.length] = 0;
+    int64_t ms = narra_test_now_ms() - start;
+    char tbuf[48] = "";
+    if (timing) snprintf(tbuf, sizeof tbuf, " (%lld ms)", (long long)ms);
+    if (timed_out) {
+      printf("FAIL - %s: timed out after %u s%s\n", c->name, limit, tbuf);
+      failed++;
+    } else if (status == 0) {
+      printf("ok - %s%s\n", c->name, tbuf);
+      passed++;
+    } else if (status == 101) {
+      char* nl = strchr(msg, '\n');
+      const char* where = "";
+      const char* text = msg;
+      if (nl) { *nl = 0; where = msg; text = nl + 1; }
+      printf("FAIL - %s: %s (%s)%s\n", c->name, text, where, tbuf);
+      failed++;
+    } else if (status >= 0xC0000000u) {
+      printf("FAIL - %s: crashed with status 0x%08lX%s\n", c->name, (unsigned long)status, tbuf);
+      failed++;
+    } else {
+      printf("FAIL - %s: exited with code %lu%s\n", c->name, (unsigned long)status, tbuf);
+      failed++;
+    }
+    free(msg);
+  }
+  if (filter && passed + failed == 0) {
+    printf("no tests match \"%s\"\n", filter);
+    fflush(stdout);
+    return 1;
+  }
+  printf("%d passed, %d failed\n", passed, failed);
+  fflush(stdout);
+  return failed ? 1 : 0;
+}
+#else
+// narra_test_run returns the exit code of the run.
+static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
+  const char* filter = NULL;
+  int timing = 0;
+  int parsed = narra_test_parse(argc, argv, &filter, &timing);
+  if (parsed >= 0) return parsed;
   int passed = 0, failed = 0;
   unsigned limit = narra_test_limit();
   for (const narra_test_case* c = cases; c->name; c++) {
@@ -248,3 +452,4 @@ static int narra_test_run(const narra_test_case* cases, int argc, char** argv) {
   fflush(stdout);
   return failed ? 1 : 0;
 }
+#endif

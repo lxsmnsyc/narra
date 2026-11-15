@@ -247,7 +247,7 @@ The test runner is written in Narra (`selfhost/tests`). `scripts/test.sh` builds
 - Async `from` through a stored handle: after `const h = keep(items)`, a write to the value of `await h` is not E0978 while `items` is used, and the debug copy check (`NARRA_CHECK_COPIES`) reports the hidden copy (D109 item 9).
 - Async I/O, first build (`std/async/net`, `std/async/file`): `host` must be a numeric IPv4 or IPv6 address, with no name lookup. A `std/async/file` call does the blocking read or write, so it blocks the loop for as long as the file call takes, then gives the other ready tasks one turn. TCP only: no UDP, no Unix sockets, no shutdown of one direction, no timeouts other than an `AsyncTime.sleep` raced against the call.
 - `@layout` and C-callable functions (node c-abi-export).
-- `std/test` on Windows: `Test.panics` and `Test.panicsWith` use `fork` and `alarm` (D65), so they are POSIX only. A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails. The test runner (D66) forks per test, so it is POSIX only too. Report formats other than the text lines are not there yet.
+- `std/test` on Windows: see SPEC section 3, "`std/process`, `std/test` and `std/async` on Windows". `Test.panics` runs the closure in the same process there, with no timeout; the test runner starts the binary again per test. Report formats other than the text lines are not there yet.
 
 ## Differences from the spec
 

@@ -1,0 +1,100 @@
+import * as Build from "std/build"
+import * as Env from "std/env"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Options from "std/option"
+import * as Process from "std/process"
+import * as Str from "std/string"
+import { Os } from "std/build"
+
+function shellName(): string {
+  if (Build.os == Os.Windows) {
+    return "cmd"
+  }
+  return "sh"
+}
+
+function shellFlag(): string {
+  if (Build.os == Os.Windows) {
+    return "/c"
+  }
+  return "-c"
+}
+
+function scratchFile(): string uses io, alloc {
+  if (Build.os == Os.Windows) {
+    // cmd reads a path only with backslashes. Wine sets no TEMP; its Z: drive is the root of the host.
+    const temporary = Env.get("TEMP")
+    if (temporary is Some(directory)) {
+      return `${directory}\\narra_windows_process.txt`
+    }
+    const fallback = Options.withDefault(Env.get("TMPDIR"), "/tmp")
+    return `Z:${Str.replace(fallback, "/", "\\")}\\narra_windows_process.txt`
+  }
+  return `${Options.withDefault(Env.get("TMPDIR"), "/tmp")}/narra_windows_process.txt`
+}
+
+function readScript(): string {
+  if (Build.os == Os.Windows) {
+    return "set /p line= & echo done"
+  }
+  return "read line; echo done"
+}
+
+function printCommand(): string {
+  if (Build.os == Os.Windows) {
+    return "type"
+  }
+  return "cat"
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const shell = shellName()
+  const flag = shellFlag()
+
+  // The exit code of the child comes back as it is.
+  const exited = Process.run(shell, [flag, "exit 3"])
+  if (exited is Ok(result)) {
+    const #[code, output, errors] = result
+    print(
+      `exit code ${Int.toString(code)}, ${Int.toString(Str.length(output))} bytes out, ${Int.toString(Str.length(errors))} bytes err`,
+    )
+  }
+
+  // Each stream fills far more than a pipe holds; neither may block the child.
+  let lines = ""
+  for (let number = 1; number <= 20000; number++) {
+    lines = `${lines}line ${Int.toString(number)}\n`
+  }
+  const file = scratchFile()
+  const _written = Fs.writeText(file, lines)
+  const outputRun = Process.run(shell, [flag, `${printCommand()} ${file}`])
+  if (outputRun is Ok(result)) {
+    const #[code, output, errors] = result
+    print(
+      `stdout run exit ${Int.toString(code)}, reaches the end ${Show.show(Str.contains(output, "line 20000"))}, large ${Show.show(Str.length(output) > 100000)}, stderr empty ${Show.show(Str.length(errors) == 0)}`,
+    )
+  }
+  const errorRun = Process.run(shell, [flag, `${printCommand()} ${file} 1>&2`])
+  if (errorRun is Ok(result)) {
+    const #[code, output, errors] = result
+    print(
+      `stderr run exit ${Int.toString(code)}, reaches the end ${Show.show(Str.contains(errors, "line 20000"))}, stdout empty ${Show.show(Str.length(output) == 0)}`,
+    )
+  }
+  const _removed = Fs.removeFile(file)
+
+  // The standard input is closed, so a shell that reads it sees the end and goes on.
+  const reading = Process.run(shell, [flag, readScript()])
+  if (reading is Ok(result)) {
+    const #[code, output, _] = result
+    print(`read exit ${Int.toString(code)}, went on ${Show.show(Str.contains(output, "done"))}`)
+  }
+
+  // A command that does not exist.
+  const missing = Process.run("narra-no-such-command", [])
+  if (missing is Err(message)) {
+    print(message)
+  }
+  return 0
+}

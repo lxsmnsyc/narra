@@ -87,6 +87,235 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
   *err = lstr_from_cstr("processes are not available on WASI");
   return false;
 }
+#elif defined(_WIN32)
+#include <winsock2.h>
+#include <windows.h>
+
+// Processes on Windows: CreateProcessW with a command line built from the
+// arguments, one pipe per output stream with a thread that drains it, and a
+// job object that ends the child when this process ends. There is no fork and
+// no signal forwarding; a console sends Ctrl-C to the child itself.
+typedef struct narra_proc_buf {
+  char* p;
+  size_t len, cap;
+} narra_proc_buf;
+
+typedef struct narra_proc_reader {
+  HANDLE pipe;
+  narra_proc_buf buffer;
+} narra_proc_reader;
+
+static void narra_proc_append(narra_proc_buf* b, const char* chunk, size_t n) {
+  if (b->len + n > b->cap) {
+    size_t cap = b->cap ? b->cap * 2 : 4096;
+    while (cap < b->len + n) cap *= 2;
+    char* bigger = realloc(b->p, cap);
+    if (!bigger) return;
+    b->p = bigger;
+    b->cap = cap;
+  }
+  memcpy(b->p + b->len, chunk, n);
+  b->len += n;
+}
+
+static DWORD WINAPI narra_proc_drain(LPVOID argument) {
+  narra_proc_reader* reader = (narra_proc_reader*)argument;
+  char chunk[4096];
+  DWORD count;
+  while (ReadFile(reader->pipe, chunk, sizeof chunk, &count, NULL) && count > 0) {
+    narra_proc_append(&reader->buffer, chunk, count);
+  }
+  return 0;
+}
+
+// The text of a Windows error code, with the POSIX wording for the two codes
+// a missing program gives so the message matches the other systems.
+static const char* narra_proc_message(DWORD code, char* buffer, size_t size) {
+  if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) return "No such file or directory";
+  if (code == ERROR_ACCESS_DENIED) return "Permission denied";
+  DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, buffer, (DWORD)size, NULL);
+  while (n > 0 && (buffer[n - 1] == '\r' || buffer[n - 1] == '\n' || buffer[n - 1] == ' ' || buffer[n - 1] == '.')) buffer[--n] = 0;
+  if (n == 0) snprintf(buffer, size, "error %lu", (unsigned long)code);
+  return buffer;
+}
+
+// Appends one argument to the command line in the form CommandLineToArgvW
+// reads back as the same argument.
+static bool narra_proc_quote(narra_proc_buf* line, const char* text, size_t length) {
+  bool plain = length > 0;
+  for (size_t i = 0; i < length; i++) {
+    char c = text[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '"') plain = false;
+  }
+  if (plain) {
+    narra_proc_append(line, text, length);
+    return true;
+  }
+  narra_proc_append(line, "\"", 1);
+  size_t i = 0;
+  while (i < length) {
+    size_t slashes = 0;
+    while (i < length && text[i] == '\\') { slashes++; i++; }
+    if (i == length) {
+      // Backslashes before the closing quote are doubled.
+      for (size_t k = 0; k < slashes * 2; k++) narra_proc_append(line, "\\", 1);
+    } else if (text[i] == '"') {
+      for (size_t k = 0; k < slashes * 2 + 1; k++) narra_proc_append(line, "\\", 1);
+      narra_proc_append(line, "\"", 1);
+      i++;
+    } else {
+      for (size_t k = 0; k < slashes; k++) narra_proc_append(line, "\\", 1);
+      narra_proc_append(line, text + i, 1);
+      i++;
+    }
+  }
+  narra_proc_append(line, "\"", 1);
+  return true;
+}
+
+// The UTF-16 form of the command line, or NULL when it is not valid UTF-8.
+static wchar_t* narra_proc_wide(const char* text, size_t length) {
+  int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, NULL, 0);
+  if (count <= 0 && length > 0) return NULL;
+  wchar_t* wide = malloc(((size_t)count + 1) * sizeof(wchar_t));
+  if (!wide) return NULL;
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, wide, count);
+  wide[count] = 0;
+  return wide;
+}
+
+static void narra_proc_close_handle(HANDLE* handle) {
+  if (*handle != NULL && *handle != INVALID_HANDLE_VALUE) CloseHandle(*handle);
+  *handle = NULL;
+}
+
+// A pipe whose read end stays with this process; only the write end is inherited.
+static bool narra_proc_pipe(HANDLE* read_end, HANDLE* write_end) {
+  SECURITY_ATTRIBUTES attributes;
+  memset(&attributes, 0, sizeof attributes);
+  attributes.nLength = sizeof attributes;
+  attributes.bInheritHandle = TRUE;
+  if (!CreatePipe(read_end, write_end, &attributes, 0)) return false;
+  return SetHandleInformation(*read_end, HANDLE_FLAG_INHERIT, 0) != 0;
+}
+
+// Runs cmd (found through PATH) with argv[0..argc) as its arguments and its
+// standard input closed. Returns false with *err set when the process cannot
+// start. The exit code is the one the process ended with.
+static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, lstr** out, lstr** errout, lstr** err) {
+  if (!narra_io_no_nul(cmd, err)) return false;
+  for (int64_t i = 0; i < argc; i++) {
+    if (!narra_io_no_nul(argv[i], err)) return false;
+  }
+  narra_proc_buf line = {0};
+  narra_proc_quote(&line, cmd->data, (size_t)cmd->len);
+  for (int64_t i = 0; i < argc; i++) {
+    narra_proc_append(&line, " ", 1);
+    narra_proc_quote(&line, argv[i]->data, (size_t)argv[i]->len);
+  }
+  wchar_t* wide = line.p ? narra_proc_wide(line.p, line.len) : NULL;
+  free(line.p);
+  if (!wide) {
+    *err = narra_io_fail(cmd->data, cmd->len, "arguments are not valid UTF-8");
+    return false;
+  }
+  HANDLE out_read = NULL, out_write = NULL, err_read = NULL, err_write = NULL, input = NULL, job = NULL;
+  SECURITY_ATTRIBUTES inherit;
+  memset(&inherit, 0, sizeof inherit);
+  inherit.nLength = sizeof inherit;
+  inherit.bInheritHandle = TRUE;
+  input = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (input == INVALID_HANDLE_VALUE) input = NULL;
+  if (!input || !narra_proc_pipe(&out_read, &out_write) || !narra_proc_pipe(&err_read, &err_write)) {
+    char text[256];
+    *err = narra_io_fail(cmd->data, cmd->len, narra_proc_message(GetLastError(), text, sizeof text));
+    narra_proc_close_handle(&input);
+    narra_proc_close_handle(&out_read); narra_proc_close_handle(&out_write);
+    narra_proc_close_handle(&err_read); narra_proc_close_handle(&err_write);
+    free(wide);
+    return false;
+  }
+  fflush(NULL);
+  // Only the three standard handles pass to the child, so a process started
+  // by another thread at the same time does not hold these pipes open.
+  HANDLE inherited[3] = {input, out_write, err_write};
+  STARTUPINFOEXW startup;
+  memset(&startup, 0, sizeof startup);
+  startup.StartupInfo.cb = sizeof startup;
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = input;
+  startup.StartupInfo.hStdOutput = out_write;
+  startup.StartupInfo.hStdError = err_write;
+  SIZE_T list_size = 0;
+  InitializeProcThreadAttributeList(NULL, 1, 0, &list_size);
+  startup.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(list_size);
+  bool listed = startup.lpAttributeList != NULL &&
+    InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &list_size) &&
+    UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof inherited, NULL, NULL);
+  PROCESS_INFORMATION process;
+  memset(&process, 0, sizeof process);
+  BOOL started = FALSE;
+  DWORD failure = ERROR_OUTOFMEMORY;
+  if (listed) {
+    started = CreateProcessW(NULL, wide, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW, NULL, NULL, &startup.StartupInfo, &process);
+    if (!started) failure = GetLastError();
+  }
+  if (startup.lpAttributeList) {
+    if (listed) DeleteProcThreadAttributeList(startup.lpAttributeList);
+    free(startup.lpAttributeList);
+  }
+  free(wide);
+  narra_proc_close_handle(&input);
+  narra_proc_close_handle(&out_write);
+  narra_proc_close_handle(&err_write);
+  if (!started) {
+    char text[256];
+    *err = narra_io_fail(cmd->data, cmd->len, narra_proc_message(failure, text, sizeof text));
+    narra_proc_close_handle(&out_read);
+    narra_proc_close_handle(&err_read);
+    return false;
+  }
+  // A job that ends its processes when its handle closes, so the child does
+  // not outlive this process. A failure here leaves the child unguarded.
+  job = CreateJobObjectW(NULL, NULL);
+  if (job) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+    memset(&limits, 0, sizeof limits);
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof limits);
+    AssignProcessToJobObject(job, process.hProcess);
+  }
+  ResumeThread(process.hThread);
+  narra_proc_close_handle(&process.hThread);
+  narra_proc_reader readers[2];
+  memset(readers, 0, sizeof readers);
+  readers[0].pipe = out_read;
+  readers[1].pipe = err_read;
+  HANDLE threads[2];
+  for (int i = 0; i < 2; i++) threads[i] = CreateThread(NULL, 0, narra_proc_drain, &readers[i], 0, NULL);
+  for (int i = 0; i < 2; i++) {
+    if (threads[i]) {
+      WaitForSingleObject(threads[i], INFINITE);
+      CloseHandle(threads[i]);
+    } else {
+      // No thread for this stream: drain it here, so the child cannot block on a full pipe.
+      narra_proc_drain(&readers[i]);
+    }
+  }
+  WaitForSingleObject(process.hProcess, INFINITE);
+  DWORD exit_code = 0;
+  GetExitCodeProcess(process.hProcess, &exit_code);
+  narra_proc_close_handle(&process.hProcess);
+  narra_proc_close_handle(&job);
+  narra_proc_close_handle(&out_read);
+  narra_proc_close_handle(&err_read);
+  *code = (int64_t)exit_code;
+  *out = narra_io_lossy(readers[0].buffer.p ? readers[0].buffer.p : "", readers[0].buffer.len);
+  *errout = narra_io_lossy(readers[1].buffer.p ? readers[1].buffer.p : "", readers[1].buffer.len);
+  free(readers[0].buffer.p);
+  free(readers[1].buffer.p);
+  return true;
+}
 #else
 #include <fcntl.h>
 #include <poll.h>

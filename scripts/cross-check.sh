@@ -36,7 +36,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # Programs that run on every row. Each has a golden testdata/<name>.out.
-samples="hello arrays closures enums maps int_to_string float_shortest c_interop windows_runtime windows_path"
+samples="hello arrays closures enums maps int_to_string float_shortest c_interop windows_runtime windows_path windows_process windows_async"
 
 # Rows whose runtime work has not landed. A failure on one is reported as an
 # expected failure.

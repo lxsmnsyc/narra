@@ -44,4 +44,4 @@ A page on the website where a reader types Narra, sees diagnostics, and runs the
 Parked by the maintainer on 2026-11-14. D123 keeps the measurements (narrac in wasm, clang in the page); refine from it when the REPL is picked up.
 
 
-Outline until js-interop-design writes D123; refine the children from it.
+D123 is written and parks the REPL: no children yet. If it returns, check, `fmt` and the emitted C run in the page with narrac's wasm package (npm-narrac). Running a program loads clang built for wasm on first press (about 19.8 MB) or uses a server. That choice is not made. The orchestrator sets priority later.

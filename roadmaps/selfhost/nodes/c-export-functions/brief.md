@@ -40,7 +40,7 @@ provides: []
 depends_on:
   - on: c-abi-design
     kind: hard
-    why: D122 fixes the signatures, ownership, panic and init rules
+    why: D122 fixes the signatures, ownership, panic and init rules; D123 builds C libraries, Node addons and wasm glue on them
 ---
 # C-callable Narra functions: @export(C)
 
@@ -50,12 +50,13 @@ depends_on:
 
 ## Context
 
-C-layout struct types in signatures come from node c-layout. Whichever of the two lands second extends the other's signature check; both add rows to `externs.nra`, so the second rebases and keeps both.
+The signature check covers only the types D122 allows without C layouts. Node c-layout is parked and is not on this path (D123 item 9).
 
 ## Acceptance
 
 - [ ] A sample with a C source file (`[link]` or a test harness step) that calls an exported Narra function as a callback (for example `qsort` with an exported comparator) runs clean under AddressSanitizer and the leak check.
 - [ ] A panic inside an exported function does what D122 says, tested in the exits suite.
+- [ ] The export wrapper is the function the glue of node-addon and wasm-js-glue calls. A panic inside an export called through it is stopped at the boundary as D122 says, tested in the exits suite.
 - [ ] Errors in E1620-E1629 for signatures D122 rejects.
 - [ ] `sh scripts/test.sh` passes.
 

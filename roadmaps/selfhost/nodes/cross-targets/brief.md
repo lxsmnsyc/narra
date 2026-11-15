@@ -46,7 +46,7 @@ depends_on:
 
 ## Goal
 
-`sh scripts/cross-check.sh` builds the sample programs for every row of `narrac targets` from one host and runs each where it can, comparing output with the `.out` goldens. This is the check the portability nodes use, and the source of release binaries and of any per-platform npm builds js-interop-design picks.
+`sh scripts/cross-check.sh` builds the sample programs for every row of `narrac targets` from one host and runs each where it can, comparing output with the `.out` goldens. This is the check the portability nodes use, and the source of release binaries and of the per-platform packages npm-narrac builds (D123).
 
 ## Context
 

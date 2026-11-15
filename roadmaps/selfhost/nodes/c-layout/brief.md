@@ -2,7 +2,7 @@
 id: c-layout
 title: "C layouts for structs and enums"
 status: todo
-priority: could
+priority: later
 type: feature
 story:
 early: false
@@ -39,7 +39,7 @@ provides: []
 depends_on:
   - on: c-abi-design
     kind: hard
-    why: D122 fixes the attribute spelling and the allowed field types
+    why: D122 fixes the attribute spelling and the allowed field types; parked until C users ask (D123 item 9)
 ---
 # C layouts for structs and enums
 
@@ -57,3 +57,7 @@ The layout attribute D122 picks makes a struct match a C struct (declared field 
 ## Sizing
 
 M: one attribute, one check, one emitter path.
+
+## Parked (2026-11-15)
+
+Values cross Node-API as `napi_value` and the wasm glue as scalars, strings and bytes, so C struct layouts are on neither D123 path. This node keeps its brief for C users. No node depends on it. E1610-E1619 stay reserved.

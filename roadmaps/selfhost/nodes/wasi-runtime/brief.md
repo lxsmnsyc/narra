@@ -58,18 +58,16 @@ Probe 2026-11-14 (zig 0.17.1, wasmtime 50.0.1):
 2. The async loop on wasi: timers and file reads through `poll_oneoff`, or a loop with no I/O sources. Decide in the node and say which in SPEC.
 3. `narrac test` on wasi: the test runner forks per test. Either run tests in one process (a panic ends the run) or say that `test --target Wasi-Wasm32` is not supported (new error). Prefer the error unless the one-process form is small.
 4. A sample set: every `testdata/*.nra` that uses no left-out module builds and runs under wasmtime with the same output. Record which samples are skipped and why in the node's outcome.
+5. `Env.args` on wasi reads `args_sizes_get` and `args_get`. Today it reads `/proc/self/cmdline` everywhere but macOS, so every wasi program sees no arguments.
+6. `Fs.writeText` to `/dev/stdout` and `/dev/stderr` writes descriptors 1 and 2 on wasi, because WASI has no `/dev`. narrac prints all its output this way.
 
-## Added from js-interop-design (2026-11-15)
-
-The spike built the seed for wasm32-wasi and found two bugs that hit every wasi program. Fix both here, with a sample for each that runs under wasmtime:
-- `Env.args` reads `/proc/self/cmdline`, which WASI does not have. Use the `argc`/`argv` the runtime gets from `main` (or `args_get`).
-- Output goes to `/dev/stdout` and `/dev/stderr`, which WASI does not have. Write to file descriptors 1 and 2 instead.
-The spike's patches are on branch spike/js-interop-design, in its outcome and log; read them, but write the fix to fit this runtime.
+Items 5 and 6 were added from D123 (item 7) and the js-interop-design spike. The spike's patches are in that node's log; read them and write the fix to fit this runtime.
 
 ## Acceptance
 
 - [ ] The sample set passes under wasmtime, run by node cross-targets' script (this node runs it by hand before that script exists).
 - [ ] A wasi build that calls `Process.run` is E0991.
+- [ ] A wasi build of a sample that prints its arguments, and writes through `/dev/stdout`, matches its golden under wasmtime.
 - [ ] `sh scripts/test.sh` passes on the host; the native runtime is unchanged (debug copy check exit 0).
 
 ## Sizing

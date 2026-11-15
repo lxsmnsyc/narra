@@ -39,18 +39,23 @@ The remaining phases p4 to p6 in one batch, grouped on 2026-11-14 from the open 
 
 Children:
 
-- p4 packages: deps-manifest-lock, deps-fetch, deps-resolve, package-dependencies, package-exports, workspace-design (spike, gate), selfhost-layout (last, after the seed update).
-- p5 distribution: target-table, wasi-runtime, windows-runtime, windows-process-async, cross-targets, js-interop-design (spike as a goal debate, gate), release-binaries (gate, own pull request).
+- p4 packages: deps-manifest-lock, deps-fetch, deps-resolve (both amended from D101), package-dependencies, package-exports, workspace-design (spike, gate; done, D101), selfhost-layout (last, after the seed update).
+- p5 distribution: target-table, wasi-runtime, windows-runtime, windows-process-async, cross-targets, js-interop-design (spike as a goal debate, gate; done, D123), narrac-wasm (after wasi-runtime), npm-narrac (after narrac-wasm and cross-targets), c-abi-design (spike, gate; D122 for the C library chain), release-binaries (gate, own pull request).
 - p6 docs: dead-code-check, let-never-reassigned, guide-tools, install-guide, textmate-grammar, website (gate), narra-skills (gate).
-- Not in the batch: workspaces (children from D101), website-repl (children from D123), and the C library chain c-abi-design, c-layout, c-export-functions, c-abi-export, held until D123 says whether Node-API is used. node-addon was dropped for js-interop-design (2026-11-14).
+- Not in the batch, with the reason:
+  - workspaces and its six children (workspace-manifest, workspace-loader, git-member-deps, workspace-commands, workspace-lsp, repo-workspace): the maintainer kept them out, and they need deps-fetch, deps-resolve and package-dependencies landed first. They start in the next batch.
+  - c-export-functions, c-abi-export, node-addon, wasm-js-glue (M each): they wait for the maintainer to read D122. They edit the parser, emitter and driver, which many batch children already edit. They start in the next batch, after c-abi-design.
+  - c-layout: parked, on neither D123 path.
+  - website-repl: parked by the maintainer; D123 proposes no children.
+  - std-serve, js-client, node-addon-async: outlines in D123, not scheduled.
 
 ## Order and shared files
 
 - Machine: 8 GB, at most four building workers at once; hold new builds while load is above 30.
-- Gates first: workspace-design and js-interop-design start in the first wave so the maintainer reads D101 and D123 while the other children run.
+- Gates first: c-abi-design starts in the first wave so the maintainer reads D122 while the other children run. workspace-design and js-interop-design are done and their gates passed.
 - Most nodes touch `selfhost/src/*.nra`; feature logic goes in its own module where it can, shared files carry dispatch rows only. The second to land rebases and keeps both sides.
 - `diagnostics.nra` is sorted by code and guarded by the `codes` suite: insert rows at their code position, never append.
-- Codes: deps E0430-E0479, dead-code-check E1500-E1509, let-never-reassigned E1510-E1519, distribution E1600-E1604 (target-table and the runtime nodes).
+- Codes: deps E0430-E0479, dead-code-check E1500-E1509, let-never-reassigned E1510-E1519, distribution E1600-E1604 (target-table and the runtime nodes). Reserved for later batches: E1610-E1639 (C chain), E1640-E1649 (node-addon), E1650-E1659 (wasm-js-glue).
 - Generated files (`stdtext.nra`, `runtime*.nra`) only through `sh scripts/test.sh --suite generated --update`; after each landing, run the generated and guide suites.
 - The dependency suites need `git` on PATH and in the Linux check image, with local fixtures only.
 - selfhost-layout moves every file in `selfhost/src/` and changes every C name; it runs alone after every other code child has landed.

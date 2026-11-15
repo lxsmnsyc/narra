@@ -1,7 +1,7 @@
 ---
 id: js-interop-design
 title: "Spike: Narra in JS and TS packages, and the website REPL"
-status: active
+status: done
 priority: could
 type: spike
 story: batch-16

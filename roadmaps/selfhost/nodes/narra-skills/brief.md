@@ -1,7 +1,7 @@
 ---
 id: narra-skills
 title: Agent skills for Narra
-status: todo
+status: done
 priority: could
 type: docs
 story: batch-16

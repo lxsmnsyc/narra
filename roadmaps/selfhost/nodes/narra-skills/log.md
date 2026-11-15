@@ -7,3 +7,4 @@
 - Eval tasks: first versions failed on `args` unused and on `.length` in a package. Fixed with a `[[binary]]` in the starter `narra.toml` and `Arrays.length`.
 - `claude plugin marketplace add` and the plugin eval command were refused by the sandbox. Not retried. `claude plugin validate .` passes.
 - Plugin layout: first tried source `./skills/narra` with `skills: ["./"]`; `validate` lists no contents either way, so I used the documented default (root source, `skills/<name>/SKILL.md`).
+- 2026-11-16: wrote case.yaml and scaffold.sh per task, prepare-eval.sh; trial on f3-queue; ran all 40 runs (19/20 with, 15/20 without). See outcome.md.

@@ -1,7 +1,7 @@
 ---
 id: docs-search
 title: "Search for the docs"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-17

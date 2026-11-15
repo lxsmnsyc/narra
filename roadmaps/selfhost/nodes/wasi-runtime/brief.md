@@ -1,7 +1,7 @@
 ---
 id: wasi-runtime
 title: "Runtime and std on wasm32-wasi"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-16
@@ -58,6 +58,13 @@ Probe 2026-11-14 (zig 0.17.1, wasmtime 50.0.1):
 2. The async loop on wasi: timers and file reads through `poll_oneoff`, or a loop with no I/O sources. Decide in the node and say which in SPEC.
 3. `narrac test` on wasi: the test runner forks per test. Either run tests in one process (a panic ends the run) or say that `test --target Wasi-Wasm32` is not supported (new error). Prefer the error unless the one-process form is small.
 4. A sample set: every `testdata/*.nra` that uses no left-out module builds and runs under wasmtime with the same output. Record which samples are skipped and why in the node's outcome.
+
+## Added from js-interop-design (2026-11-15)
+
+The spike built the seed for wasm32-wasi and found two bugs that hit every wasi program. Fix both here, with a sample for each that runs under wasmtime:
+- `Env.args` reads `/proc/self/cmdline`, which WASI does not have. Use the `argc`/`argv` the runtime gets from `main` (or `args_get`).
+- Output goes to `/dev/stdout` and `/dev/stderr`, which WASI does not have. Write to file descriptors 1 and 2 instead.
+The spike's patches are on branch spike/js-interop-design, in its outcome and log; read them, but write the fix to fit this runtime.
 
 ## Acceptance
 

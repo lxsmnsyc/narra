@@ -41,6 +41,8 @@ export const LANGUAGES = {
   narra: narra(),
   sh: sh(),
   bash: sh(),
+  // The PowerShell samples are one-line commands with a pipe, which the shell grammar reads right.
+  powershell: sh(),
   json: json(),
   ts: typescript(),
   toml: toml(),

@@ -2,7 +2,7 @@
 // build read the info string the same way.
 
 /** The languages the site highlights, and `text` for output that is plain on purpose. */
-export const FENCE_LANGUAGES = ['narra', 'sh', 'bash', 'json', 'ts', 'toml', 'lua', 'text'];
+export const FENCE_LANGUAGES = ['narra', 'sh', 'bash', 'powershell', 'json', 'ts', 'toml', 'lua', 'text'];
 
 const FILE_LANGUAGES: Record<string, string> = {
   nra: 'narra',

@@ -2,6 +2,27 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-16, end of batch-16
+
+Run of `bench/run.sh -n 9` at commit 0c5e8373 on `feat/batch-16`, same machine and toolchains as the batch-13 run below. No agent was running. The load average was 2.94 (1 minute) at the start and 2.52 at the end, above the 2 this file asks for, so read small differences as noise.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | output     |
+| --------- | ----- | ----- | ----- | ---------- |
+| fib       | 0.111 | 0.129 | 0.113 | 39088169   |
+| sieve     | 0.132 | 0.144 | 0.133 | 1270607    |
+| matmul    | 0.106 | 0.205 | 0.119 | 3547800000 |
+| strings   | 0.218 | 0.299 | 0.358 | 100000     |
+| interp    | 0.186 | 0.252 | 0.172 | 972838     |
+| particles | 0.067 | 0.076 | 0.094 | 6996184    |
+| dot       | 0.034 | 0.138 | 0.059 | 800        |
+| compiler  | 0.381 | -     | -     | peak memory 200 MB |
+
+Every program is within 2% of batch-13 and batch-15 except `sieve`, which is back to its batch-13 level (0.132 s against 0.156 s at batch-15).
+
+Instructions retired by `narrac emit selfhost` on the batch-16 source (median of 5, each compiler built from its seed with `cc -O2 -DNARRA_RELEASE`, load average about 3 to 4): 3.561G with the main compiler (batch-15) and 3.596G with the batch-16 compiler (+1.0%, inside the 2% layout spread of an unchanged tree). The main compiler on the main source takes 3.452G, so the source grew about 3% in work (85,632 to 88,392 lines in `selfhost/src`). narrac grows from 5,080,720 to 5,313,992 bytes (+4.6%). The seed is 256,026 lines. The compiler row rises from 0.377 s and 195 MB to 0.381 s and 200 MB.
+
 ## 2026-11-14, end of batch-15
 
 Run of `bench/run.sh -n 9` at commit 23535ecb on `feat/batch-15`, same machine and toolchains as the batch-13 run below. No agent was running. The load average was 3.16 (1 minute) at the start and 3.64 at the end, above the 2 this file asks for, so read small differences as noise.

@@ -59,10 +59,11 @@ function findExecutableName(row) {
 }
 
 function detectLibc(platform) {
-  // Only Linux has two C libraries; the Node report says which one this process runs on.
+  // Step 1: only Linux has two C libraries.
   if (platform !== "linux") {
     return "";
   }
+  // Step 2: the Node report says which one this process runs on.
   const report = process.report && process.report.getReport();
   if (report && report.header && report.header.glibcVersionRuntime) {
     return "glibc";
@@ -84,8 +85,9 @@ function findHostRow() {
 }
 
 function findHostTarget() {
-  // A wasm narrac cannot detect its host, so the loader passes NARRA_HOST_TARGET. An unmapped
-  // platform passes nothing: narrac then reports E0989 only for a program that imports std/build.
+  // Step 1: a wasm narrac cannot detect its host, so the loader passes NARRA_HOST_TARGET.
+  // Step 2: an unmapped platform passes nothing, and narrac then reports E0989 only for a
+  // program that imports std/build.
   const row = findHostRow();
   return row ? row.target : undefined;
 }

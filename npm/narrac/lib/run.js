@@ -2,14 +2,25 @@
 
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const { findExecutableName, findHostRow, findHostTarget } = require("./platform.js");
-const { runWasi } = require("./wasi.js");
+const { runWasi, waitBriefly } = require("./wasi.js");
 
 let cachedModule;
 let cachedKey = "";
 
+function findExitStatus(result) {
+  // Step 1: a normal exit has its code.
+  if (result.status !== null) {
+    return result.status;
+  }
+  // Step 2: a child ended by a signal gives 128 plus the signal number, as a shell reports it.
+  const number = result.signal === null ? undefined : os.constants.signals[result.signal];
+  return number === undefined ? 1 : 128 + number;
+}
+
 function findRunner() {
-  // NARRAC_WASM=1 picks the wasm package even where a native package is installed.
+  // Step 1: NARRAC_WASM=1 picks the wasm package even where a native package is installed.
   if (process.env.NARRAC_WASM !== "1") {
     const row = findHostRow();
     if (row) {
@@ -36,7 +47,7 @@ function findRunner() {
 }
 
 function loadModule(wasmPath) {
-  // One compile per process; every call then makes a fresh instance.
+  // Step 1: compile once per process; every call then makes a fresh instance.
   if (cachedModule === undefined || cachedKey !== wasmPath) {
     cachedModule = new WebAssembly.Module(fs.readFileSync(wasmPath));
     cachedKey = wasmPath;
@@ -45,7 +56,8 @@ function loadModule(wasmPath) {
 }
 
 function buildWasmEnvironment(base) {
-  // The loader names the host, because a wasm narrac cannot detect it. A caller's value wins.
+  // Step 1: the loader names the host, because a wasm narrac cannot detect it. A caller's value
+  // wins.
   const environment = { ...base };
   const target = findHostTarget();
   if (environment.NARRA_HOST_TARGET === undefined && target !== undefined) {
@@ -71,7 +83,7 @@ function runCaptured(args, options = {}) {
       throw result.error;
     }
     return {
-      status: result.status === null ? 1 : result.status,
+      status: findExitStatus(result),
       stdout: result.stdout,
       stderr: result.stderr,
     };
@@ -102,7 +114,7 @@ function runInherited(args) {
     if (result.error) {
       throw result.error;
     }
-    return result.status === null ? 1 : result.status;
+    return findExitStatus(result);
   }
   // The wasm module writes to descriptors 1 and 2 as it goes.
   return runWasi(loadModule(runner.path), {
@@ -124,6 +136,7 @@ function writeAll(descriptor, bytes) {
       if (error.code !== "EAGAIN") {
         throw error;
       }
+      waitBriefly();
     }
   }
 }

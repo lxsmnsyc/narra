@@ -11,7 +11,18 @@ class NarracError extends Error {
 }
 
 function toList(files) {
-  return typeof files === "string" ? [files] : files;
+  const list = typeof files === "string" ? [files] : files;
+  // Step 1: narrac reads a name that starts with "-" as a flag and its check and emit commands
+  // have no "--", so such a name is refused here instead of changing what the command does.
+  for (const file of list) {
+    if (file.startsWith("-")) {
+      throw new NarracError(
+        `narrac: a file name must not start with "-": ${file}. Write ./${file}.`,
+        2,
+      );
+    }
+  }
+  return list;
 }
 
 function parseDiagnostics(file, result) {

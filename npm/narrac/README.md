@@ -22,3 +22,11 @@ hot loop. Set `NARRAC_WASM=1` to use the wasm package even where a native packag
 A wasm compiler cannot detect its host, so the loader sets `NARRA_HOST_TARGET` from
 `process.platform` and `process.arch`. A value you set yourself wins. On a platform with no row
 the variable stays unset, and narrac reports E0989 only for a program that imports `std/build`.
+
+The wasm fallback takes POSIX paths only: a path with a drive letter (`C:\src\main.nra`) or a
+backslash does not work there. On Windows use the native `narrac-win32-x64` package, which is
+installed by default on a 64-bit Windows; the wasm package is a fallback for platforms with no
+native package.
+
+A file name passed to `check` or `emit` must not start with `-`, because the command would read it
+as a flag. Write `./-name.nra` instead; the API refuses such a name with an error.

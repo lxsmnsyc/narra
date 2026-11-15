@@ -69,16 +69,20 @@ Children:
 
 Checks that wait for the batch seed update, collected from the children:
 
-- `sh scripts/cross-check.sh` with the seed check on, for Windows-X86_64 and Wasi-Wasm32 (cross-targets, windows-runtime, wasi-runtime).
-- `sh scripts/wasm-build.sh` with its default seed input (narrac-wasm).
-- `narrac build --target Windows-X86_64 selfhost`; if it builds, add the `narrac-win32-x64` package and row to `npm/` and `scripts/npm-package.sh` (npm-narrac dropped it on a `poll.h` failure before windows-process-async landed).
+- [x] `sh scripts/cross-check.sh` with the seed check on, for Windows-X86_64 and Wasi-Wasm32 (cross-targets, windows-runtime, wasi-runtime). Done: all 13 samples and the seed check pass on Windows-X86_64 (wine), 9 ran and 4 left out on Wasi-Wasm32, after the fixes in 415086a0 and a0767ff8.
+- [x] `sh scripts/wasm-build.sh` with its default seed input (narrac-wasm). Done: 6509609 bytes, 1027727 bytes brotli.
+- [x] `narrac build --target Windows-X86_64 selfhost`; if it builds, add the `narrac-win32-x64` package and row to `npm/` and `scripts/npm-package.sh` (npm-narrac dropped it on a `poll.h` failure before windows-process-async landed). Done: the build works, the exe runs `check` and `emit` under wine, the package and row are added and `npm-package.sh` packs it (5.3 MB tarball, not published).
 - The narra-skills eval run, alone, with its cost recorded.
 
 ## Acceptance
 
 - [ ] Every child is done, or moved out of the batch with a reason in this brief.
-- [ ] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
-- [ ] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
-- [ ] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
+- [x] `sh scripts/test.sh` and `sh scripts/linux-check.sh` pass on the story branch.
+  - Evidence: `test.sh: PASS, 10063 cases in 177s`; `linux-check: PASS in 412s` (tree at commit 0c5e8373).
+- [x] The seed is regenerated and `sh selfhost/bootstrap.sh` reports it current.
+  - Evidence: `sh scripts/seed-update.sh` printed `seed is current` and `seed unchanged` after the Windows stdout fix (commit 0c94fe8a).
+- [x] A debug-built compiler runs `emit selfhost` with `NARRA_CHECK_COPIES=1` and exits 0.
+  - Evidence: stage 2 C built with `cc -O1 -g` and no `-DNARRA_RELEASE`; `NARRA_CHECK_COPIES=1 narrac emit selfhost` exit=0.
 - [ ] A fresh review of the whole story branch, before the pull request.
-- [ ] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.
+- [x] `bench/BASELINE.md` has an end-of-batch row; `narrac emit selfhost` instructions do not rise by more than the noise.
+  - Evidence: instructions 3.561G (main compiler) to 3.596G (batch-16 compiler) on the batch-16 source, +1.0%, inside the 2% spread.

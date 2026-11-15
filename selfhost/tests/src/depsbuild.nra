@@ -27,11 +27,24 @@ const CASE_NAMES = [
   "build-error-no-sources",
   "build-error-unexported",
   "build-error-export-file",
+  "build-mixed-tags",
+  "build-locked-edited",
+  "build-error-lock-unreadable",
+  "build-error-lock-unwritable",
+  "build-error-no-cache",
+  "build-error-no-manifest",
+  "build-error-undeclared-dependency",
 ]
 
 const NO_GIT_PATH = "PATH=/nonexistent"
 
 // $1 is the lock file; the last [[package]] table and the blank line before it are removed.
+// $1 is the lock file; every content hash becomes zeros.
+const BREAK_CONTENT_SCRIPT = "sed 's|^content = .*|content = \"0000000000000000000000000000000000000000\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\""
+
+// $1 is the folder; it loses its write permission, and the exit code is 0 when it is still writable.
+const LOCK_FOLDER_SCRIPT = "chmod a-w \"$1\"; [ -w \"$1\" ]"
+
 const DROP_LAST_ENTRY_SCRIPT = "n=$(grep -n '^\\[\\[package\\]\\]' \"$1\" | tail -1 | cut -d: -f1); head -n $((n - 2)) \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\""
 
 export function collectBuildCases(context: Context): Array<TestCase> uses alloc {
@@ -52,7 +65,11 @@ function chooseFixture(variant: string): string {
     variant == "build-locked" ||
       variant == "build-locked-transitive" ||
       variant == "build-stale-lock" ||
-      variant == "build-error-lock-mismatch"
+      variant == "build-error-lock-mismatch" ||
+      variant == "build-locked-edited" ||
+      variant == "build-error-lock-unreadable" ||
+      variant == "build-error-lock-unwritable" ||
+      variant == "build-error-no-cache"
   ) {
     return "app"
   }
@@ -61,8 +78,20 @@ function chooseFixture(variant: string): string {
 
 function findErrorText(code: string): string {
   // The printed error has no code, so each code is found by a part of its message.
+  if (code == "E0443") {
+    return "was expected"
+  }
+  if (code == "E0444") {
+    return "no cache folder"
+  }
   if (code == "E0452") {
     return "narra.lock records commit"
+  }
+  if (code == "E0457") {
+    return "has no narra.toml"
+  }
+  if (code == "E0458") {
+    return "cannot read or write"
   }
   if (code == "E0460") {
     return "is not in the cache"
@@ -304,10 +333,7 @@ function runLockMismatch(
     return Err(`building: ${Common.describeRun(first)}`)
   }
   const lockPath = Path.join(appFolder, "narra.lock")
-  const broken = Shell.runScript(
-    "sed 's|^content = .*|content = \"0000000000000000000000000000000000000000\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"",
-    [lockPath],
-  )
+  const broken = Shell.runScript(BREAK_CONTENT_SCRIPT, [lockPath])
   if (broken.code != 0) {
     return Err(`cannot change the lock: ${Str.trim(broken.errorOutput)}`)
   }
@@ -319,6 +345,126 @@ function runLockMismatch(
     ["build", "-o", "app.bin", appFolder],
   )
   return expectErrorText(second, "E0452")
+}
+
+function runMixedTags(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Path.join(caseFolder, "run.out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const first = runNarrac(context, scratch, scratch.work, [], ["run", "-sanitize", appFolder])
+  const checked = Common.expectRun(first, 0, want.value)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  const lock = Fs.readText(Path.join(appFolder, "narra.lock"))
+  if (lock is Err(message)) {
+    return Err(message)
+  }
+  if (
+    !Str.contains(lock.value, "tag = \"v1.0.0\"") ||
+      !Str.contains(lock.value, "tag = \"pkg/v1.0.0\"")
+  ) {
+    return Err(`the lock does not record both tags:\n${lock.value}`)
+  }
+  // The lock and the cache are enough: no git command runs.
+  const again = runNarrac(context, scratch, scratch.work, [NO_GIT_PATH], ["check", appFolder])
+  if (again.code != 0) {
+    return Err(`checking with the cache only: ${Common.describeRun(again)}`)
+  }
+  const locked = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [NO_GIT_PATH],
+    ["pkg", "--locked", appFolder],
+  )
+  if (locked.code != 0) {
+    return Err(`locked load: ${Common.describeRun(locked)}`)
+  }
+  for (const wanted of Arrays.values(["module \"rootpkg/text\"", "module \"pkg/text\""])) {
+    if (!Str.contains(locked.output, wanted)) {
+      return Err(`the package dump has no ${wanted}:\n${locked.output}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runLockedEdited(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const built = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (built.code != 0) {
+    return Err(`building: ${Common.describeRun(built)}`)
+  }
+  const broken = Shell.runScript(BREAK_CONTENT_SCRIPT, [Path.join(appFolder, "narra.lock")])
+  if (broken.code != 0) {
+    return Err(`cannot change the lock: ${Str.trim(broken.errorOutput)}`)
+  }
+  const locked = runNarrac(context, scratch, scratch.work, [], ["pkg", "--locked", appFolder])
+  return expectErrorText(locked, "E0443")
+}
+
+function runLockUnreadable(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  // A folder where the lock should be cannot be read as text.
+  const made = Shell.runScript("mkdir \"$1/narra.lock\"", [appFolder])
+  if (made.code != 0) {
+    return Err(`cannot make the folder: ${Str.trim(made.errorOutput)}`)
+  }
+  const result = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [],
+    ["build", "-o", "app.bin", appFolder],
+  )
+  return expectErrorText(result, "E0458")
+}
+
+function runLockUnwritable(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const locked = Shell.runScript(LOCK_FOLDER_SCRIPT, [appFolder])
+  if (locked.code == 0) {
+    print("deps/build-error-lock-unwritable: skipped, the folder is writable for this user")
+    return Ok(true)
+  }
+  const result = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [],
+    ["build", "-o", "app.bin", appFolder],
+  )
+  return expectErrorText(result, "E0458")
+}
+
+function runNoCache(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const result = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    ["NARRA_CACHE=", "HOME="],
+    ["build", "-o", "app.bin", appFolder],
+  )
+  return expectErrorText(result, "E0444")
 }
 
 function runBuilt(
@@ -350,6 +496,21 @@ function runBuilt(
   }
   if (variant == "build-error-lock-mismatch") {
     return runLockMismatch(context, scratch, appFolder)
+  }
+  if (variant == "build-mixed-tags") {
+    return runMixedTags(context, scratch, appFolder, caseFolder)
+  }
+  if (variant == "build-locked-edited") {
+    return runLockedEdited(context, scratch, appFolder)
+  }
+  if (variant == "build-error-lock-unreadable") {
+    return runLockUnreadable(context, scratch, appFolder)
+  }
+  if (variant == "build-error-lock-unwritable") {
+    return runLockUnwritable(context, scratch, appFolder)
+  }
+  if (variant == "build-error-no-cache") {
+    return runNoCache(context, scratch, appFolder)
   }
   const want = Common.readExpected(Path.join(caseFolder, "error.txt"))
   if (want is Err(message)) {

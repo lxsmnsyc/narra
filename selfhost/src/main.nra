@@ -53,7 +53,7 @@ import * as Audit from "narrac/tools/audit"
 import * as Depcache from "narrac/driver/depcache"
 import * as Depresolve from "narrac/driver/depresolve"
 import * as Deplocked from "narrac/driver/deplocked"
-import { parseManifest } from "narrac/driver/manifest"
+import { LoadError, parseManifest } from "narrac/driver/manifest"
 import { parseLock, formatLock } from "narrac/driver/lockfile"
 import { quoteGo } from "narrac/syntax/parser"
 import * as Arrays from "std/array"
@@ -93,10 +93,21 @@ export function run(arguments: Array<string>): int uses io, alloc {
     return triviaFile(arguments[3], true)
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "pkg") {
-    return pkgDump(arguments[2])
+    return pkgDump(arguments[2], false)
+  }
+  if (Arrays.length(arguments) == 4 && arguments[1] == "pkg" && arguments[2] == "--codes") {
+    return pkgDump(arguments[3], true)
+  }
+  if (
+    Arrays.length(arguments) == 5 &&
+      arguments[1] == "pkg" &&
+      arguments[2] == "--codes" &&
+      arguments[3] == "--deps"
+  ) {
+    return depsDump(arguments[4], true)
   }
   if (Arrays.length(arguments) == 4 && arguments[1] == "pkg" && arguments[2] == "--deps") {
-    return depsDump(arguments[3])
+    return depsDump(arguments[3], false)
   }
   if (
     Arrays.length(arguments) >= 4 &&
@@ -214,16 +225,23 @@ function writeStdout(text: string): int uses io, alloc {
   return 0
 }
 
-function pkgDump(path: string): int uses io, alloc {
+function pkgDump(path: string, withCodes: bool): int uses io, alloc {
   const loaded = Modules.load(path)
   if (loaded is Err(errors)) {
-    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errors))
+    const _ = Fs.writeText("/dev/stderr", formatLoadErrors(errors, withCodes))
     return 1
   }
   return writeStdout(Modules.dump(loaded.value))
 }
 
-function depsDump(path: string): int uses io, alloc {
+function formatLoadErrors(errors: Array<LoadError>, withCodes: bool): string uses alloc {
+  if (withCodes) {
+    return Modules.errorTextWithCodes(errors)
+  }
+  return Modules.errorText(errors)
+}
+
+function depsDump(path: string, withCodes: bool): int uses io, alloc {
   const text = Fs.readText(`${path}/narra.toml`)
   if (text is Err(message)) {
     printError(message)
@@ -231,7 +249,7 @@ function depsDump(path: string): int uses io, alloc {
   }
   const parsed = parseManifest(text.value)
   if (parsed is Err(error)) {
-    const _ = Fs.writeText("/dev/stderr", Modules.errorText([error]))
+    const _ = Fs.writeText("/dev/stderr", formatLoadErrors([error], withCodes))
     return 1
   }
   let output = `version ${quoteGo(parsed.value.version)}\n`
@@ -246,7 +264,7 @@ function depsDump(path: string): int uses io, alloc {
     }
     const entries = parseLock(lockText.value)
     if (entries is Err(error)) {
-      const _ = Fs.writeText("/dev/stderr", Modules.errorText([error]))
+      const _ = Fs.writeText("/dev/stderr", formatLoadErrors([error], withCodes))
       return 1
     }
     const formatted = formatLock(entries.value)

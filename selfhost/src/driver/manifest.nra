@@ -3,6 +3,8 @@
 // with basic or literal strings and arrays of strings, and comments. Bytes
 // are compared as in Go; whitespace is ASCII only (Str.trim).
 import { splitString, substring } from "narrac/driver/textops"
+import * as Char from "std/char"
+import * as Int from "std/int"
 import * as Str from "std/string"
 import { quoteGo } from "narrac/syntax/parser"
 import { Fix } from "narrac/driver/fixes"
@@ -425,25 +427,30 @@ function readDependency(
   )
 }
 
-export function isVersion(text: string): bool {
-  const length = Str.length(text)
-  let parts = 0
-  let digits = 0
-  for (const index of Ranges.between(0, length)) {
-    const code = Str.byteAt(text, index)
-    if (code >= 48 && code <= 57) {
-      digits++
-    } else if (code == 46 && digits > 0) {
-      parts++
-      digits = 0
-    } else {
+export function isVersion(text: string): bool uses alloc {
+  const parts = splitString(text, ".")
+  if (Arrays.length(parts) != 3) {
+    return false
+  }
+  for (const part of Arrays.values(parts)) {
+    if (part == "") {
+      return false
+    }
+    for (const index of Ranges.between(0, Str.length(part))) {
+      const code = Str.byteAt(part, index)
+      if (code < 48 || code > 57) {
+        return false
+      }
+    }
+    // A part that does not fit in an int is rejected, not read as 0.
+    if (Int.parse(part, 10) is Err(_)) {
       return false
     }
   }
-  return parts == 2 && digits > 0
+  return true
 }
 
-function isValidPackageName(name: string): bool {
+export function isValidPackageName(name: string): bool {
   const length = Str.length(name)
   if (length == 0 || !isLetter(Str.byteAt(name, 0))) {
     return false
@@ -547,6 +554,24 @@ function parseValue(text: string): Result<Value, string> uses alloc {
   return Ok(Value.VStr(item))
 }
 
+function readUnicodeEscape(text: string, start: int): Result<string, string> uses alloc {
+  if (start + 4 > Str.length(text)) {
+    return Err("unsupported escape \\u")
+  }
+  const digits = substring(text, start, start + 4)
+  const parsed = Int.parse(digits, 16)
+  if (parsed is Err(_)) {
+    return Err("unsupported escape \\u")
+  }
+  if (Str.startsWith(digits, "-")) {
+    return Err("unsupported escape \\u")
+  }
+  if (Char.fromCode(parsed.value) is Some(character)) {
+    return Ok(Str.fromChar(character))
+  }
+  return Err("unsupported escape \\u")
+}
+
 export function parseString(text: string): Result<#[string, int], string> uses alloc {
   const length = Str.length(text)
   if (length == 0 || (Str.byteAt(text, 0) != QUOTE && Str.byteAt(text, 0) != APOSTROPHE)) {
@@ -567,6 +592,15 @@ export function parseString(text: string): Result<#[string, int], string> uses a
         Str.append(mutable builder, "\n")
       } else if (escaped == 116) {
         Str.append(mutable builder, "\t")
+      } else if (escaped == 114) {
+        Str.append(mutable builder, "\r")
+      } else if (escaped == 117) {
+        const decoded = readUnicodeEscape(text, index + 1)
+        if (decoded is Err(message)) {
+          return Err(message)
+        }
+        Str.append(mutable builder, decoded.value)
+        index = index + 4
       } else if (escaped == QUOTE || escaped == BACKSLASH) {
         Str.append(mutable builder, substring(text, index, index + 1))
       } else {

@@ -25,20 +25,75 @@ function createResolveError(code: string, message: string): LoadError {
   return LoadError { code, file: "", line: 0, column: 1, message }
 }
 
+struct FoundTag {
+  fetched: Fetched
+  tag: string
+}
+
+function readCachedName(path: string): string uses io, alloc {
+  const text = Fs.readText(`${path}/narra.toml`)
+  if (text is Err(_)) {
+    return ""
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(_)) {
+    return ""
+  }
+  return parsed.value.name
+}
+
+function findCachedTag(
+  git: string,
+  name: string,
+  version: string,
+  locked: Array<LockEntry>,
+): string uses io, alloc {
+  // The lock names the tag it was made from, so the version is never read from another tag.
+  for (const entry of Arrays.values(locked)) {
+    if (
+      entry.name == name &&
+        entry.git == git &&
+        entry.version == version &&
+        Fs.isDir(checkoutPath(git, entry.tag))
+    ) {
+      return entry.tag
+    }
+  }
+  const memberTag = `${name}/v${version}`
+  if (Fs.isDir(checkoutPath(git, memberTag))) {
+    return memberTag
+  }
+  // A plain tag of a repository with several packages holds one of them, so its name must match.
+  const plainTag = `v${version}`
+  if (
+    Fs.isDir(checkoutPath(git, plainTag)) && readCachedName(checkoutPath(git, plainTag)) == name
+  ) {
+    return plainTag
+  }
+  return ""
+}
+
+function fetchTag(git: string, tag: string): Result<FoundTag, LoadError> uses io, alloc {
+  const fetched = fetchVersion(git, tag)
+  if (fetched is Err(error)) {
+    return Err(error)
+  }
+  return Ok(FoundTag { fetched: copy(fetched.value), tag })
+}
+
 function findTag(
   git: string,
   name: string,
   version: string,
   isOverride: bool,
-): Result<Fetched, LoadError> uses io, alloc {
+  locked: Array<LockEntry>,
+): Result<FoundTag, LoadError> uses io, alloc {
   const memberTag = `${name}/v${version}`
   const plainTag = `v${version}`
   // A version already in the cache needs no git command.
-  if (Fs.isDir(checkoutPath(git, memberTag))) {
-    return fetchVersion(git, memberTag)
-  }
-  if (Fs.isDir(checkoutPath(git, plainTag))) {
-    return fetchVersion(git, plainTag)
+  const cachedTag = findCachedTag(git, name, version, locked)
+  if (cachedTag != "") {
+    return fetchTag(git, cachedTag)
   }
   const listed = listVersions(git, name)
   if (listed is Err(error)) {
@@ -67,10 +122,10 @@ function findTag(
     )
   }
   // The version is listed, so one of the two tags exists. Member tags win, as in listVersions.
-  const member = fetchVersion(git, memberTag)
+  const member = fetchTag(git, memberTag)
   if (member is Err(error)) {
     if (error.code == "E0442") {
-      return fetchVersion(git, plainTag)
+      return fetchTag(git, plainTag)
     }
     return Err(error)
   }
@@ -128,6 +183,7 @@ function pushRequirements(mutable queue: Array<Requirement>, manifest: Manifest)
 export function resolveDependencies(
   roots: Array<Manifest>,
   overrides: Array<Dependency>,
+  locked: Array<LockEntry>,
 ): Result<Array<LockEntry>, LoadError> uses io, alloc {
   let overrideByName: Map<string, Dependency> = Map {}
   for (const override of Arrays.values(overrides)) {
@@ -173,11 +229,11 @@ export function resolveDependencies(
       continue
     }
     visited[key] = true
-    const fetched = findTag(git, requirement.name, version, isOverride)
-    if (fetched is Err(error)) {
+    const found = findTag(git, requirement.name, version, isOverride, locked)
+    if (found is Err(error)) {
       return Err(error)
     }
-    const manifest = readPackageManifest(fetched.value, requirement.name, version)
+    const manifest = readPackageManifest(found.value.fetched, requirement.name, version)
     if (manifest is Err(error)) {
       return Err(error)
     }
@@ -186,8 +242,9 @@ export function resolveDependencies(
       name: requirement.name,
       git,
       version,
-      commit: fetched.value.commit,
-      content: fetched.value.tree,
+      tag: found.value.tag,
+      commit: found.value.fetched.commit,
+      content: found.value.fetched.tree,
     }
     if (selected[requirement.name] is Some(current)) {
       if (isVersionBefore(current.version, version)) {
@@ -219,9 +276,15 @@ export function resolveDependencies(
 export function checkAgainstLock(
   resolved: Array<LockEntry>,
   locked: Array<LockEntry>,
-): Result<bool, LoadError> uses alloc {
+): Result<bool, LoadError> uses io, alloc {
   for (const entry of Arrays.values(resolved)) {
     for (const old of Arrays.values(locked)) {
+      if (old.name == entry.name && old.git != entry.git) {
+        const _ = Fs.writeText(
+          "/dev/stderr",
+          `notice: ${entry.name} was locked from ${old.git} and now resolves from ${entry.git}; narra.lock is rewritten\n`,
+        )
+      }
       if (old.name != entry.name || old.git != entry.git || old.version != entry.version) {
         continue
       }
@@ -300,7 +363,7 @@ export function runResolveCommand(arguments: Array<string>): int uses io, alloc 
     locked = parsed.value
     oldText = lockText.value
   }
-  const resolved = resolveDependencies(roots, roots[0].overrides)
+  const resolved = resolveDependencies(roots, roots[0].overrides, locked)
   if (resolved is Err(error)) {
     return printFailure(error)
   }

@@ -1,16 +1,24 @@
 // The narra.lock reader and writer. The file is TOML with one [[package]]
 // table per dependency and the keys of LockEntry in order. The reader takes
 // the same subset as the manifest reader. Nothing here touches the disk.
-import { splitString, substring } from "narrac/driver/textops"
+import { isHash, repeatString, splitString, substring } from "narrac/driver/textops"
+import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
-import { LoadError, parseString, stripComment } from "narrac/driver/manifest"
+import {
+  LoadError,
+  isValidPackageName,
+  isVersion,
+  parseString,
+  stripComment,
+} from "narrac/driver/manifest"
 
 export struct LockEntry {
   name: string
   git: string
   version: string // the selected version
+  tag: string // the git tag the version was fetched from, `v<version>` or `<name>/v<version>`
   commit: string // the full commit hash of the tag
   content: string // the git tree hash of that commit
 }
@@ -28,6 +36,7 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
   let name = ""
   let git = ""
   let version = ""
+  let tag = ""
   let commit = ""
   let content = ""
   let seen: Map<string, bool> = Map {}
@@ -45,13 +54,18 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
     }
     if (line == "[[package]]") {
       if (open) {
-        const missing = missingKey(name, git, version, commit, content)
+        const missing = missingKey(name, git, version, tag, commit, content)
         if (missing != "") {
+          return Err(
+            lockError(entryLine, "E0438", `entry ${quoteToml(name)} is missing the key ${missing}`),
+          )
+        }
+        if (tag != `v${version}` && tag != `${name}/v${version}`) {
           return Err(
             lockError(
               entryLine,
               "E0438",
-              `entry ${quoteToml(name)} has an unknown, missing or repeated key ${missing}`,
+              `entry ${quoteToml(name)} has the tag ${quoteToml(tag)}, which is not the tag of version ${version}`,
             ),
           )
         }
@@ -59,7 +73,7 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
           return Err(lockError(entryLine, "E0439", `two entries are named ${quoteToml(name)}`))
         }
         seen[name] = true
-        Arrays.push(mutable entries, LockEntry { name, git, version, commit, content })
+        Arrays.push(mutable entries, LockEntry { name, git, version, tag, commit, content })
       }
       open = index < Arrays.length(lines)
       entryLine = lineNumber
@@ -67,6 +81,7 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
       name = ""
       git = ""
       version = ""
+      tag = ""
       commit = ""
       content = ""
       continue
@@ -91,32 +106,28 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
       )
     }
     if (seenKeys[key] is Some(_)) {
-      return Err(
-        lockError(
-          lineNumber,
-          "E0438",
-          `entry ${quoteToml(name)} has an unknown, missing or repeated key ${key}`,
-        ),
-      )
+      return Err(lockError(lineNumber, "E0438", `entry ${quoteToml(name)} repeats the key ${key}`))
     }
     seenKeys[key] = true
+    const problem = findValueProblem(key, value)
+    if (problem != "") {
+      return Err(lockError(lineNumber, "E0437", `bad line: ${key} ${problem}`))
+    }
     if (key == "name") {
       name = value
     } else if (key == "git") {
       git = value
     } else if (key == "version") {
       version = value
+    } else if (key == "tag") {
+      tag = value
     } else if (key == "commit") {
       commit = value
     } else if (key == "content") {
       content = value
     } else {
       return Err(
-        lockError(
-          lineNumber,
-          "E0438",
-          `entry ${quoteToml(name)} has an unknown, missing or repeated key ${key}`,
-        ),
+        lockError(lineNumber, "E0438", `entry ${quoteToml(name)} has the unknown key ${key}`),
       )
     }
   }
@@ -148,6 +159,7 @@ export function formatLock(entries: Array<LockEntry>): string uses alloc {
     Str.append(mutable builder, `name = ${quoteToml(entry.name)}\n`)
     Str.append(mutable builder, `git = ${quoteToml(entry.git)}\n`)
     Str.append(mutable builder, `version = ${quoteToml(entry.version)}\n`)
+    Str.append(mutable builder, `tag = ${quoteToml(entry.tag)}\n`)
     Str.append(mutable builder, `commit = ${quoteToml(entry.commit)}\n`)
     Str.append(mutable builder, `content = ${quoteToml(entry.content)}\n`)
   }
@@ -158,6 +170,7 @@ function missingKey(
   name: string,
   git: string,
   version: string,
+  tag: string,
   commit: string,
   content: string,
 ): string {
@@ -170,11 +183,37 @@ function missingKey(
   if (version == "") {
     return "version"
   }
+  if (tag == "") {
+    return "tag"
+  }
   if (commit == "") {
     return "commit"
   }
   if (content == "") {
     return "content"
+  }
+  return ""
+}
+
+function isControlByte(code: int): bool {
+  return code < 32 || code == 127
+}
+
+function findValueProblem(key: string, value: string): string {
+  if (key == "name" && !isValidPackageName(value)) {
+    return "is not a package name"
+  }
+  if (key == "git" && value == "") {
+    return "is not a repository URL"
+  }
+  if (key == "version" && !isVersion(value)) {
+    return "is not MAJOR.MINOR.PATCH"
+  }
+  if (key == "tag" && value == "") {
+    return "is not a tag"
+  }
+  if ((key == "commit" || key == "content") && !isHash(value)) {
+    return "is not a hash"
   }
   return ""
 }
@@ -193,6 +232,11 @@ function quoteToml(text: string): string uses alloc {
       Str.append(mutable builder, "\\n")
     } else if (code == 9) {
       Str.append(mutable builder, "\\t")
+    } else if (code == 13) {
+      Str.append(mutable builder, "\\r")
+    } else if (isControlByte(code)) {
+      const digits = Int.toHex(code)
+      Str.append(mutable builder, `\\u${repeatString("0", 4 - Str.length(digits))}${digits}`)
     } else {
       Str.append(mutable builder, substring(text, index, Str.nextChar(text, index)))
     }

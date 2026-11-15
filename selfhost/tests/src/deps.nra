@@ -7,7 +7,7 @@ import * as Fs from "std/fs"
 import * as Path from "std/path"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
-import { splitString } from "testrunner/textops"
+import { repeatString, splitString } from "testrunner/textops"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Fixtures from "testrunner/gitfixtures"
@@ -28,6 +28,8 @@ const CASE_NAMES = [
   "error-no-cache",
   "error-checkout",
   "tag-beats-branch",
+  "long-tag",
+  "relative-cache",
 ]
 
 const NO_GIT_PATH = "PATH=/nonexistent"
@@ -59,7 +61,11 @@ export function collectCases(context: Context): Array<TestCase> uses alloc {
 
 function listSteps(): Array<Step> uses alloc {
   return [
-    Step { folder: "a-1.0.0", tags: ["a/v1.0.0", "v0.5.0", "release"], annotatedTags: [] },
+    Step {
+      folder: "a-1.0.0",
+      tags: ["a/v1.0.0", "a/v1.0.99999999999999999999", "v0.5.0", "release"],
+      annotatedTags: [],
+    },
     Step { folder: "b-1.0.0", tags: ["b/v1.0.0", "v1.10.0"], annotatedTags: [] },
     Step {
       folder: "a-1.2.0",
@@ -301,6 +307,57 @@ function runTagBeatsBranch(
   return Ok(true)
 }
 
+function runLongTag(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const readable = repeatString("x", 64)
+  const tag = `${readable}${repeatString("y", 36)}`
+  const tagged = Fixtures.addTag(repository, tag, false)
+  if (tagged is Err(message)) {
+    return Err(message)
+  }
+  const result = runPackage(context, scratch, [], ["--fetch", url, tag])
+  const path = expectFetched(repository, tag, result)
+  if (path is Err(message)) {
+    return Err(message)
+  }
+  // The folder keeps 64 readable bytes, a dash and the 8 digits of the hash.
+  const folder = Path.basename(path.value)
+  if (!Str.startsWith(folder, `${readable}-`) || Str.length(folder) != 73) {
+    return Err(`want a folder of 64 readable bytes and a hash, got ${folder}`)
+  }
+  return Ok(true)
+}
+
+function runRelativeCache(
+  context: Context,
+  scratch: Scratch,
+  repository: string,
+  url: string,
+): Result<bool, string> uses io, alloc {
+  const result = runPackage(
+    context,
+    scratch,
+    ["NARRA_CACHE=relative-cache"],
+    ["--fetch", url, "a/v1.0.0"],
+  )
+  const path = expectFetched(repository, "a/v1.0.0", result)
+  if (path is Err(message)) {
+    return Err(message)
+  }
+  // The folder is made against the working directory of the command.
+  if (!Str.startsWith(path.value, "/") || !Str.contains(path.value, "/relative-cache/git/")) {
+    return Err(`want an absolute path in relative-cache, got ${path.value}`)
+  }
+  if (!Fs.isDir(Path.join(scratch.work, "relative-cache/git"))) {
+    return Err("the cache is not in the working directory of the command")
+  }
+  return Ok(true)
+}
+
 function runWithRepository(
   context: Context,
   scratch: Scratch,
@@ -329,6 +386,12 @@ function runWithRepository(
   }
   if (variant == "tag-beats-branch") {
     return runTagBeatsBranch(context, scratch, repository, url)
+  }
+  if (variant == "long-tag") {
+    return runLongTag(context, scratch, repository, url)
+  }
+  if (variant == "relative-cache") {
+    return runRelativeCache(context, scratch, repository, url)
   }
   if (variant == "error-checkout") {
     return runCheckout(context, scratch, repository, url)

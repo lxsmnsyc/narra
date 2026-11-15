@@ -29,6 +29,7 @@ export struct LockEntry {
   name: string
   git: string
   version: string  // the selected version
+  tag: string      // the git tag it was fetched from: "v1.2.0" or "<name>/v1.2.0"
   commit: string   // the full commit hash of the tag
   content: string  // the git tree hash of that commit
 }
@@ -51,12 +52,12 @@ export function checkoutPath(git: string, tag: string): string
 - `narra.lock` starts with a comment header line, then `[[package]]` tables separated by blank lines, sorted by name. A repeated, missing or unknown key in an entry is E0438.
 - `manifest.nra` also exports `isVersion`, `stripComment` and `parseString`.
 - Codes E0430 to E0439 belong to the manifest and lock readers. E0407 is removed.
-- Tests reach the reader through the test-only command `narrac pkg --deps <dir>`.
+- Tests reach the reader through the test-only command `narrac pkg --deps <dir>`; `--codes` before the options prints the code of an error after `error`.
 - `[overrides]` entries (root of the build only) reuse the `Dependency` shape. An override replaces the URL and the version of every requirement on its name.
-- `LockEntry` is unchanged. The commit fixes the tag, and the package's directory is found again from the checkout's manifests.
+- `LockEntry.tag` names the checkout, `checkoutPath(git, tag)`. A cached checkout is reused only for the exact tag, and its `narra.toml` must name the package that asked for it (E0453). Reading a lock checks `name`, `git`, `version` (every part fits an `int`), `tag` (`v<version>` or `<name>/v<version>`), and that `commit` and `content` are hashes. A repeated, missing or unknown key has its own message under E0438.
 - No code path reaches the network in tests. Fixture repositories are made by the test runner with `git init` and tags in its scratch folder.
 
 ## Versions
 
 - v1 (frozen by deps-manifest-lock): `Dependency` with `git` and `version`, `LockEntry`, `checkoutPath(git, version)`.
-- v2 (2026-11-15, from D101 and node workspace-design): `Dependency.workspace`, `checkoutPath(git, tag)` keyed by tag, member tags `<name>/v<version>`, `[overrides]` as `Dependency` entries. The landed parser (deps-manifest-lock) is at version 1. workspace-manifest adds the `workspace` field, and deps-resolve adds `overrides` if no earlier node did.
+- v2 (2026-11-15, from D101 and node workspace-design): `Dependency.workspace`, `checkoutPath(git, tag)` keyed by tag, member tags `<name>/v<version>`, `[overrides]` as `Dependency` entries. The landed parser (deps-manifest-lock) is at version 1. Version 2 also adds `LockEntry.tag` (2026-11-16, review fix: a plain tag and a member tag of one repository are different checkouts); no consumer outside this branch reads the lock. workspace-manifest adds the `workspace` field, and deps-resolve adds `overrides` if no earlier node did.

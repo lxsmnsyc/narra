@@ -24,6 +24,7 @@ const CASE_NAMES = [
   "resolve-override",
   "resolve-roots",
   "resolve-lock-twice",
+  "resolve-url-changed",
   "resolve-error-two-urls",
   "resolve-error-no-tag",
   "resolve-error-lock-mismatch",
@@ -232,7 +233,7 @@ function runLockTwice(
   const rootFolder = Path.join(caseFolder, "roots/root")
   const lockPath = Path.join(rootFolder, "narra.lock")
   // An entry that no manifest needs is dropped on the next write.
-  const stale = "# narra.lock: written by narrac. Do not edit.\n\n[[package]]\nname = \"gone\"\ngit = \"file:///nowhere\"\nversion = \"1.0.0\"\ncommit = \"1111111111111111111111111111111111111111\"\ncontent = \"2222222222222222222222222222222222222222\"\n"
+  const stale = "# narra.lock: written by narrac. Do not edit.\n\n[[package]]\nname = \"gone\"\ngit = \"file:///nowhere\"\nversion = \"1.0.0\"\ntag = \"v1.0.0\"\ncommit = \"1111111111111111111111111111111111111111\"\ncontent = \"2222222222222222222222222222222222222222\"\n"
   const wrote = writeFile(lockPath, stale)
   if (wrote is Err(message)) {
     return Err(message)
@@ -277,6 +278,38 @@ function runLockMismatch(
   }
   const second = runResolve(context, scratch, [], listRootArguments(caseFolder))
   return expectFailure(second, "E0452")
+}
+
+function runUrlChanged(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const first = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  if (first.code != 0) {
+    return Err(`resolving: ${Common.describeRun(first)}`)
+  }
+  if (Str.contains(first.errorOutput, "notice")) {
+    return Err(`a first resolve printed a notice: ${Common.describeRun(first)}`)
+  }
+  const manifestPath = Path.join(caseFolder, "roots/root/narra.toml")
+  const changed = Shell.runScript(
+    "sed 's|/a1\"|/a2\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"",
+    [manifestPath],
+  )
+  if (changed.code != 0) {
+    return Err(`cannot change the manifest: ${Str.trim(changed.errorOutput)}`)
+  }
+  const second = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  if (second.code != 0) {
+    return Err(`resolving again: ${Common.describeRun(second)}`)
+  }
+  const repositories = Path.join(scratch.root, "repos")
+  const notice = `notice: a was locked from file://${repositories}/a1 and now resolves from file://${repositories}/a2`
+  if (!Str.contains(second.errorOutput, notice)) {
+    return Err(`want the notice ${notice}, got ${Common.describeRun(second)}`)
+  }
+  return expectLock(caseFolder, second)
 }
 
 function runOverride(
@@ -345,6 +378,9 @@ function runBuilt(
   }
   if (variant == "resolve-diamond") {
     return runDiamond(context, scratch, caseFolder)
+  }
+  if (variant == "resolve-url-changed") {
+    return runUrlChanged(context, scratch, caseFolder)
   }
   if (variant == "resolve-override") {
     return runOverride(context, scratch, caseFolder)

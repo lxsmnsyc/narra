@@ -5,9 +5,9 @@
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Str from "std/string"
-import { substring } from "narrac/driver/textops"
+import { hasName, substring } from "narrac/driver/textops"
 import { ImportDecl } from "narrac/syntax/ast"
-import { isVersionBefore, checkoutPath } from "narrac/driver/depcache"
+import { checkTree, checkoutPath, isVersionBefore, readRecorded } from "narrac/driver/depcache"
 import { checkAgainstLock, resolveDependencies } from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
 import { ExportEntry, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
@@ -22,15 +22,6 @@ export struct DependencyPackage {
 
 function createDependencyError(code: string, message: string): LoadError {
   return LoadError { code, file: "", line: 0, column: 1, message }
-}
-
-function findCheckout(entry: LockEntry): string uses io, alloc {
-  // A repository that tags by package has `<name>/v<version>`; the others have `v<version>`.
-  const memberPath = checkoutPath(entry.git, `${entry.name}/v${entry.version}`)
-  if (Fs.isDir(memberPath)) {
-    return memberPath
-  }
-  return checkoutPath(entry.git, `v${entry.version}`)
 }
 
 function readLock(lockPath: string): Result<Array<LockEntry>, LoadError> uses io, alloc {
@@ -49,7 +40,7 @@ function listPackages(
 ): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
   let packages: Array<DependencyPackage> = []
   for (const entry of Arrays.values(entries)) {
-    const folder = findCheckout(entry)
+    const folder = checkoutPath(entry.git, entry.tag)
     if (!Fs.isDir(folder)) {
       return Err(
         createDependencyError(
@@ -72,6 +63,22 @@ function listPackages(
         column: error.column,
         message: error.message,
       })
+    }
+    if (manifest.value.name != entry.name) {
+      return Err(
+        createDependencyError(
+          "E0453",
+          `the manifest of ${entry.name} ${entry.version} names the package "${manifest.value.name}"`,
+        ),
+      )
+    }
+    const recorded = readRecorded(folder)
+    if (recorded is Err(error)) {
+      return Err(error)
+    }
+    const matched = checkTree(recorded.value, entry.content)
+    if (matched is Err(error)) {
+      return Err(error)
     }
     for (const dependency of Arrays.values(manifest.value.dependencies)) {
       Arrays.push(mutable declared, dependency.name)
@@ -185,7 +192,7 @@ export function prepareDependencies(
     }
     return listed
   }
-  const resolved = resolveDependencies([manifest], manifest.overrides)
+  const resolved = resolveDependencies([manifest], manifest.overrides, locked.value)
   if (resolved is Err(error)) {
     return Err(error)
   }
@@ -219,15 +226,6 @@ function writeLockIfChanged(
     return Err(createDependencyError("E0458", `cannot read or write ${lockPath}: ${message}`))
   }
   return Ok(true)
-}
-
-function hasName(names: Array<string>, name: string): bool {
-  for (const candidate of Arrays.values(names)) {
-    if (candidate == name) {
-      return true
-    }
-  }
-  return false
 }
 
 export function findUndeclaredImports(

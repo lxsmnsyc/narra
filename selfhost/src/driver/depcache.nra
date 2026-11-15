@@ -1,7 +1,7 @@
 // The dependency cache: a read-only checkout of one tag of a git repository, and the versions a
 // repository offers. All git work runs through Process.run. A checkout is built in a temporary
 // folder of the cache and moved into place, so an interrupted fetch leaves no half-written version.
-import { splitString } from "narrac/driver/textops"
+import { isHash, splitString } from "narrac/driver/textops"
 import * as Arrays from "std/array"
 import * as Char from "std/char"
 import * as Env from "std/env"
@@ -28,6 +28,8 @@ struct ProgramRun {
 
 // Process.run closes stdin and cannot set variables, so git runs under sh: it never asks for a
 // password on the terminal, and a missing git ends with exit code 127.
+const MAX_READABLE_BYTES = 64
+
 const GIT_SCRIPT = "GIT_TERMINAL_PROMPT=0 exec git \"$@\""
 
 // $1 is the hash file, $2 the checkout in the temporary folder and $3 the final folder.
@@ -39,10 +41,24 @@ function createFetchError(code: string, message: string): LoadError {
   return LoadError { code, file: "", line: 0, column: 1, message }
 }
 
+function makeAbsolute(path: string): string uses io, alloc {
+  if (Str.startsWith(path, "/")) {
+    return path
+  }
+  // A relative folder is read against the working directory now, so a later chdir cannot move it.
+  const ran = runProgram("pwd", [])
+  if (ran is Ok(result)) {
+    if (result.code == 0 && Str.trim(result.output) != "") {
+      return `${Str.trim(result.output)}/${path}`
+    }
+  }
+  return path
+}
+
 function findCacheRoot(): string uses io, alloc {
   if (Env.get("NARRA_CACHE") is Some(configured)) {
     if (configured != "") {
-      return configured
+      return makeAbsolute(configured)
     }
   }
   if (Env.get("HOME") is Some(home)) {
@@ -64,7 +80,12 @@ function isSafeByte(code: int): bool {
 
 function sanitizeName(text: string): string uses alloc {
   let builder = Str.builder()
-  for (const index of Ranges.between(0, Str.length(text))) {
+  // The readable part keeps at most 64 bytes; the hash of the whole text tells the names apart.
+  let kept = Str.length(text)
+  if (kept > MAX_READABLE_BYTES) {
+    kept = MAX_READABLE_BYTES
+  }
+  for (const index of Ranges.between(0, kept)) {
     const code = Str.byteAt(text, index)
     if (isSafeByte(code)) {
       if (Char.fromCode(code) is Some(character)) {
@@ -117,20 +138,6 @@ function getFirstLine(text: string): string uses alloc {
   return splitString(Str.trim(text), "\n")[0]
 }
 
-function isHash(text: string): bool {
-  const length = Str.length(text)
-  if (length != 40 && length != 64) {
-    return false
-  }
-  for (const index of Ranges.between(0, length)) {
-    const code = Str.byteAt(text, index)
-    if (!((code >= 48 && code <= 57) || (code >= 97 && code <= 102))) {
-      return false
-    }
-  }
-  return true
-}
-
 function listTags(git: string): Result<Array<string>, LoadError> uses io, alloc {
   const ran = runGit(["ls-remote", "--tags", "--", git])
   if (ran is Err(error)) {
@@ -162,13 +169,17 @@ function listTags(git: string): Result<Array<string>, LoadError> uses io, alloc 
 
 function readVersionPart(version: string, index: int): int uses alloc {
   const parsed = Int.parse(splitString(version, ".")[index], 10)
-  if (parsed is Err(_)) {
-    return 0
+  if (parsed is Ok(part)) {
+    return part
   }
-  return parsed.value
+  return 0
 }
 
 export function isVersionBefore(left: string, right: string): bool uses alloc {
+  // A text that is not a version, such as a part too large for an int, is before nothing.
+  if (!isVersion(left) || !isVersion(right)) {
+    return false
+  }
   for (const index of Ranges.between(0, 3)) {
     const leftPart = readVersionPart(left, index)
     const rightPart = readVersionPart(right, index)
@@ -217,7 +228,7 @@ export function listVersions(
   return Ok(collectVersions(tags.value, "v"))
 }
 
-function readRecorded(path: string): Result<Fetched, LoadError> uses io, alloc {
+export function readRecorded(path: string): Result<Fetched, LoadError> uses io, alloc {
   const text = Fs.readText(`${path}.hash`)
   if (text is Err(message)) {
     return Err(

@@ -55,9 +55,28 @@ if [ -z "$version" ]; then
   esac
 fi
 version=${version#v}
+case "$version" in
+  '' | *[!0-9A-Za-z._-]*)
+    fail "the version may hold only letters, digits, . _ -: $version"
+    ;;
+esac
 
 name=narra-$version-$os-$arch
 base=${NARRA_BASE_URL:-https://github.com/$repository/releases/download/v$version}
+# A custom base URL must use https, except for a test server on this machine.
+case "$base" in
+  https://*) ;;
+  http://*)
+    authority=${base#http://}
+    authority=${authority%%/*}
+    case "$authority" in
+      *@*) fail "NARRA_BASE_URL must not hold a user name: $base" ;;
+      localhost | localhost:[0-9]* | 127.0.0.1 | 127.0.0.1:[0-9]*) ;;
+      *) fail "NARRA_BASE_URL must start with https:// (http:// only for localhost or 127.0.0.1): $base" ;;
+    esac
+    ;;
+  *) fail "NARRA_BASE_URL must start with https:// (http:// only for localhost or 127.0.0.1): $base" ;;
+esac
 install_dir=${NARRA_INSTALL:-$HOME/.local/bin}
 
 work=$(mktemp -d)
@@ -71,6 +90,10 @@ curl -fsSL -o "$work/$name.tar.gz.sha256" "$base/$name.tar.gz.sha256" ||
 
 # Check the SHA-256 before anything is unpacked.
 expected=$(cut -d ' ' -f 1 "$work/$name.tar.gz.sha256")
+listed=$(sed 's/^[^ ]* *\*\{0,1\}//' "$work/$name.tar.gz.sha256")
+if [ "$listed" != "$name.tar.gz" ]; then
+  fail "the checksum file names '$listed', not $name.tar.gz"
+fi
 actual=$(hash_file "$work/$name.tar.gz")
 if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   fail "the checksum of $name.tar.gz does not match (expected $expected, got $actual)"

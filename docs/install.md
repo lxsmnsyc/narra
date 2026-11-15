@@ -161,4 +161,6 @@ For example, this installs version 0.1.0 into `/usr/local/bin`:
 curl -fsSL https://raw.githubusercontent.com/lxsmnsyc/narra/main/install.sh | NARRA_VERSION=0.1.0 NARRA_INSTALL=/usr/local/bin sh
 ```
 
+`NARRA_BASE_URL` is a testing override. It names a folder that holds the archive and its `.sha256` file instead of the GitHub release, and it must start with `https://`. Only `http://localhost` and `http://127.0.0.1` are allowed without TLS.
+
 Run the same command again to update. To uninstall, delete the `narrac` file. For other systems, such as macOS on x64 or Linux on arm64, build from source as shown above.

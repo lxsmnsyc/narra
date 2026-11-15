@@ -25,11 +25,15 @@
 
 Question 3: pnpm's `link:` and `file:` take any directory (`pnpm11/resolving/local-resolver/src/parseBareSpecifier.ts` has no workspace check), and `pnpm publish` passes them through unchanged (`pnpm11/releasing/exportable-manifest/src/index.ts` rewrites only `workspace:` and `catalog:`). In Narra a fetched checkout is what other users get, so a directory outside the repository cannot work for them. D101 allows member dependencies only, by name.
 
-## New questions for the maintainer
+## Second answers (2026-11-15)
 
-1. **Member tags.** D101 tags members `<name>/v<version>` (by package name). Go uses `<directory>/v<version>`. Keep the name?
-2. **Overrides below a minimum.** D101 lets `[overrides]` select a version lower than some package's minimum, as pnpm's `overrides` can. Allow that, or accept only versions at or above every minimum?
-3. **Flag names.** `-dependents` and `-dependencies` for pnpm's `...pkg` and `pkg...`. Keep these names?
+The maintainer left the three follow-up questions to the orchestrator. D101 keeps its text on each:
+
+1. **Member tags stay `<name>/v<version>`.** A dependency names a package, not a directory, and `listVersions(git, name)` looks tags up by that name. A tag by name survives a member moving to another directory, which the repository move to a workspace will do. Go tags by directory because a Go module path is a directory.
+2. **Overrides may go below a minimum.** An override is written by hand at the root and recorded in the lock, so nothing is hidden. Its uses (moving off a broken release, pinning a fork) often need a lower version. Go's `replace` also ignores minimums. If the lower version lacks something a package needs, checking that package reports it.
+3. **Flags stay `-dependents` and `-dependencies`.** narrac accepts both `-flag` and `--flag`, and `-filter` is taken by `narrac test`.
+
+The gate is passed: children may start.
 
 ## Proposed contract change: `contracts/dependencies.md` version 2
 

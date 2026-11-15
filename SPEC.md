@@ -2022,6 +2022,7 @@ function firstSlot(items: Array<int>): int {
 | `narra query callers FUNCTION` | Every function that calls it |
 | `narra query interface MODULE` | The module's exported signatures |
 | `narra query recursion MODULE` | The module's recursive functions |
+| `narra query hovers FILE` | The hover text of every name in a file, and its diagnostics |
 
 All query commands accept `--json`.
 

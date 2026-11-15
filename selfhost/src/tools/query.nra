@@ -8,6 +8,7 @@
 //     narrac query [--package DIR] [--json] callers FUNCTION
 //     narrac query [--package DIR] [--json] interface MODULE
 //     narrac query [--package DIR] [--json] recursion MODULE
+//     narrac query [--package DIR] [--json] hovers FILE
 //
 // The package is loaded and checked as `narrac types` does (every check
 // pass and the effect pass). Results come from the checker's side tables:
@@ -58,9 +59,9 @@ import {
 import * as Signature from "narrac/tools/querysignature"
 import { findCycles, sortStrings } from "narrac/tools/querygraph"
 
-const USAGE = "usage: narrac query [--package DIR] [--json] type-of FILE:LINE:COL | def NAME | refs NAME | callers FUNCTION | interface MODULE | recursion MODULE"
+const USAGE = "usage: narrac query [--package DIR] [--json] type-of FILE:LINE:COL | def NAME | refs NAME | callers FUNCTION | interface MODULE | recursion MODULE | hovers FILE"
 
-const COMMANDS = ["type-of", "def", "refs", "callers", "interface", "recursion"]
+const COMMANDS = ["type-of", "def", "refs", "callers", "interface", "recursion", "hovers"]
 
 // One module of the package with its text, tokens, position index and the
 // open bodies checked in it.
@@ -127,6 +128,10 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
   const command = arguments[index]
   const operand = arguments[index + 1]
 
+  if (command == "hovers") {
+    return runHovers(directory, json, operand)
+  }
+
   // Load and check the package as `narrac types` does.
   const loaded = Modules.load(directory)
   if (loaded is Err(loadErrors)) {
@@ -163,6 +168,204 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
     answer = queryRecursion(checker, effects, query, operand)
   }
   return reportAnswer(json, answer)
+}
+
+// One identifier of a file and the text the language server shows for it.
+struct Hover {
+  line: int
+  column: int
+  length: int
+  text: string
+}
+
+function runHovers(directory: string, json: bool, file: string): int uses io, alloc {
+  // A package that does not load answers with the errors of the file, or fails when none
+  // is in it.
+  const loaded = Modules.load(directory)
+  if (loaded is Err(loadErrors)) {
+    let fileErrors: Array<LoadError> = []
+    for (const error of Arrays.values(loadErrors)) {
+      if (error.file == file) {
+        Arrays.push(mutable fileErrors, error)
+      }
+    }
+    if (Arrays.length(fileErrors) == 0) {
+      return reportLoadErrors(json, loadErrors)
+    }
+    let diagnostics: Array<HoverDiagnostic> = []
+    for (const error of Arrays.values(fileErrors)) {
+      Arrays.push(mutable diagnostics, HoverDiagnostic {
+        line: error.line,
+        column: error.column,
+        length: 1,
+        code: error.code,
+        message: error.message,
+      })
+    }
+    return writeStdout(writeHovers(json, file, [], diagnostics))
+  }
+  const package = loaded.value
+
+  // Check the package. The effect pass needs bodies without errors.
+  let checker = copy(Body.checkPackage(package))
+  const effectsKnown = Arrays.length(checker.errors) == 0
+  let effects = EffectState {
+    bodyIndex: Map {},
+    functions: Map {},
+    locals: Map {},
+    valuesAt: Map {},
+    sources: Map {},
+    arrows: Map {},
+    entries: Map {},
+    report: false,
+    changed: false,
+    body: -1,
+  }
+  if (effectsKnown) {
+    effects = Effects.checkEffects(mutable checker)
+  }
+  const views = buildViews(checker, package, Map {})
+  if (views is Err(message)) {
+    return reportAnswer(json, Err(message))
+  }
+  let found: Option<ModuleView> = None
+  for (const view of Arrays.values(views.value)) {
+    if (view.file == file) {
+      found = Some(view)
+    }
+  }
+  if (found is None) {
+    return reportAnswer(json, Err(`no module has the file "${file}"`))
+  }
+  const view = found.value
+
+  // Hovers from the sites of the file, then the diagnostics reported in it.
+  const hovers = collectHovers(mutable checker, mutable effects, effectsKnown, view)
+  let diagnostics: Array<HoverDiagnostic> = []
+  for (const error of Arrays.values(checker.errors)) {
+    if (error.file == file) {
+      Arrays.push(mutable diagnostics, HoverDiagnostic {
+        line: error.pos.line,
+        column: error.pos.column,
+        length: findTokenLength(view, error.pos),
+        code: error.code,
+        message: error.message,
+      })
+    }
+  }
+  return writeStdout(writeHovers(json, file, hovers, diagnostics))
+}
+
+struct HoverDiagnostic {
+  line: int
+  column: int
+  length: int
+  code: string
+  message: string
+}
+
+function collectHovers(
+  mutable checker: Checker,
+  mutable effects: EffectState,
+  effectsKnown: bool,
+  view: ModuleView,
+): Array<Hover> uses alloc {
+  let hovers: Array<Hover> = []
+  let slots: Map<string, int> = Map {}
+  for (const site of Arrays.values(view.sites)) {
+    // Only named places on one line; a later site at the same place is the innermost.
+    if (site.name == "" || site.kind == SiteKind.LabelSite || site.start.line != site.end.line) {
+      continue
+    }
+    const described = describeSite(mutable checker, mutable effects, effectsKnown, view, site)
+    if (described is None) {
+      continue
+    }
+    const #[typeText, names] = described.value
+    let text = typeText
+    if (Arrays.length(names) > 0) {
+      text = `${text}\nuses ${Str.join(names, ", ")}`
+    }
+    const hover = Hover {
+      line: site.start.line,
+      column: site.start.column,
+      length: site.end.column - site.start.column,
+      text,
+    }
+    const key = `${Int.toString(hover.line)}:${Int.toString(hover.column)}`
+    if (slots[key] is Some(slot)) {
+      hovers[slot] = hover
+    } else {
+      slots[key] = Arrays.length(hovers)
+      Arrays.push(mutable hovers, hover)
+    }
+  }
+  // Insertion sort: sites are nearly in source order already.
+  for (let index = 1; index < Arrays.length(hovers); index++) {
+    let position = index
+    while (position > 0 && isHoverBefore(hovers[position], hovers[position - 1])) {
+      const swap = hovers[position]
+      hovers[position] = hovers[position - 1]
+      hovers[position - 1] = swap
+      position--
+    }
+  }
+  return hovers
+}
+
+function isHoverBefore(left: Hover, right: Hover): bool {
+  if (left.line != right.line) {
+    return left.line < right.line
+  }
+  return left.column < right.column
+}
+
+function findTokenLength(view: ModuleView, pos: Pos): int {
+  for (const token of Arrays.values(view.tokens)) {
+    if (token.line == pos.line && token.column == pos.column && token.endLine == token.line) {
+      return token.endColumn - token.column
+    }
+  }
+  return 1
+}
+
+function writeHovers(
+  json: bool,
+  file: string,
+  hovers: Array<Hover>,
+  diagnostics: Array<HoverDiagnostic>,
+): string uses alloc {
+  let hoverParts: Array<string> = []
+  let diagnosticParts: Array<string> = []
+  let lines: Array<string> = []
+  for (const hover of Arrays.values(hovers)) {
+    const place = `"line": ${Int.toString(hover.line)}, "column": ${Int.toString(hover.column)}, "length": ${Int.toString(hover.length)}`
+    Arrays.push(mutable hoverParts, `{${place}, "text": ${quoteJson(hover.text)}}`)
+    const flat = Str.join(splitString(hover.text, "\n"), " | ")
+    Arrays.push(
+      mutable lines,
+      `${file}:${Int.toString(hover.line)}:${Int.toString(hover.column)} ${flat}\n`,
+    )
+  }
+  for (const diagnostic of Arrays.values(diagnostics)) {
+    let code = diagnostic.code
+    if (code == "") {
+      code = "E0000"
+    }
+    const place = `"line": ${Int.toString(diagnostic.line)}, "column": ${Int.toString(diagnostic.column)}, "length": ${Int.toString(diagnostic.length)}`
+    Arrays.push(
+      mutable diagnosticParts,
+      `{${place}, "code": ${quoteJson(code)}, "message": ${quoteJson(diagnostic.message)}}`,
+    )
+    Arrays.push(
+      mutable lines,
+      `${file}:${Int.toString(diagnostic.line)}:${Int.toString(diagnostic.column)} ${code} ${diagnostic.message}\n`,
+    )
+  }
+  if (!json) {
+    return Str.join(lines, "")
+  }
+  return `{"query": "hovers", "file": ${quoteJson(file)}, "hovers": [${Str.join(hoverParts, ", ")}], "diagnostics": [${Str.join(diagnosticParts, ", ")}]}\n`
 }
 
 function isCommand(name: string): bool {
@@ -419,8 +622,11 @@ function describeCallable(checker: Checker, effects: EffectState, ref: Ref): Opt
   if (declaration.exported && !declaration.generator) {
     names = copy(declaration.effects)
     sortStrings(mutable names)
-  } else if (Effects.findRefEffects(checker, effects, ref) is Some(found)) {
-    names = found
+  } else if (Arrays.length(effects.functionKeys) > 0) {
+    // Without the effect pass (a package with errors) a private function shows no effects.
+    if (Effects.findRefEffects(checker, effects, ref) is Some(found)) {
+      names = found
+    }
   }
   return Some(#[`${writeFunctionType(checker, declaration, result)}${writeTypeUses(names)}`, []])
 }

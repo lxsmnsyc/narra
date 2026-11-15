@@ -233,6 +233,7 @@ Some lines stay long, whatever the width. A template string is never split, so l
 | `callers FUNCTION` | every call of a function, and the function each call is in |
 | `interface MODULE` | the exported declarations of a module, as signatures |
 | `recursion MODULE` | the groups of functions in a module that call each other in a cycle |
+| `hovers FILE` | the hover text of every name in a file, and its errors, in one answer |
 
 `FILE` is the path from the package folder, as errors print it. Line and column count from 1. The local `best` starts at line 13, column 7 of `src/convert.nra`:
 
@@ -302,6 +303,8 @@ narrac query --json type-of src/main.nra:5:17
 ```json
 {"query": "type-of", "location": {"file": "src/main.nra", "range": {"start": [5, 17], "end": [5, 18]}}, "type": "string", "effects": ["alloc"]}
 ```
+
+`hovers` also works on a file with errors: it lists the errors and the names the checker could type. With `--json`, each hover has `line`, `column` and `length` (in characters) and `text`, and each error has the same three and a `code` and `message`.
 
 A query exits with code 0 when it has an answer, an empty one included. An unknown name, a place with no expression, or a package with errors exits with code 1. With `--json`, the errors of a package that does not check come as `{"errors": [...]}`, each one in the form of `narrac check --json`.
 

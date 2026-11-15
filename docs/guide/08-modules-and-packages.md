@@ -333,6 +333,18 @@ The first `narrac build`, `narrac run` or `narrac test` does three things:
 
 A package may import only itself, `std` and the packages in its own `[dependencies]`. If `json` itself depends on `util`, your package still needs its own entry for `util` before it can import `"util/text"`. Without it the build reports that the package has no `[dependencies]` entry for `util`.
 
+A package can choose which modules other packages may import. Add an `[exports]` table to its `narra.toml`. Each key is an import path and each value is the file it stands for:
+
+```toml
+[exports]
+"json" = "src/index.nra"
+"json/stream" = "src/streaming/reader.nra"
+```
+
+A key is the package name or starts with `json/`. The bare name `"json"` stands for one module, so `import * as Json from "json"` works. A package that uses `json` can import `"json"` and `"json/stream"`, and nothing else: importing `"json/streaming/reader"` is an error that lists the two paths. Inside `json`, its own files still import each other by their real paths, such as `"json/streaming/reader"`. Without an `[exports]` table, every file is open to importers.
+
+The standard library works the same way. Modules under `std/internal/` and `std/ext/` are not open to your code.
+
 The tests of a dependency belong to its author. `narrac test` runs the tests of your package only.
 
 To use a fork or to pin a version, add an `[overrides]` table to the `narra.toml` of the package you build. An override has the same form as a dependency and replaces the repository and the version wherever any package asks for that name:

@@ -21,6 +21,12 @@ export struct Dependency {
   line: int // narra.toml line, for diagnostics
 }
 
+export struct ExportEntry {
+  key: string // the import path other packages write: the package name or `<name>/...`
+  file: string // "src/streaming/reader.nra": the module file the key stands for
+  line: int // narra.toml line, for diagnostics
+}
+
 export struct Manifest {
   name: string
   version: string
@@ -28,6 +34,7 @@ export struct Manifest {
   search: Array<string>
   dependencies: Array<Dependency>
   overrides: Array<Dependency> // [overrides]: read for every manifest, allowed in the root of a build only
+  exports: Array<ExportEntry> // [exports]: empty when the package exposes every module
 }
 
 // An error of the loader. An empty file and line 0 print as a bare message
@@ -64,6 +71,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   let version = ""
   let dependencies: Array<Dependency> = []
   let overrides: Array<Dependency> = []
+  let exports: Array<ExportEntry> = []
   let binaries: Array<Binary> = []
   let search: Array<string> = []
   let table = ""
@@ -108,6 +116,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         table == "link" ||
         table == "dependencies" ||
         table == "overrides" ||
+        table == "exports" ||
         table == "[[binary]]"
     const equalsIndex = Str.indexOf(line, "=")
     if (equalsIndex is None) {
@@ -142,6 +151,14 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     const value = parsed.value
     const qualifiedKey = `${table}.${key}`
+    if (table == "exports") {
+      const entry = readExport(key, value, lineNumber)
+      if (entry is Err(error)) {
+        return Err(error)
+      }
+      Arrays.push(mutable exports, entry.value)
+      continue
+    }
     if (table == "dependencies" || table == "overrides") {
       const dependency = readDependency(key, value, lineNumber)
       if (dependency is Err(error)) {
@@ -245,6 +262,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       return Err(error)
     }
   }
+  const checkedExports = checkExportKeys(exports, name)
+  if (checkedExports is Err(error)) {
+    return Err(error)
+  }
   return Ok(Manifest {
     name,
     version,
@@ -252,7 +273,73 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     search,
     dependencies,
     overrides,
+    exports,
   })
+}
+
+function readExport(
+  key: string,
+  value: Value,
+  line: int,
+): Result<ExportEntry, LoadError> uses alloc {
+  let exportKey = key
+  if (Str.startsWith(key, "\"") || Str.startsWith(key, "'")) {
+    const parsedKey = parseString(key)
+    if (parsedKey is Err(error)) {
+      return Err(createError(line, "E0471", `export key ${key}: ${error}`))
+    }
+    exportKey = parsedKey.value[0]
+  }
+  if (value is Value.VStr(file)) {
+    if (!Str.startsWith(file, "src/") || !Str.endsWith(file, ".nra") || Str.length(file) <= 8) {
+      return Err(
+        createError(
+          line,
+          "E0471",
+          `export ${quoteGo(exportKey)} names ${quoteGo(file)}, which is not a module file; write a path such as "src/index.nra"`,
+        ),
+      )
+    }
+    return Ok(ExportEntry { key: exportKey, file, line })
+  }
+  return Err(
+    createError(
+      line,
+      "E0471",
+      `export ${quoteGo(exportKey)} must be a string, the module file such as "src/index.nra"`,
+    ),
+  )
+}
+
+function isExportKey(key: string, packageName: string): bool uses alloc {
+  if (key == packageName) {
+    return true
+  }
+  const prefix = `${packageName}/`
+  return Str.startsWith(key, prefix) && Str.length(key) > Str.length(prefix)
+}
+
+function checkExportKeys(
+  entries: Array<ExportEntry>,
+  packageName: string,
+): Result<bool, LoadError> uses alloc {
+  let keys: Map<string, bool> = Map {}
+  for (const entry of Arrays.values(entries)) {
+    if (!isExportKey(entry.key, packageName)) {
+      return Err(
+        createError(
+          entry.line,
+          "E0470",
+          `export key ${quoteGo(entry.key)} must be the package name ${quoteGo(packageName)} or start with ${quoteGo(`${packageName}/`)}`,
+        ),
+      )
+    }
+    if (keys[entry.key] is Some(_)) {
+      return Err(createError(entry.line, "E0472", `two exports are named ${quoteGo(entry.key)}`))
+    }
+    keys[entry.key] = true
+  }
+  return Ok(true)
 }
 
 function checkDependencyNames(

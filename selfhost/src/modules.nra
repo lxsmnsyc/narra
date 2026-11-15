@@ -11,6 +11,7 @@ import { File, Decl } from "narrac/ast"
 import { parse } from "narrac/parser"
 import { hashModule } from "narrac/hash"
 import { findUndeclaredImports, prepareDependencies } from "narrac/depload"
+import { ExportTable, checkExportFiles, rewriteImports } from "narrac/exports"
 import { Binary, LoadError, parseManifest } from "narrac/manifest"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -264,6 +265,24 @@ function loadPackage(
   for (const dependency of Arrays.values(config.dependencies)) {
     Arrays.push(mutable declaredNames, dependency.name)
   }
+  let exportTables: Array<ExportTable> = []
+  for (const dependency of Arrays.values(prepared.value)) {
+    if (Arrays.length(dependency.exports) > 0) {
+      Arrays.push(mutable exportTables, ExportTable {
+        name: dependency.name,
+        entries: dependency.exports,
+      })
+    }
+  }
+  let ownPaths: Array<string> = []
+  for (const module of Arrays.values(own.value)) {
+    Arrays.push(mutable ownPaths, module.path)
+  }
+  for (const problem of Arrays.values(
+    checkExportFiles(config.name, "narra.toml", config.exports, ownPaths),
+  )) {
+    Arrays.push(mutable errors, problem)
+  }
   for (const module of Arrays.values(own.value)) {
     const undeclared = findUndeclaredImports(
       module.file,
@@ -275,7 +294,11 @@ function loadPackage(
     for (const problem of Arrays.values(undeclared)) {
       Arrays.push(mutable errors, problem)
     }
-    Arrays.push(mutable modules, module)
+    const exposed = exposeImports(module, config.name, declaredNames, exportTables)
+    for (const problem of Arrays.values(exposed.errors)) {
+      Arrays.push(mutable errors, problem)
+    }
+    Arrays.push(mutable modules, exposed.module)
   }
   for (const dependency of Arrays.values(prepared.value)) {
     const loaded = loadPackageModules(
@@ -291,6 +314,16 @@ function loadPackage(
     if (loaded is Err(found)) {
       return Err(found)
     }
+    let dependencyPaths: Array<string> = []
+    for (const module of Arrays.values(loaded.value)) {
+      Arrays.push(mutable dependencyPaths, module.path)
+    }
+    const manifestFile = `${dependency.name}/narra.toml`
+    for (const problem of Arrays.values(
+      checkExportFiles(dependency.name, manifestFile, dependency.exports, dependencyPaths),
+    )) {
+      Arrays.push(mutable errors, problem)
+    }
     for (const module of Arrays.values(loaded.value)) {
       const undeclared = findUndeclaredImports(
         module.file,
@@ -302,7 +335,11 @@ function loadPackage(
       for (const problem of Arrays.values(undeclared)) {
         Arrays.push(mutable errors, problem)
       }
-      Arrays.push(mutable modules, module)
+      const exposed = exposeImports(module, dependency.name, dependency.declared, exportTables)
+      for (const problem of Arrays.values(exposed.errors)) {
+        Arrays.push(mutable errors, problem)
+      }
+      Arrays.push(mutable modules, exposed.module)
     }
   }
   if (Arrays.length(errors) > 0) {
@@ -326,6 +363,25 @@ function loadPackage(
     single: false,
     dependencyNames,
   })
+}
+
+struct ExposedModule {
+  module: SourceModule
+  errors: Array<LoadError>
+}
+
+function exposeImports(
+  module: SourceModule,
+  ownName: string,
+  declared: Array<string>,
+  tables: Array<ExportTable>,
+): ExposedModule from module uses alloc {
+  const rewritten = rewriteImports(module.file, module.ast.imports, ownName, declared, tables)
+  let exposed = copy(module)
+  if (rewritten.changed) {
+    exposed.ast.imports = rewritten.imports
+  }
+  return ExposedModule { module: exposed, errors: rewritten.errors }
 }
 
 function loadPackageModules(

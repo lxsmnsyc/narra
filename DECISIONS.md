@@ -1148,7 +1148,7 @@ Decision (maintainer, 2026-11-09): `narra.toml` may have an `[exports]` table th
 - `std` uses the same table, so `std/internal/*` becomes an ordinary unexported path and E0426 folds into the general rule.
 - **Reason.** A package chooses its public surface, and its file layout can change without breaking importers.
 
-Not built yet. Dependencies themselves (`[dependencies]`) are not built either (E0407).
+Built (package-exports): the `[exports]` table, the import check (E0470 to E0473) and the std rule (E0474, which replaced E0426). `narra move` does not exist, so updating the table on a move is not built.
 
 ## D98. Or-patterns in `match` arms
 

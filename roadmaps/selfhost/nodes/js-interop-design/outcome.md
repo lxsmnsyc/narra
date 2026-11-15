@@ -4,7 +4,7 @@
 
 - No compiler code. Decision D123 is in `DECISIONS.md`, marked "Not built yet". It was revised after the maintainer's answers of 2026-11-15.
 - Goal debate in `roadmaps/selfhost/debate/js-interop/`: `ledger.json` (two sealed rounds, with the answers and the user rulings), `debate.md`, and `evidence/T1-narrac-wasm.md`, `T2-clang-wasm.md` and `T3-node-addon.md`.
-- Answer: a Narra package picks the command form (esbuild's shape) or the Node-API form (oxc's shape) with `[npm] form` in `narra.toml`. Both forms ship native packages per platform and a wasm fallback through one shared build, package layout and JS loader. narrac is the first package, in the command form. The REPL is parked.
+- Answer, after the second answers: Narra sits on the layer of Go and Rust. The compiler builds programs, C libraries, Node addons (`--emit node-addon`) and wasm modules with JS glue it writes itself (`--emit wasm-js`). npm packaging is a script of the package that ships, not a compiler feature. narrac is the first npm package, as a command. The REPL is parked.
 
 ## Result
 
@@ -17,7 +17,7 @@ Spike with three proofs, each capped at 30 minutes.
 
 ## Proposed child briefs
 
-The orchestrator writes these as node folders after the gate. Order: the shared nodes first (1 to 4), with narrac as the first package. The Node-API chain (5 to 10) can start in parallel with them, since c-abi-design is a gate spike.
+Revised after the maintainer's second answers (2026-11-15): narrac writes the wasm glue itself, and npm packaging stays outside the compiler. The `[npm]` table, `narrac package`, the shared `@narra/loader` package, node-addon-wasm through emnapi, and npm-addon-sample are gone. The orchestrator writes these as node folders. narrac-wasm and npm-narrac ship the compiler. The C chain (3 to 5) starts in parallel, since c-abi-design is a gate spike.
 
 ### Amendment to wasi-runtime (todo, batch-16)
 
@@ -39,51 +39,31 @@ Acceptance gains one line: a wasi build of a sample that prints its arguments, a
   - The module validates with wasm exceptions turned off.
   - The script is not part of `scripts/test.sh`, since it needs zig.
 
-### 2. npm-loader: the shared JS loader and package layout (first)
+### 2. npm-narrac: narrac on npm, command form
 
-- goal: a JS package in `npm/loader/` and a new contract `npm-packages`. The contract fixes the package names (`<name>`, `<name>-<os>-<arch>[-<libc>]`, `<name>-wasm`), the `os`, `cpu` and `libc` fields, and what each package holds. The loader picks the platform package for `process.platform`, `process.arch` and the libc, or falls back to `<name>-wasm`. It holds the WASI preview1 shim, over real files in Node and an in-memory file map in a browser. It exposes `loadCommand(name)` (a native path, or a wasm module with the shim) and `loadAddon(name)` (a `.node` path, or the wasm build through emnapi once node-addon-wasm lands).
+- goal: `npm/` in this repository holds narrac's npm packages in the esbuild layout (D123 item 6): `narrac-<os>-<arch>[-<libc>]` per row cross-targets builds, `narrac-wasm`, and a main `narrac` package with a `bin` entry, a small loader that picks the platform package or falls back to wasm, and the WASI preview1 calls narrac imports (no `node:wasi`). `scripts/npm-package.sh` fills them from the cross builds and `dist/narrac.wasm`. A JS API (`check(files)`, `format(source)`, `emit(files)`, diagnostics as data) with TypeScript types runs the command.
 - size: M
-- depends_on: none. It provides contract `npm-packages`, version 1, frozen when the node lands.
+- depends_on: narrac-wasm (hard); cross-targets (behavior, via `targets`)
 - acceptance:
-  - A Node test runs `narrac.wasm` from node 1 through the shim with no `node:wasi`, and gets the same diagnostics as native.
-  - A test with a fake platform package proves the platform pick. Removing it proves the wasm fallback.
-  - The shim runs the same test in a headless browser if one is on the machine. Otherwise the outcome says it was not run.
-
-### 3. npm-package: `narrac package` and the `[npm]` table (first)
-
-- goal: `narra.toml` gains `[npm]` with `name`, `form` (`"command"` or `"addon"`) and `targets`, where an unknown key or value is a new code. `narrac package` builds the package for each target with `--target` and writes the main, per-platform and wasm packages under `dist/npm/`, as contract `npm-packages` says. A target the program cannot build for (E0991 on wasi, for example) is skipped with a message, never silently.
-- size: M
-- depends_on: target-table (hard: `--target`); npm-loader (contract, via `npm-packages`); node-addon (behavior: `form = "addon"` is an error that names the node until it lands)
-- acceptance:
-  - A sample command package builds for the host and `Wasi-Wasm32`. Each tarball from `npm pack` installs into a scratch project, and `npx` prints the golden output, with the host package and with only the wasm one.
-  - The test harness covers the manifest errors and the layout with a logging `CC`, and needs no zig.
-  - Codes are reserved by the orchestrator in the batch's distribution range.
-
-### 4. npm-narrac: narrac on npm, command form (first package)
-
-- goal: narrac's own `[npm]` table and a JS API (`check(files)`, `format(source)`, `emit(files)`, diagnostics as data), with TypeScript types. It ships native packages for every row cross-targets builds (Windows once windows-runtime lands) and the wasm fallback.
-- size: M
-- depends_on: npm-package (hard); narrac-wasm (hard); cross-targets (behavior, via `targets`)
-- acceptance:
-  - A Node test calls each function on samples and matches native narrac, once with the host package and once with only the wasm package installed.
-  - The `bin` entry runs `narrac check` through the loader.
+  - The tarballs from `npm pack` install into a scratch project. `npx narrac check` and each API function match native narrac, once with the host package and once with only the wasm package.
+  - Nothing in `selfhost/src` or `narra.toml` changes.
   - No publish: the maintainer publishes and confirms the package names.
 
-### 5. c-abi-design (held, comes back): brief amendments
+### 3. c-abi-design (held, comes back): brief amendments
 
-The brief still fits. Replace the `depends_on` reason with "D123 picked the Node-API form, which needs this boundary (maintainer, 2026-11-15)" and add these questions:
+The brief still fits. Replace the `depends_on` reason with "D123 builds C libraries, Node addons and wasm glue on this boundary (maintainer, 2026-11-15)" and add these questions:
 
 - **7. Node-API.** Which types the generated glue converts in the first build (numbers, `bool`, `string`, `bytes`) and how. What a panic and an `Err` become: a thrown JS `Error` with the message, with the panic stopped at the boundary by the runtime's `setjmp` guard, not ending the process. Whether a later build adds arrays, `Option` (as `undefined`) and plain structs as JS objects.
 - **8. Node threads.** An addon may load in several `worker_threads`. Say whether runtime state is per Node environment (Node-API instance data) or per thread (D111 heaps), and what an export called on a worker does.
-- **9. wasm reactor.** The exports built for `Wasi-Wasm32` as a reactor module with no `main`, for the addon's wasm fallback through emnapi.
+- **9. wasm reactor.** The exports built for `Wasi-Wasm32` as a reactor module with no `main`, and the memory calls the JS glue of wasm-js-glue uses to pass strings and bytes.
 
 Change question 5 to name the `.node` output (`--emit node-addon`) next to the shared and static libraries.
 
-### 6. c-export-functions (held, comes back): brief amendments
+### 4. c-export-functions (held, comes back): brief amendments
 
-The brief fits. Add to acceptance: "The export wrapper is the function node-addon's glue calls. A panic inside an export called through it is stopped at the boundary as D122 says, tested in the exits suite." Remove the context line saying c-layout lands with it. c-layout is no longer on this path, so the signature check covers only the types D122 allows without layouts.
+The brief fits. Add to acceptance: "The export wrapper is the function the glue of node-addon and wasm-js-glue calls. A panic inside an export called through it is stopped at the boundary as D122 says, tested in the exits suite." Remove the context line saying c-layout lands with it. c-layout is no longer on this path, so the signature check covers only the types D122 allows without layouts.
 
-### 7. c-abi-export (held, comes back): brief amendments
+### 5. c-abi-export (held, comes back): brief amendments
 
 The brief fits. Two changes:
 
@@ -92,11 +72,11 @@ The brief fits. Two changes:
 
 ### c-layout (held): stays parked
 
-Values cross Node-API as `napi_value`, so C struct layouts are not on the addon path. It keeps its brief at priority later, for C users. Nothing depends on it.
+Values cross Node-API as `napi_value` and the wasm glue as scalars, strings and bytes, so C struct layouts are on neither path. It keeps its brief at priority later, for C users. Nothing depends on it.
 
-### 8. node-addon: Node-API glue and `.node` output
+### 6. node-addon: Node-API glue and `.node` output
 
-- goal: `narrac build --emit node-addon` writes `<name>.node` for the host or a `--target` row. narrac generates one Node-API wrapper per `@export(C)` function in the types D122 allows, registers them in `napi_register_module_v1`, and writes `<name>.d.ts`. Headers come from the Node install or `NARRA_NODE_INCLUDE`. Link flags per target: `-undefined dynamic_lookup` on macOS, none on Linux, and an import library on Windows (once windows-runtime lands).
+- goal: `narrac build --emit node-addon` writes `<name>.node` for the host or a `--target` row, as D123 item 3 says, with one generated Node-API wrapper per `@export(C)` function, `napi_register_module_v1`, and `<name>.d.ts`. Every export is synchronous.
 - size: M
 - depends_on: c-abi-export (hard: shared library output); c-export-functions (hard: exports and the boundary wrapper); c-abi-design (hard: D122 conversions, panics, threads)
 - acceptance:
@@ -105,24 +85,15 @@ Values cross Node-API as `napi_value`, so C struct layouts are not on the addon 
   - The `.d.ts` file passes `tsc --noEmit` if TypeScript is on the machine. Otherwise the outcome says so.
   - The leak check is clean after a million calls in one process.
 
-### 9. node-addon-wasm: the addon's wasm fallback through emnapi
+### 7. wasm-js-glue: JS wrappers for a wasm library, written by narrac
 
-- goal: the same exports built for `Wasi-Wasm32` as a reactor (c-abi-export), with the node-addon glue compiled in and run against emnapi (`@emnapi/core`, `@emnapi/runtime`). `loadAddon` in npm-loader uses it when no native package is installed.
+- goal: `narrac build --emit wasm-js --target Wasi-Wasm32` writes the reactor module and `<name>.js` plus `<name>.d.ts`, as D123 item 4 says. The JS module instantiates the reactor, holds the WASI preview1 calls the runtime imports, copies strings and bytes through the D122 allocator calls, and throws a JS `Error` for a panic or an `Err`. No outside npm package.
 - size: M
-- depends_on: node-addon (hard); c-abi-export (hard: reactor output); wasi-runtime (hard); npm-loader (contract, via `npm-packages`)
+- depends_on: c-abi-export (hard: reactor output); c-abi-design (hard: D122 conversions); wasi-runtime (hard); node-addon (behavior: same sample and same `.d.ts`)
 - acceptance:
-  - The first step is a capped proof: one export called through emnapi under Node. If it does not work within the cap, the node stops and reports to the gate.
-  - node-addon's sample gives the same results through the wasm build as through the native one, in Node and in a headless browser if one is on the machine.
-  - emnapi's version is pinned in the loader's `package.json`.
-
-### 10. npm-addon-sample: one library in the Node-API form, end to end
-
-- goal: a small library (for example a slug or hash function over strings) with `form = "addon"` packaged by `narrac package`, with native packages for the host and the cross rows plus the wasm fallback. It proves the Node-API path the way npm-narrac proves the command path.
-- size: S
-- depends_on: npm-package (hard); node-addon (hard); node-addon-wasm (hard)
-- acceptance:
-  - The tarballs from `npm pack` install into a scratch project. `require` gives the same results with the host package and with only the wasm package.
-  - A TypeScript file using the package passes `tsc --noEmit` if TypeScript is available.
+  - node-addon's sample gives the same results through `<name>.js` in Node as through the `.node` build, and in a headless browser if one is on the machine. Otherwise the outcome says so.
+  - The generated JS imports nothing outside itself, and `<name>.d.ts` matches node-addon's.
+  - A panic inside an export leaves the instance usable for the next call.
 
 ### Outlines (not scheduled)
 
@@ -135,13 +106,15 @@ Parked: the orchestrator sets priority later and proposes no children (maintaine
 
 ## C library chain
 
-- c-abi-design, c-export-functions and c-abi-export come back for the Node-API form, with the brief changes above. D122 and E1620-E1639 stay reserved for them.
-- c-layout stays parked with E1610-E1619 reserved. Nothing on the npm path depends on it.
+- c-abi-design, c-export-functions and c-abi-export come back as the base for C libraries, Node addons and the wasm glue, with the brief changes above. D122 and E1620-E1639 stay reserved for them.
+- c-layout stays parked with E1610-E1619 reserved. Nothing on these paths depends on it.
 
-## Questions for the maintainer
+## Maintainer answers (second round, 2026-11-15)
 
-1. The addon's wasm fallback uses emnapi, an outside npm package that napi-rs also uses. Recommended: yes. The alternative is narrac writing its own JS glue for wasm exports, one more M node.
-2. Addon exports are synchronous in the first build, and `Promise` exports wait for node-addon-async. Recommended: yes.
+1. emnapi: no. narrac writes the JS glue for wasm exports (node wasm-js-glue). The maintainer also asked to keep npm out of the language's center: Narra sits on the layer of Go and Rust, so the `[npm]` table and `narrac package` were dropped from D123.
+2. Synchronous exports first: left to the orchestrator. Yes: a `Promise` export needs a design over two event loops, and every proof so far is synchronous.
+
+The gate is passed: children may start.
 
 ## Deviations
 

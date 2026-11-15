@@ -9,7 +9,8 @@ import * as Str from "std/string"
 import * as Lexer from "narrac/lexer"
 import { File, Decl } from "narrac/ast"
 import { parse } from "narrac/parser"
-import { moduleHash } from "narrac/hash"
+import { hashModule } from "narrac/hash"
+import { findUndeclaredImports, prepareDependencies } from "narrac/depload"
 import { Binary, LoadError, parseManifest } from "narrac/manifest"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
@@ -34,6 +35,7 @@ export struct Package {
   search: Array<string>
   nextId: int // the next free node id after all files (one sequence)
   single: bool // loaded from one .nra file, without narra.toml
+  dependencyNames: Array<string> // the packages fetched for this build; their C names carry the package name
 }
 
 function plain(message: string): Array<LoadError> {
@@ -75,7 +77,7 @@ export function loadWith(
   // is a key of overrides is taken from the map instead; narrac lsp passes the text of the
   // documents the editor holds.
   let cache = createParseCache()
-  return loadCached(path, overrides, mutable cache)
+  return loadSources(path, overrides, mutable cache, true)
 }
 
 export function loadCached(
@@ -83,9 +85,18 @@ export function loadCached(
   overrides: Map<string, string>,
   mutable cache: ParseCache,
 ): Result<Package, Array<LoadError>> from cache uses io, alloc {
+  return loadSources(path, overrides, mutable cache, false)
+}
+
+function loadSources(
+  path: string,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+  fetch: bool,
+): Result<Package, Array<LoadError>> from cache uses io, alloc {
   // Unchanged sources come from cache, and the sources parsed here are added to it.
   if (Fs.listDir(path) is Ok(_)) {
-    return loadPackage(path, overrides, mutable cache)
+    return loadPackage(path, overrides, mutable cache, fetch)
   }
   if (!Fs.exists(path) && overrides[path] is None) {
     return Err(plain(`stat ${path}: no such file or directory`))
@@ -202,6 +213,7 @@ function loadFile(
     search: [],
     nextId: cache.nextId,
     single: true,
+    dependencyNames: [],
   })
 }
 
@@ -209,6 +221,7 @@ function loadPackage(
   directory: string,
   overrides: Map<string, string>,
   mutable cache: ParseCache,
+  fetch: bool,
 ): Result<Package, Array<LoadError>> from cache uses io, alloc {
   const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(message)) {
@@ -219,50 +232,78 @@ function loadPackage(
     return Err([error])
   }
   const config = manifest.value
-  let paths: Array<string> = []
-  const listed = Fs.listDir(`${directory}/src`)
-  if (listed is Err(message)) {
-    return Err(plain(message))
+  const prepared = prepareDependencies(directory, config, fetch)
+  if (prepared is Err(error)) {
+    return Err([error])
   }
-  collect(`${directory}/src`, "", mutable paths)
-  if (Arrays.length(paths) == 0) {
-    return Err(plain(`narra.toml: package ${config.name} has no .nra files in src/`))
-  }
-  // The files are numbered in one id sequence, in sorted path order (not load order).
-  sortStrings(mutable paths)
+  // The files are numbered in one id sequence, in sorted path order (not load order); the package
+  // being built comes first, then each dependency.
+  let hashes: Map<string, string> = Map {}
   let modules: Array<SourceModule> = []
   let errors: Array<LoadError> = []
-  let hashes: Map<string, string> = Map {}
-  for (const path of Arrays.values(paths)) {
-    const relative = substring(path, 0, Str.length(path) - 4)
-    const display = `src/${path}`
-    const read = readSource(`${directory}/src/${path}`, overrides)
-    if (read is Err(message)) {
-      return Err(plain(message))
-    }
-    const parsed = parseSource(mutable cache, `${directory}/src/${path}`, read.value, display, true)
-    if (parsed is Err(error)) {
-      Arrays.push(mutable errors, error)
-      continue
-    }
-    const modulePath = `${config.name}/${relative}`
-    // Two modules whose hashes agree would share C names.
-    const hash = moduleHash(modulePath)
-    if (hashes[hash] is Some(other)) {
-      Arrays.push(mutable errors, LoadError {
-        code: "E0417",
-        file: display,
-        line: 0,
-        column: 0,
-        message: `modules "${other}" and "${modulePath}" have the same C name hash; rename one file`,
-      })
-    }
-    hashes[hash] = modulePath
-    const source = parsed.value
-    Arrays.push(
-      mutable modules,
-      newModule(modulePath, display, source.ast, source.firstId, source.endId),
+  let dependencyNames: Array<string> = []
+  let dependencyTable: Map<string, bool> = Map {}
+  for (const dependency of Arrays.values(prepared.value)) {
+    Arrays.push(mutable dependencyNames, dependency.name)
+    dependencyTable[dependency.name] = true
+  }
+  const own = loadPackageModules(
+    config.name,
+    directory,
+    "",
+    false,
+    dependencyTable,
+    overrides,
+    mutable cache,
+    mutable hashes,
+  )
+  if (own is Err(found)) {
+    return Err(found)
+  }
+  let declaredNames: Array<string> = []
+  for (const dependency of Arrays.values(config.dependencies)) {
+    Arrays.push(mutable declaredNames, dependency.name)
+  }
+  for (const module of Arrays.values(own.value)) {
+    const undeclared = findUndeclaredImports(
+      module.file,
+      module.ast.imports,
+      config.name,
+      declaredNames,
+      dependencyNames,
     )
+    for (const problem of Arrays.values(undeclared)) {
+      Arrays.push(mutable errors, problem)
+    }
+    Arrays.push(mutable modules, module)
+  }
+  for (const dependency of Arrays.values(prepared.value)) {
+    const loaded = loadPackageModules(
+      dependency.name,
+      dependency.directory,
+      `${dependency.name}/`,
+      true,
+      dependencyTable,
+      overrides,
+      mutable cache,
+      mutable hashes,
+    )
+    if (loaded is Err(found)) {
+      return Err(found)
+    }
+    for (const module of Arrays.values(loaded.value)) {
+      const undeclared = findUndeclaredImports(
+        module.file,
+        module.ast.imports,
+        dependency.name,
+        dependency.declared,
+        dependencyNames,
+      )
+      for (const problem of Arrays.values(undeclared)) {
+        Arrays.push(mutable errors, problem)
+      }
+      Arrays.push(mutable modules, module)
+    }
   }
   if (Arrays.length(errors) > 0) {
     return Err(errors)
@@ -283,7 +324,78 @@ function loadPackage(
     search: config.search,
     nextId: cache.nextId,
     single: false,
+    dependencyNames,
   })
+}
+
+function loadPackageModules(
+  name: string,
+  directory: string,
+  displayPrefix: string,
+  isDependency: bool,
+  dependencyNames: Map<string, bool>,
+  overrides: Map<string, string>,
+  mutable cache: ParseCache,
+  mutable hashes: Map<string, string>,
+): Result<Array<SourceModule>, Array<LoadError>> from cache uses io, alloc {
+  let paths: Array<string> = []
+  const listed = Fs.listDir(`${directory}/src`)
+  if (listed is Err(message)) {
+    return Err(plain(message))
+  }
+  collect(`${directory}/src`, "", mutable paths)
+  if (Arrays.length(paths) == 0) {
+    if (isDependency) {
+      return Err([
+        LoadError {
+          code: "E0462",
+          file: "",
+          line: 0,
+          column: 1,
+          message: `the dependency ${name} has no .nra files in src/`,
+        },
+      ])
+    }
+    return Err(plain(`narra.toml: package ${name} has no .nra files in src/`))
+  }
+  sortStrings(mutable paths)
+  let modules: Array<SourceModule> = []
+  let errors: Array<LoadError> = []
+  for (const path of Arrays.values(paths)) {
+    const relative = substring(path, 0, Str.length(path) - 4)
+    const display = `${displayPrefix}src/${path}`
+    const read = readSource(`${directory}/src/${path}`, overrides)
+    if (read is Err(message)) {
+      return Err(plain(message))
+    }
+    const parsed = parseSource(mutable cache, `${directory}/src/${path}`, read.value, display, true)
+    if (parsed is Err(error)) {
+      Arrays.push(mutable errors, error)
+      continue
+    }
+    const modulePath = `${name}/${relative}`
+    // Two modules whose hashes agree would share C names.
+    const hash = hashModule(dependencyNames, modulePath)
+    if (hashes[hash] is Some(other)) {
+      Arrays.push(mutable errors, LoadError {
+        code: "E0417",
+        file: display,
+        line: 0,
+        column: 0,
+        message: `modules "${other}" and "${modulePath}" have the same C name hash; rename one file`,
+      })
+    }
+    hashes[hash] = modulePath
+    const source = parsed.value
+    Arrays.push(
+      mutable modules,
+      newModule(modulePath, display, source.ast, source.firstId, source.endId),
+    )
+  }
+  if (Arrays.length(errors) > 0) {
+    return Err(errors)
+  }
+  return Ok(modules)
 }
 
 function collect(root: string, relative: string, mutable out: Array<string>) uses io, alloc {

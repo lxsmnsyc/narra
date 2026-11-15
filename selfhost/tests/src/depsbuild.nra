@@ -1,0 +1,392 @@
+// The cases of the deps suite that build a package with dependencies. Each folder of
+// testdata/deps/build holds `roots/app/` (the package), `repos/<repo>/<tag folder>/` (one commit per
+// folder, as in the resolve cases), and `run.out` (what the program prints) or `error.txt` (the
+// code of the error). No case reaches the network: every repository is a file:// URL and every
+// cache is a scratch folder.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Common from "testrunner/context"
+import { Context, TestCase } from "testrunner/context"
+import * as Fixtures from "testrunner/gitfixtures"
+import { SUBSTITUTE_SCRIPT, buildRepositories } from "testrunner/depsresolve"
+import { Scratch, makeScratch, writeFile } from "testrunner/scratch"
+import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
+
+const CASE_NAMES = [
+  "build-app",
+  "build-locked",
+  "build-locked-transitive",
+  "build-stale-lock",
+  "build-same-path",
+  "build-error-lock-mismatch",
+  "build-error-undeclared",
+  "build-error-no-sources",
+]
+
+const NO_GIT_PATH = "PATH=/nonexistent"
+
+// $1 is the lock file; the last [[package]] table and the blank line before it are removed.
+const DROP_LAST_ENTRY_SCRIPT = "n=$(grep -n '^\\[\\[package\\]\\]' \"$1\" | tail -1 | cut -d: -f1); head -n $((n - 2)) \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\""
+
+export function collectBuildCases(context: Context): Array<TestCase> uses alloc {
+  let cases: Array<TestCase> = []
+  for (const name of Arrays.values(CASE_NAMES)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "deps",
+      name: name,
+      path: Path.join(context.testdata, "deps/build"),
+      variant: name,
+    })
+  }
+  return cases
+}
+
+function chooseFixture(variant: string): string {
+  if (
+    variant == "build-locked" ||
+      variant == "build-locked-transitive" ||
+      variant == "build-stale-lock" ||
+      variant == "build-error-lock-mismatch"
+  ) {
+    return "app"
+  }
+  return Str.sliceFrom(variant, Str.length("build-"))
+}
+
+function findErrorText(code: string): string {
+  // The printed error has no code, so each code is found by a part of its message.
+  if (code == "E0452") {
+    return "narra.lock records commit"
+  }
+  if (code == "E0460") {
+    return "is not in the cache"
+  }
+  if (code == "E0461") {
+    return "narra.lock has no entry for"
+  }
+  if (code == "E0462") {
+    return "has no .nra files in src/"
+  }
+  return "has no [dependencies] entry for it"
+}
+
+function runNarrac(
+  context: Context,
+  scratch: Scratch,
+  directory: string,
+  extraEnvironment: Array<string>,
+  arguments: Array<string>,
+): CommandResult uses io, alloc {
+  let environment = [
+    `NARRA_CACHE=${scratch.root}/cache`,
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_NOSYSTEM=1",
+  ]
+  for (const assignment of Arrays.values(extraEnvironment)) {
+    Arrays.push(mutable environment, assignment)
+  }
+  return Common.runNarracWith(context, directory, environment, arguments)
+}
+
+function expectErrorText(result: CommandResult, code: string): Result<bool, string> uses alloc {
+  if (result.code != 1) {
+    return Err(`want exit code 1, got ${Common.describeRun(result)}`)
+  }
+  if (!Str.contains(result.errorOutput, findErrorText(code))) {
+    return Err(`want error ${code}, got ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+function runApp(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Path.join(caseFolder, "run.out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  // The debug build has the sanitizers and the runtime's leak check on.
+  const debug = runNarrac(context, scratch, scratch.work, [], ["run", "-sanitize", appFolder])
+  const checked = Common.expectRun(debug, 0, want.value)
+  if (checked is Err(message)) {
+    return Err(`debug: ${message}`)
+  }
+  const lockPath = Path.join(appFolder, "narra.lock")
+  const firstLock = Fs.readText(lockPath)
+  if (firstLock is Err(message)) {
+    return Err(message)
+  }
+  if (
+    !Str.contains(firstLock.value, "name = \"json\"") ||
+      !Str.contains(firstLock.value, "name = \"util\"")
+  ) {
+    return Err(`the lock does not list json and util:\n${firstLock.value}`)
+  }
+  const release = runNarrac(context, scratch, scratch.work, [], ["run", "-release", appFolder])
+  const releaseChecked = Common.expectRun(release, 0, want.value)
+  if (releaseChecked is Err(message)) {
+    return Err(`release: ${message}`)
+  }
+  // Only the tests of the package run; json has a failing one that must stay out.
+  const tested = runNarrac(context, scratch, scratch.work, [], ["test", "-sanitize", appFolder])
+  if (tested.code != 0 || !Str.contains(tested.output, "1 passed, 0 failed")) {
+    return Err(`want 1 passed, 0 failed, got ${Common.describeRun(tested)}`)
+  }
+  const secondLock = Fs.readText(lockPath)
+  if (secondLock is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("narra.lock after the second build", firstLock.value, secondLock.value)
+}
+
+function runLocked(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const built = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (built.code != 0) {
+    return Err(`building: ${Common.describeRun(built)}`)
+  }
+  // The language service takes the lock and the cache and starts no process.
+  const locked = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [NO_GIT_PATH],
+    ["pkg", "--locked", appFolder],
+  )
+  if (locked.code != 0) {
+    return Err(`locked load: ${Common.describeRun(locked)}`)
+  }
+  for (const wanted of Arrays.values([
+    "module \"json/parse\"",
+    "module \"util/text\"",
+    "module \"app/text\"",
+  ])) {
+    if (!Str.contains(locked.output, wanted)) {
+      return Err(`the package dump has no ${wanted}:\n${locked.output}`)
+    }
+  }
+  // Without the lock entry, the language service reports it and does not resolve.
+  const lockPath = Path.join(appFolder, "narra.lock")
+  const removed = Shell.runScript("rm -f \"$1\"", [lockPath])
+  if (removed.code != 0) {
+    return Err(`cannot remove the lock: ${Str.trim(removed.errorOutput)}`)
+  }
+  const stale = runNarrac(context, scratch, scratch.work, [], ["pkg", "--locked", appFolder])
+  const staleChecked = expectErrorText(stale, "E0461")
+  if (staleChecked is Err(message)) {
+    return Err(message)
+  }
+  if (Fs.exists(lockPath)) {
+    return Err("the language service wrote narra.lock")
+  }
+  // With the lock and an empty cache, it reports the missing checkout and does not fetch.
+  const rebuilt = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [],
+    ["build", "-o", "app.bin", appFolder],
+  )
+  if (rebuilt.code != 0) {
+    return Err(`building again: ${Common.describeRun(rebuilt)}`)
+  }
+  const cache = Path.join(scratch.root, "cache")
+  const cleared = Shell.runScript("chmod -R u+w \"$1\" && rm -rf \"$1\"", [cache])
+  if (cleared.code != 0) {
+    return Err(`cannot clear the cache: ${Str.trim(cleared.errorOutput)}`)
+  }
+  const missing = runNarrac(context, scratch, scratch.work, [], ["pkg", "--locked", appFolder])
+  const missingChecked = expectErrorText(missing, "E0460")
+  if (missingChecked is Err(message)) {
+    return Err(message)
+  }
+  if (Fs.exists(cache)) {
+    return Err("the language service fetched a dependency")
+  }
+  return Ok(true)
+}
+
+function runLockedTransitive(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const built = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (built.code != 0) {
+    return Err(`building: ${Common.describeRun(built)}`)
+  }
+  // The lock keeps json, which needs util, but loses util.
+  const cut = Shell.runScript(DROP_LAST_ENTRY_SCRIPT, [Path.join(appFolder, "narra.lock")])
+  if (cut.code != 0) {
+    return Err(`cannot change the lock: ${Str.trim(cut.errorOutput)}`)
+  }
+  const locked = runNarrac(context, scratch, scratch.work, [], ["pkg", "--locked", appFolder])
+  return expectErrorText(locked, "E0461")
+}
+
+function runStaleLock(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const built = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (built.code != 0) {
+    return Err(`building: ${Common.describeRun(built)}`)
+  }
+  // The package drops every dependency and no longer imports them.
+  const manifestWritten = writeFile(
+    Path.join(appFolder, "narra.toml"),
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[binary]]\nname = \"app\"\nentry = \"main.run\"\n",
+  )
+  if (manifestWritten is Err(message)) {
+    return Err(message)
+  }
+  const mainWritten = writeFile(
+    Path.join(appFolder, "src/main.nra"),
+    "export function run(args: Array<string>): int {\n  return 0\n}\n",
+  )
+  if (mainWritten is Err(message)) {
+    return Err(message)
+  }
+  const again = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (again.code != 0) {
+    return Err(`building without dependencies: ${Common.describeRun(again)}`)
+  }
+  const lock = Fs.readText(Path.join(appFolder, "narra.lock"))
+  if (lock is Err(message)) {
+    return Err(message)
+  }
+  if (Str.contains(lock.value, "[[package]]")) {
+    return Err(`the lock still lists packages:\n${lock.value}`)
+  }
+  return Ok(true)
+}
+
+function runSamePath(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Path.join(caseFolder, "run.out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const result = runNarrac(context, scratch, scratch.work, [], ["run", "-sanitize", appFolder])
+  return Common.expectRun(result, 0, want.value)
+}
+
+function runLockMismatch(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const first = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (first.code != 0) {
+    return Err(`building: ${Common.describeRun(first)}`)
+  }
+  const lockPath = Path.join(appFolder, "narra.lock")
+  const broken = Shell.runScript(
+    "sed 's|^content = .*|content = \"0000000000000000000000000000000000000000\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"",
+    [lockPath],
+  )
+  if (broken.code != 0) {
+    return Err(`cannot change the lock: ${Str.trim(broken.errorOutput)}`)
+  }
+  const second = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [],
+    ["build", "-o", "app.bin", appFolder],
+  )
+  return expectErrorText(second, "E0452")
+}
+
+function runBuilt(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+  repositoriesFolder: string,
+  variant: string,
+): Result<bool, string> uses io, alloc {
+  const built = buildRepositories(caseFolder, repositoriesFolder)
+  if (built is Err(message)) {
+    return Err(message)
+  }
+  const appFolder = Path.join(caseFolder, "roots/app")
+  if (variant == "build-app") {
+    return runApp(context, scratch, appFolder, caseFolder)
+  }
+  if (variant == "build-locked") {
+    return runLocked(context, scratch, appFolder)
+  }
+  if (variant == "build-locked-transitive") {
+    return runLockedTransitive(context, scratch, appFolder)
+  }
+  if (variant == "build-stale-lock") {
+    return runStaleLock(context, scratch, appFolder)
+  }
+  if (variant == "build-same-path") {
+    return runSamePath(context, scratch, appFolder, caseFolder)
+  }
+  if (variant == "build-error-lock-mismatch") {
+    return runLockMismatch(context, scratch, appFolder)
+  }
+  const want = Common.readExpected(Path.join(caseFolder, "error.txt"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const result = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [],
+    ["build", "-o", "app.bin", appFolder],
+  )
+  return expectErrorText(result, Str.trim(want.value))
+}
+
+export function runBuildCase(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  if (!Fixtures.isGitAvailable()) {
+    print(`deps/${testCase.name}: skipped, git is not on PATH`)
+    return Ok(true)
+  }
+  const made = makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const caseFolder = Path.join(scratch.root, "case")
+  const fixture = Path.join(testCase.path, chooseFixture(testCase.variant))
+  const repositoriesFolder = Path.join(scratch.root, "repos")
+  const copied = Shell.runScript("cp -R \"$1\" \"$2\"", [fixture, caseFolder])
+  let outcome: Result<bool, string> = Ok(true)
+  if (copied.code != 0) {
+    outcome = Err(`cannot copy ${fixture}: ${Str.trim(copied.errorOutput)}`)
+  } else {
+    const substituted = Shell.runScript(SUBSTITUTE_SCRIPT, [
+      caseFolder,
+      `file://${repositoriesFolder}`,
+    ])
+    if (substituted.code != 0) {
+      outcome = Err(`cannot fill in the URLs: ${Str.trim(substituted.errorOutput)}`)
+    } else {
+      outcome = runBuilt(context, scratch, caseFolder, repositoriesFolder, testCase.variant)
+    }
+  }
+  Fixtures.removeFixtures(scratch.root)
+  return outcome
+}

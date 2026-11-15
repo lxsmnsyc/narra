@@ -2061,6 +2061,9 @@ search = ["/opt/homebrew/lib"]
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
 - **`narra.lock`** records the commit hash and content hash of every dependency. `narra build` fails when a fetched dependency does not match its hash.
+- **`[dependencies]`** holds one inline table per dependency: `name = { git = "...", version = "1.2.0" }`. `git` is a URL or a local path; `version` is the minimum version as `MAJOR.MINOR.PATCH`, and its tag is `v` plus the version. `[package] version` has the same form. The name is the import path prefix and follows the rules of a package name.
+- **`narra.lock` shape.** A TOML file with a comment line, then one `[[package]]` table per dependency, sorted by name, with the keys `name`, `git`, `version` (the selected version), `commit` (the full commit hash of the tag) and `content` (the git tree hash of that commit), in that order.
+- **Manifest and lock errors:** E0430 a dependency without `git` or `version`; E0431 a version that is not `MAJOR.MINOR.PATCH`; E0432 an unknown or repeated key in a dependency; E0433 a dependency named `std` or like the package; E0434 two dependencies with one name; E0435 a dependency that is not a valid inline table, such as one with a trailing comma; E0436 an invalid dependency name; E0437 a malformed `narra.lock` line; E0438 a lock entry with an unknown, missing or repeated key; E0439 two lock entries with one name.
 
 ## 16. Deferred
 

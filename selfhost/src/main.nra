@@ -50,6 +50,9 @@ import * as Query from "narrac/query"
 import * as Driver from "narrac/driver"
 import * as Lsp from "narrac/lsp"
 import * as Audit from "narrac/audit"
+import { parseManifest } from "narrac/manifest"
+import { parseLock, formatLock } from "narrac/lockfile"
+import { quoteGo } from "narrac/parser"
 import * as Arrays from "std/array"
 
 export function run(arguments: Array<string>): int uses io, alloc {
@@ -88,6 +91,9 @@ export function run(arguments: Array<string>): int uses io, alloc {
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "pkg") {
     return pkgDump(arguments[2])
+  }
+  if (Arrays.length(arguments) == 4 && arguments[1] == "pkg" && arguments[2] == "--deps") {
+    return depsDump(arguments[3])
   }
   if (Arrays.length(arguments) == 3 && arguments[1] == "decls") {
     return declsDump(arguments[2])
@@ -199,6 +205,47 @@ function pkgDump(path: string): int uses io, alloc {
     return 1
   }
   return writeStdout(Modules.dump(loaded.value))
+}
+
+function depsDump(path: string): int uses io, alloc {
+  const text = Fs.readText(`${path}/narra.toml`)
+  if (text is Err(message)) {
+    printError(message)
+    return 1
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(error)) {
+    const _ = Fs.writeText("/dev/stderr", Modules.errorText([error]))
+    return 1
+  }
+  let output = `version ${quoteGo(parsed.value.version)}\n`
+  for (const dependency of Arrays.values(parsed.value.dependencies)) {
+    output = `${output}dependency ${quoteGo(dependency.name)} git=${quoteGo(dependency.git)} version=${quoteGo(dependency.version)} line=${Int.toString(dependency.line)}\n`
+  }
+  if (Fs.exists(`${path}/narra.lock`)) {
+    const lockText = Fs.readText(`${path}/narra.lock`)
+    if (lockText is Err(message)) {
+      printError(message)
+      return 1
+    }
+    const entries = parseLock(lockText.value)
+    if (entries is Err(error)) {
+      const _ = Fs.writeText("/dev/stderr", Modules.errorText([error]))
+      return 1
+    }
+    const formatted = formatLock(entries.value)
+    const again = parseLock(formatted)
+    if (again is Err(_)) {
+      printError("narra.lock does not round-trip")
+      return 1
+    }
+    if (formatLock(again.value) != formatted) {
+      printError("narra.lock does not round-trip")
+      return 1
+    }
+    output = `${output}---\n${formatted}`
+  }
+  return writeStdout(output)
 }
 
 function pkgIds(path: string, corrupt: bool): int uses io, alloc {

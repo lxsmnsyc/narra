@@ -14,10 +14,19 @@ export struct Binary {
   entry: string // "cli.run": module path inside the package, then the function
 }
 
+export struct Dependency {
+  name: string // the key in [dependencies], also the import path prefix
+  git: string // a URL or a local path
+  version: string // "1.2.0": the minimum version, tag "v1.2.0"
+  line: int // narra.toml line, for diagnostics
+}
+
 export struct Manifest {
   name: string
+  version: string
   binaries: Array<Binary>
   search: Array<string>
+  dependencies: Array<Dependency>
 }
 
 // An error of the loader. An empty file and line 0 print as a bare message
@@ -34,6 +43,7 @@ export struct LoadError {
 enum Value {
   VStr(text: string)
   VList(items: Array<string>)
+  VTable(keys: Array<string>, values: Array<string>)
 }
 
 const QUOTE = 34
@@ -50,6 +60,8 @@ function createError(line: int, code: string, message: string): LoadError {
 
 export function parseManifest(text: string): Result<Manifest, LoadError> uses alloc {
   let name = ""
+  let version = ""
+  let dependencies: Array<Dependency> = []
   let binaries: Array<Binary> = []
   let search: Array<string> = []
   let table = ""
@@ -87,14 +99,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         inBinary = false
       }
       table = Str.trim(substring(line, 1, Str.length(line) - 1))
-      if (table == "dependencies") {
-        return Err(
-          createError(lineNumber, "E0407", "[dependencies] is not supported by this compiler yet"),
-        )
-      }
       continue
     }
-    const known = table == "package" || table == "link" || table == "[[binary]]"
+    const known =
+      table == "package" || table == "link" || table == "dependencies" || table == "[[binary]]"
     const equalsIndex = Str.indexOf(line, "=")
     if (equalsIndex is None) {
       if (!known) {
@@ -115,10 +123,43 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     const parsed = parseValue(raw)
     if (parsed is Err(error)) {
+      if (table == "dependencies") {
+        return Err(
+          createError(
+            lineNumber,
+            "E0435",
+            `dependency ${key} is not a valid inline table: ${error}`,
+          ),
+        )
+      }
       return Err(createError(lineNumber, "E0409", `${key}: ${error}`))
     }
     const value = parsed.value
     const qualifiedKey = `${table}.${key}`
+    if (table == "dependencies") {
+      const dependency = readDependency(key, value, lineNumber)
+      if (dependency is Err(error)) {
+        return Err(error)
+      }
+      Arrays.push(mutable dependencies, dependency.value)
+      continue
+    }
+    if (qualifiedKey == "package.version") {
+      if (value is Value.VStr(versionText)) {
+        if (!isVersion(versionText)) {
+          return Err(
+            createError(
+              lineNumber,
+              "E0431",
+              `version ${quoteGo(versionText)} is not MAJOR.MINOR.PATCH`,
+            ),
+          )
+        }
+        version = versionText
+        continue
+      }
+      return Err(createError(lineNumber, "E0412", `${key} must be a string`))
+    }
     if (qualifiedKey == "package.name") {
       if (value is Value.VStr(packageName)) {
         if (isValidPackageName(packageName)) {
@@ -188,11 +229,107 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     seen[binary.name] = true
   }
+  let names: Map<string, bool> = Map {}
+  for (const dependency of Arrays.values(dependencies)) {
+    if (dependency.name == "std" || dependency.name == name) {
+      return Err(
+        createError(
+          dependency.line,
+          "E0433",
+          `a dependency cannot be named ${quoteGo(dependency.name)}: it is the standard library or this package`,
+        ),
+      )
+    }
+    if (names[dependency.name] is Some(_)) {
+      return Err(
+        createError(
+          dependency.line,
+          "E0434",
+          `two dependencies are named ${quoteGo(dependency.name)}`,
+        ),
+      )
+    }
+    names[dependency.name] = true
+  }
   return Ok(Manifest {
     name,
+    version,
     binaries,
     search,
+    dependencies,
   })
+}
+
+function readDependency(
+  key: string,
+  value: Value,
+  line: int,
+): Result<Dependency, LoadError> uses alloc {
+  if (!isValidPackageName(key)) {
+    return Err(
+      createError(
+        line,
+        "E0436",
+        `dependency name ${quoteGo(key)} must be letters, digits and \`_\`, starting with a letter`,
+      ),
+    )
+  }
+  if (value is Value.VTable(keys, values)) {
+    let git = ""
+    let version = ""
+    let seenGit = false
+    let seenVersion = false
+    for (const index of Ranges.between(0, Arrays.length(keys))) {
+      const field = keys[index]
+      if (field == "git" && !seenGit) {
+        git = values[index]
+        seenGit = true
+      } else if (field == "version" && !seenVersion) {
+        version = values[index]
+        seenVersion = true
+      } else {
+        return Err(
+          createError(
+            line,
+            "E0432",
+            `dependency ${key} has an unknown or repeated key ${quoteGo(field)}; it takes git and version`,
+          ),
+        )
+      }
+    }
+    if (git == "" || version == "") {
+      return Err(createError(line, "E0430", `dependency ${key} needs a git and a version`))
+    }
+    if (!isVersion(version)) {
+      return Err(createError(line, "E0431", `version ${quoteGo(version)} is not MAJOR.MINOR.PATCH`))
+    }
+    return Ok(Dependency { name: key, git, version, line })
+  }
+  return Err(
+    createError(
+      line,
+      "E0435",
+      `dependency ${key} is not a valid inline table: expected { git = "...", version = "1.2.0" }`,
+    ),
+  )
+}
+
+export function isVersion(text: string): bool {
+  const length = Str.length(text)
+  let parts = 0
+  let digits = 0
+  for (const index of Ranges.between(0, length)) {
+    const code = Str.byteAt(text, index)
+    if (code >= 48 && code <= 57) {
+      digits++
+    } else if (code == 46 && digits > 0) {
+      parts++
+      digits = 0
+    } else {
+      return false
+    }
+  }
+  return parts == 2 && digits > 0
 }
 
 function isValidPackageName(name: string): bool {
@@ -213,7 +350,7 @@ function isLetter(code: int): bool {
   return (code >= 97 && code <= 122) || (code >= 65 && code <= 90)
 }
 
-function stripComment(line: string): string uses alloc {
+export function stripComment(line: string): string uses alloc {
   let quote = 0
   let index = 0
   const length = Str.length(line)
@@ -261,6 +398,9 @@ function isClosedArray(text: string): bool {
 }
 
 function parseValue(text: string): Result<Value, string> uses alloc {
+  if (Str.startsWith(text, "{")) {
+    return parseInlineTable(text)
+  }
   if (Str.startsWith(text, "[")) {
     let items: Array<string> = []
     let rest = Str.trim(Str.sliceFrom(text, 1))
@@ -296,7 +436,7 @@ function parseValue(text: string): Result<Value, string> uses alloc {
   return Ok(Value.VStr(item))
 }
 
-function parseString(text: string): Result<#[string, int], string> uses alloc {
+export function parseString(text: string): Result<#[string, int], string> uses alloc {
   const length = Str.length(text)
   if (length == 0 || (Str.byteAt(text, 0) != QUOTE && Str.byteAt(text, 0) != APOSTROPHE)) {
     return Err("expected a string")
@@ -332,4 +472,45 @@ function parseString(text: string): Result<#[string, int], string> uses alloc {
     index = next
   }
   return Err("unterminated string")
+}
+
+function parseInlineTable(text: string): Result<Value, string> uses alloc {
+  let keys: Array<string> = []
+  let values: Array<string> = []
+  let rest = Str.trim(Str.sliceFrom(text, 1))
+  let afterComma = false
+  while (true) {
+    if (Str.startsWith(rest, "}")) {
+      if (afterComma) {
+        return Err("a trailing comma is not allowed in an inline table")
+      }
+      if (Str.trim(Str.sliceFrom(rest, 1)) != "") {
+        return Err("unexpected text after the table")
+      }
+      return Ok(Value.VTable(keys, values))
+    }
+    const equalsIndex = Str.indexOf(rest, "=")
+    if (equalsIndex is None) {
+      return Err("expected `key = value` in the table")
+    }
+    const key = Str.trim(substring(rest, 0, equalsIndex.value))
+    if (key == "") {
+      return Err("expected a key in the table")
+    }
+    const parsed = parseString(Str.trim(Str.sliceFrom(rest, equalsIndex.value + 1)))
+    if (parsed is Err(error)) {
+      return Err(error)
+    }
+    const #[item, consumed] = parsed.value
+    Arrays.push(mutable keys, key)
+    Arrays.push(mutable values, item)
+    rest = Str.trim(Str.sliceFrom(Str.trim(Str.sliceFrom(rest, equalsIndex.value + 1)), consumed))
+    afterComma = false
+    if (Str.startsWith(rest, ",")) {
+      rest = Str.trim(Str.sliceFrom(rest, 1))
+      afterComma = true
+    } else if (!Str.startsWith(rest, "}")) {
+      return Err("expected `,` or `}` in the table")
+    }
+  }
 }

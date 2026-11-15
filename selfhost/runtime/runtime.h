@@ -4,6 +4,12 @@
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
+#ifdef _WIN32
+#define _CRT_RAND_S
+#include <fcntl.h>
+#include <io.h>
+#include <direct.h>
+#endif
 #include <inttypes.h>
 #include <math.h>
 #include <setjmp.h>
@@ -13,6 +19,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#ifdef _WIN32
+// Standard streams and fopen default to text mode on Windows, which rewrites
+// "\n" as "\r\n" and stops reading at a Ctrl-Z byte. Narra programs move bytes
+// as they are, so the process starts in binary mode.
+__attribute__((constructor)) static void narra_windows_binary_mode(void) {
+  _set_fmode(_O_BINARY);
+  _setmode(_fileno(stdin), _O_BINARY);
+  _setmode(_fileno(stdout), _O_BINARY);
+  _setmode(_fileno(stderr), _O_BINARY);
+}
+#define narra_mkdir(path) _mkdir(path)
+#define NARRA_PATH_WINDOWS 1
+#else
+#define narra_mkdir(path) mkdir(path, 0777)
+#define NARRA_PATH_WINDOWS 0
+#endif
 
 // Thread mode (D111): a program that imports std/thread is emitted with
 // NARRA_THREADS defined. Shared objects then carry negative counts that change

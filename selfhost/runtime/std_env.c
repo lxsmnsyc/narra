@@ -97,6 +97,13 @@ static lstr* narra_env_arg(int64_t i) {
   const char* a = (*_NSGetArgv())[i];
   return narra_io_lossy(a, strlen(a));
 }
+#elif defined(_WIN32)
+// The C runtime of MinGW splits the command line into __argc and __argv.
+static int64_t narra_env_argc(void) { return __argc; }
+static lstr* narra_env_arg(int64_t i) {
+  const char* a = __argv[i];
+  return narra_io_lossy(a, strlen(a));
+}
 #else
 // Elsewhere the arguments are read once from /proc/self/cmdline.
 static char* narra_env_buf;

@@ -1,0 +1,88 @@
+import * as Fs from "std/fs"
+import * as Env from "std/env"
+import * as Path from "std/path"
+import * as Time from "std/time"
+import * as Random from "std/random"
+import * as Thread from "std/thread"
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+
+function scratchRoot(): string {
+  const temporary = Env.get("TMPDIR")
+  if (temporary is Some(dir)) {
+    return dir
+  }
+  const windowsTemporary = Env.get("TEMP")
+  if (windowsTemporary is Some(dir)) {
+    return dir
+  }
+  return "."
+}
+
+function sumRange(first: int, last: int): int {
+  let total = 0
+  for (let value = first; value < last; value++) {
+    total += value
+  }
+  return total
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // Files: a text file with line feeds must come back byte for byte.
+  const folder = Path.join(scratchRoot(), "narra_windows_runtime")
+  const nested = Path.join(folder, "a/b")
+  const made = Fs.createDirAll(nested)
+  print(`createDirAll ok: ${Show.show(made is Ok(_))}`)
+  const file = Path.join(nested, "lines.txt")
+  const wrote = Fs.writeText(file, "one\ntwo\n")
+  if (wrote is Ok(count)) {
+    print(`wrote ${Int.toString(count)} bytes`)
+  }
+  const raw = Fs.readBytes(file)
+  if (raw is Ok(data)) {
+    print(`read ${Int.toString(Bytes.length(data))} bytes`)
+  }
+  const text = Fs.readText(file)
+  if (text is Ok(content)) {
+    print(`text ${Int.toString(Bytes.length(Bytes.fromString(content)))} bytes`)
+  }
+  print(`exists: ${Show.show(Fs.exists(file))}, isDir: ${Show.show(Fs.isDir(nested))}`)
+  const names = Fs.listDir(nested)
+  if (names is Ok(items)) {
+    for (const name of Arrays.values(items)) {
+      print(`entry ${name}`)
+    }
+  }
+  const _ = Fs.removeFile(file)
+  const _ = Fs.removeDir(nested)
+  const _ = Fs.removeDir(Path.join(folder, "a"))
+  const _ = Fs.removeDir(folder)
+  print(`after cleanup: ${Show.show(Fs.exists(folder))}`)
+
+  // Environment, clock and entropy.
+  print(`unset variable: ${Show.show(Env.get("NARRA_SURELY_NOT_SET") is None)}`)
+  print(`arguments: ${Int.toString(Arrays.length(Env.args()))}`)
+  const start = Time.now()
+  Time.sleep(Time.milliseconds(20))
+  print(`slept: ${Show.show(Time.asMilliseconds(Time.elapsed(start)) >= 19)}`)
+  print(`wall clock set: ${Show.show(Time.unixMillis() > 1600000000000)}`)
+  let generator = Random.fromSystem()
+  print(`entropy in range: ${Show.show(Random.nextInt(mutable generator, 0, 10) is Some(_))}`)
+
+  // Threads.
+  const total = Thread.scope((scope) => {
+    let threads: Array<Thread.Thread<int>> = []
+    for (let part = 0; part < 4; part++) {
+      const first = part * 100
+      Arrays.push(mutable threads, Thread.start(scope, () => sumRange(first, first + 100)))
+    }
+    let sum = 0
+    for (const thread of Arrays.values(threads)) {
+      sum += Thread.join(thread)
+    }
+    return sum
+  })
+  print(`thread sum: ${Int.toString(total)}`)
+  return 0
+}

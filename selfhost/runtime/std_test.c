@@ -284,11 +284,11 @@ static void narra_test_golden(lstr* name, lstr* actual, const char* where) {
   snprintf(path, cap, "%s/%s.golden", dir, name->data);
   if (update) {
     // Create the directories on the way.
-    mkdir(dir, 0777);
+    narra_mkdir(dir);
     for (char* p = path + strlen(dir) + 1; *p; p++) {
       if (*p == '/') {
         *p = 0;
-        mkdir(path, 0777);
+        narra_mkdir(path);
         *p = '/';
       }
     }

@@ -1,7 +1,7 @@
 ---
 id: curl-installer
 title: "curl | sh installer from GitHub releases"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-17

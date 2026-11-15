@@ -1,7 +1,7 @@
 ---
 id: textmate-grammar
 title: "TextMate grammar for Narra, and narra fences in SPEC.md"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-16
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-14
-spent:
+spent: 165871
 owns:
   - roadmaps/selfhost/nodes/textmate-grammar/**
   - editors/textmate/**

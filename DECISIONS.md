@@ -1918,3 +1918,42 @@ Decision (maintainer, 2026-11-14), after the benchmark of node inline-benchmark 
 - **What goes.** The `@inline` attribute, E1030 and E1031, the inliner and its emitter state, the SPEC text, and the samples that tested it. E0990 stays for the other attributes. A program that writes `@inline` gets the parser's unknown-attribute error, with no migration message.
 - **What stays.** `map`, `andThen` and `orElse` in `std/option` keep their signatures and results. An arrow passed to them takes the non-escaping closure path: its environment is on the caller's stack and costs no allocation (D46 and SPEC section 2). An `@inline` function used as a value already had an ordinary C function.
 - **Limit of the evidence.** The benchmark used small bodies that clang inlines by itself. A callee that clang refuses to inline could differ; no such function existed.
+
+## D123. Narra reaches JS and TS as WebAssembly, and the REPL checks and runs in the page
+
+Decision (spike js-interop-design, a goal debate, for the maintainer at the gate): a Narra program reaches npm as one package holding the program built for `Wasi-Wasm32` and a small JS loader with a WASI preview1 shim. narrac is the first such package, and the website REPL uses the same file. The REPL checks, formats and shows the emitted C in the page, and runs a program by loading a C compiler built for wasm on the first Run (open question 1). The C library chain is parked (open question 2). Debate: `roadmaps/selfhost/debate/js-interop/debate.md`. Measurements: proofs T1 and T2 in the debate's `evidence/`, on an Apple M2 (8 GB, macOS 27) with zig 0.17.1, wasmtime 50.0.1 and Node 26.12.1, load average 4 to 48 (other workers building).
+
+The maintainer's question (2026-11-14): how would Narra serve JS and TS packages, the way Go and Rust do through esbuild and oxc, and how does the website REPL compile and run Narra.
+
+| measured | result |
+| --- | --- |
+| `seed/narrac.c` built with `zig cc -target wasm32-wasi -O2` | builds after three runtime patches, 68 to 190 s |
+| narrac.wasm after `llvm-strip` | 6.23 MB. 1.58 MB gzip. 0.99 MB brotli (native narrac 5.08 MB) |
+| `check` and `emit` on hello and regex | same diagnostics. Emitted C byte-identical to native |
+| `check regex.nra` (211 lines) | wasmtime 0.07 s cached (native 0.01 s). Node 219 ms cold |
+| fresh instance and `check` per edit, module compiled once (V8) | 93 to 325 ms |
+| clang 22 in wasm (`@yowasp/clang`) | 72 MB module and 28 MB sysroot, about 19.8 MB brotli |
+| clang in wasm, warm, `-O0`, compile and link | 2-line file 0.10 s. Hello 0.47 s. Regex 2.9 s |
+| clang in wasm, cold process | hello 6.2 s. Regex 17.2 s (`-O2`: 62 s). 194 to 277 MB |
+| `zig cc` of regex's C to wasm on the host | 2.6 s. Output matches `testdata/regex.out` |
+
+1. **npm form.** One package per Narra program: the `.wasm` built with `narrac build --target Wasi-Wasm32`, a JS loader, the shim and a `package.json`. It runs on every OS in Node and in the browser. A program reads its arguments and files and writes to stdout, as a command does. Per-platform native packages in the esbuild shape (`optionalDependencies` with `os` and `cpu`, built by cross-targets) are an opt-in path for a package that measures the speed gap, about 7 times on `check`. A request protocol over stdin and stdout, as esbuild's JS API uses, is outlined until a package needs calls beyond arguments and files.
+2. **narrac on npm.** The first package. Its JS API is `check`, `format` and `emit` over an in-memory file map, each one a fresh instance of the compiled module. TypeScript types ship with it. Publishing is the maintainer's step.
+3. **Runtime on wasi.** Two bugs found by T1 affect every wasi program, so they join node wasi-runtime: `Env.args` reads `/proc/self/cmdline` everywhere but macOS (WASI has no `/proc`. Use `args_get`), and writing to `/dev/stdout` or `/dev/stderr` fails (WASI has no `/dev`. Use descriptors 1 and 2). The process block is left out as that brief already says.
+4. **The shim.** A JS implementation of the WASI preview1 calls narrac imports (18: `args_*`, `environ_*`, `fd_*`, `path_open`, `path_filestat_get`, `path_unlink_file`, `path_remove_directory`, `proc_exit`) over an in-memory file map. It replaces `node:wasi`, which Node 26 marks experimental, and is the only WASI a browser gets. Wasm exception handling is not needed for narrac: it runs with both exception forms turned off. Only a program that reaches the coroutine panic guard (the one `setjmp` in the runtime) needs it.
+5. **REPL check.** The page runs narrac.wasm in a Worker and shows diagnostics, the `fmt` result and the emitted C as the reader types, with no server.
+6. **REPL run.** On the first Run, the page loads clang built for wasm (about 19.8 MB brotli, then the HTTP cache), compiles the emitted C at `-O0` for wasm32-wasi with `-mexception-handling -mllvm -wasm-enable-sjlj -lsetjmp`, and runs the result with the same shim, stdout to the page. The untrusted program runs only in the reader's browser.
+7. **C library chain.** c-abi-design, c-layout, c-export-functions and c-abi-export go to priority later, not dropped. They are what the oxc form needs: Narra functions called in-process from JS through a Node-API addon or wasm exports.
+
+- **Reason.** One wasm file reaches every OS and the browser at 0.99 MB brotli, and the REPL and the npm package then share one artifact and one shim. The planned target-table and wasi-runtime nodes already add the wasm row, so the npm form adds a loader and a package, not a build pipeline per platform. The REPL needs no server for check, and none for Run when clang runs in the page: no sandbox host, rate limits or uptime duty for a page of priority could. A Node-API addon needs the four C library nodes and a native build per platform, for in-process speed that no named user needs.
+- **Cost.** Readers who press Run download about 19.8 MB once, and a Run takes about 0.5 s for a guide-sized sample and 2.9 s for `regex.nra` once loaded, with up to 277 MB in the Worker. Wasm narrac runs `check` about 7 times slower than native. A library called many times from JS pays one instance per call (93 to 325 ms on regex in V8) until the request protocol exists. Programs that use threads, sockets or processes cannot build for `Wasi-Wasm32`. Wasi-runtime makes that a compile error. Firefox, Safari and phones are unmeasured. New work: nodes narrac-wasm, npm-narrac, npm-template, repl-check and repl-run, and two items in wasi-runtime.
+- **Rejected: native per-platform packages first.** One npm package and one publish step per platform, before any user asks for the speed.
+- **Rejected for now: the oxc form (Node-API addon or wasm exports).** Four M nodes held for it plus a Node-API node. It comes back with the chain if open question 2 asks for it.
+- **Rejected for now: a Run server.** It needs a container host with zig (250 MB) and wasmtime, a sandbox, rate limits and someone to keep it up, as the Go and Rust playgrounds do. It is the answer if open question 1 picks it. Only the Run Worker changes.
+- **Rejected: precomputed output instead of Run.** Node website-repl asks that a reader types a program and runs it.
+- **Rejected: an interpreter for Run.** The D105 evaluator runs an alloc-only subset without `print`, closures or generators. A full one would be a second semantics of the whole language.
+- **Rejected: a wasm backend in the compiler.** D10 picked C, and a second backend is far larger than one Worker over clang.
+- **Rejected: a precompiled runtime header for faster Run.** The runtime part of a warm Run is about 0.4 s. The rest grows with the program's own C.
+- **Open for the maintainer** (each with the recommendation). (1) Run: clang in the page loaded on Run (recommended), or a server we host. (2) A Narra library's JS API: the esbuild form over stdin and stdout with the C chain parked (recommended), or the oxc form with in-process calls.
+
+Not built yet.

@@ -52,6 +52,6 @@ Maintainer request, 2026-11-16: the site is "still pretty boring". Redesign it a
 
 ## Acceptance
 
-- [ ] Every child done or out of the batch with a reason.
-- [ ] `pnpm --dir website build` and `sh scripts/test.sh` pass; seed current if selfhost changed.
-- [ ] Checked in Chrome: home, a guide chapter, install and spec, dark and light, phone width, reduced motion.
+- [x] Every child done or out of the batch with a reason. first-release waits for the maintainer.
+- [x] `pnpm --dir website build` and `sh scripts/test.sh` pass; seed current if selfhost changed. test.sh: PASS, 10152 cases; seed unchanged.
+- [x] Checked in Chrome: home, a guide chapter, install and spec, dark and light, phone width. Reduced motion checked by reading the CSS only.

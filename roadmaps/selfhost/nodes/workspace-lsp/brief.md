@@ -1,7 +1,7 @@
 ---
 id: workspace-lsp
 title: "The language service checks a member and the members that depend on it"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-19

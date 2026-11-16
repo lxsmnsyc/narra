@@ -25,6 +25,7 @@
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 import * as Io from "std/io"
+import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
 import { Decl } from "narrac/syntax/ast"
@@ -60,10 +61,9 @@ struct ModuleResult {
 export struct CheckCache {
   parses: ParseCache
   liveIds: int
-  directory: string
-  paths: Array<string>
+  paths: Map<string, Array<string>>
   results: Map<string, ModuleResult>
-  valid: bool
+  valid: Map<string, bool>
   full: bool
   trace: bool
   // The host target, read once per server process.
@@ -74,10 +74,9 @@ export function createCheckCache(): CheckCache uses alloc {
   return CheckCache {
     parses: Modules.createParseCache(),
     liveIds: 0,
-    directory: "",
-    paths: [],
+    paths: Map {},
     results: Map {},
-    valid: false,
+    valid: Map {},
     full: false,
     trace: false,
   }
@@ -92,7 +91,7 @@ export function loadPackage(
   // cache starts over and the next check is whole.
   if (cache.parses.nextId > 4 * cache.liveIds + 100000) {
     cache.parses = Modules.createParseCache()
-    cache.valid = false
+    cache.valid = Map {}
   }
   const loaded = Modules.loadCached(path, overrides, mutable cache.parses)
   if (loaded is Ok(package)) {
@@ -135,16 +134,24 @@ export function checkLoaded(
   return copy(checkWhole(mutable cache, package))
 }
 
+function makeResultKey(package: Package, modulePath: string): string uses alloc {
+  return `${package.directory}\n${modulePath}`
+}
+
 function canReuse(cache: CheckCache, package: Package): bool {
-  if (!cache.valid || cache.directory != package.directory) {
+  if (cache.valid[package.directory] is None) {
     return false
   }
-  if (Arrays.length(cache.paths) != Arrays.length(package.modules)) {
+  const known = cache.paths[package.directory]
+  if (known is None) {
+    return false
+  }
+  if (Arrays.length(known.value) != Arrays.length(package.modules)) {
     return false
   }
   let index = 0
   for (const module of Arrays.values(package.modules)) {
-    if (cache.paths[index] != module.path) {
+    if (known.value[index] != module.path) {
       return false
     }
     index++
@@ -196,12 +203,21 @@ function checkWhole(
   for (const error of Arrays.values(errors)) {
     attributable = attributable && moduleFiles[error.file] is Some(_)
   }
-  cache.directory = package.directory
-  cache.paths = []
-  cache.results = Map {}
+  // The results of the last check of this package go before the new ones are written.
+  const keyPrefix = `${package.directory}\n`
+  let staleKeys: Array<string> = []
+  for (const key of Arrays.values(Maps.keys(cache.results))) {
+    if (Str.startsWith(key, keyPrefix)) {
+      Arrays.push(mutable staleKeys, key)
+    }
+  }
+  for (const key of Arrays.values(staleKeys)) {
+    const _removed = Maps.remove(mutable cache.results, key)
+  }
+  let paths: Array<string> = []
   for (const module of Arrays.values(package.modules)) {
-    Arrays.push(mutable cache.paths, module.path)
-    cache.results[module.path] = ModuleResult {
+    Arrays.push(mutable paths, module.path)
+    cache.results[makeResultKey(package, module.path)] = ModuleResult {
       module,
       checkErrors: selectErrors(errors, 0, result.unusedStart, module.file),
       unusedErrors: selectErrors(errors, result.unusedStart, checkCount, module.file),
@@ -210,7 +226,12 @@ function checkWhole(
       effectsKnown: effectsRan,
     }
   }
-  cache.valid = attributable
+  cache.paths[package.directory] = paths
+  if (attributable) {
+    cache.valid[package.directory] = true
+  } else {
+    const _removed = Maps.remove(mutable cache.valid, package.directory)
+  }
   writeTrace(cache, "whole package")
   return errors
 }
@@ -243,7 +264,7 @@ function checkChanged(
   let reach: Array<string> = []
   let results: Array<ModuleResult> = []
   for (const module of Arrays.values(package.modules)) {
-    const cached = cache.results[module.path]
+    const cached = cache.results[makeResultKey(package, module.path)]
     if (cached is None) {
       return Err([])
     }
@@ -364,7 +385,7 @@ function checkChanged(
         unusedKnown: unusedRuns,
         effectsKnown: effectsRun,
       }
-      cache.results[module.path] = results[index]
+      cache.results[makeResultKey(package, module.path)] = results[index]
     }
   }
   if (Arrays.length(checkedNames) == 0) {

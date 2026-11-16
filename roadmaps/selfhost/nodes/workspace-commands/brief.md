@@ -1,7 +1,7 @@
 ---
 id: workspace-commands
 title: "build, run, test, check, fmt and query at the workspace root"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-19
@@ -34,7 +34,7 @@ shared:
   - selfhost/tests/src/packages.nra
   - SPEC.md
   - docs/guide/*.md
-reserves: [diag E0488-E0489]
+reserves: [diag E0488-E0490]
 provides: []
 depends_on:
   - on: workspace-loader

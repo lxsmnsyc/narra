@@ -1,0 +1,3 @@
+- Baseline on feat/batch-19: 10434 cases, emit sha 83c4e9c0. Seed already reported older than source before this node.
+- Added root narra.toml and packages case repository/workspace. Verified it fails with no manifest and with a member dropped.
+- After: 10435 cases, emit identical, check . and fmt --check . exit 0.

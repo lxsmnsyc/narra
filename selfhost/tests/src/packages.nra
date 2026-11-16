@@ -5,11 +5,17 @@
 // testdata/packages/errors belong to the errors suite.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
+import * as Int from "std/int"
 import * as Path from "std/path"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Files from "testrunner/files"
+import * as Fixtures from "testrunner/gitfixtures"
+import * as Shell from "testrunner/shell"
+import { SUBSTITUTE_SCRIPT, buildRepositories } from "testrunner/depsresolve"
+import { Scratch, makeScratch, removeScratch, writeFile } from "testrunner/scratch"
+import { splitString } from "testrunner/textops"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   let cases: Array<TestCase> = []
@@ -26,10 +32,49 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       }
     }
   }
+  const workspaceFolder = Path.join(context.testdata, "workspaces")
+  for (const path of Arrays.values(Files.listPaths(workspaceFolder, ""))) {
+    if (Fs.isDir(path) && Str.startsWith(Path.basename(path), "load_")) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "packages",
+        name: `workspaces/${Path.basename(path)}`,
+        path: path,
+        variant: "load",
+      })
+    }
+    if (Fs.isDir(path) && Str.startsWith(Path.basename(path), "commands_")) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "packages",
+        name: `workspaces/${Path.basename(path)}`,
+        path: path,
+        variant: "commands",
+      })
+    }
+  }
+  Arrays.push(mutable cases, TestCase {
+    suite: "packages",
+    name: "repository/workspace",
+    path: context.repository,
+    variant: "repository",
+  })
   return cases
 }
 
+const REPOSITORY_STEPS = `0 :: check . ::
+0 :: query --package . def buildPath :: selfhost/src/driver/
+0 :: query --package . def runCommandsCase :: selfhost/tests/src/packages.nra`
+
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "repository") {
+    // The repository root is a workspace of the compiler and the test runner.
+    return runCommandSteps(context, testCase.path, REPOSITORY_STEPS)
+  }
+  if (testCase.variant == "load") {
+    return runLoadCase(context, testCase)
+  }
+  if (testCase.variant == "commands") {
+    return runCommandsCase(context, testCase)
+  }
   if (testCase.variant == "tests") {
     const tested = Common.runNarrac(context, ["test", "-sanitize", testCase.path])
     if (tested.code != 0 || !Str.contains(tested.output, " passed, 0 failed")) {
@@ -47,4 +92,279 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   const result = Common.runNarrac(context, ["run", flag, testCase.path])
   return Common.expectRun(result, 0, want.value)
+}
+
+function runNarracInScratch(
+  context: Context,
+  root: string,
+  work: string,
+  arguments: Array<string>,
+): Shell.CommandResult uses io, alloc {
+  const environment = [
+    `NARRA_CACHE=${root}/cache`,
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_NOSYSTEM=1",
+  ]
+  return Common.runNarracWith(context, work, environment, arguments)
+}
+
+function listRunTargets(caseFolder: string): Array<string> uses io, alloc {
+  const read = Fs.readText(Path.join(caseFolder, "runs"))
+  if (read is Ok(text)) {
+    return splitString(Str.trim(text), "\n")
+  }
+  return ["app"]
+}
+
+function runLoadChecks(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+  source: string,
+): Result<bool, string> uses io, alloc {
+  const workspaceRoot = Path.join(caseFolder, "root")
+  const lockPath = Path.join(workspaceRoot, "narra.lock")
+  if (!Fs.exists(Path.join(source, "run.out"))) {
+    const want = Common.readExpected(Path.join(source, "error.txt"))
+    if (want is Err(message)) {
+      return Err(message)
+    }
+    const failed = runNarracInScratch(
+      context,
+      scratch.root,
+      scratch.work,
+      ["build", "-o", "app.bin", Path.join(workspaceRoot, "app")],
+    )
+    if (failed.code != 1 || !Str.contains(failed.errorOutput, Str.trim(want.value))) {
+      return Err(
+        `want exit code 1 and "${Str.trim(want.value)}", got ${Common.describeRun(failed)}`,
+      )
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(Path.join(source, "run.out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  const hasRepositories = Fs.isDir(Path.join(source, "repos"))
+  let firstLock = ""
+  for (const target of Arrays.values(listRunTargets(source))) {
+    const memberFolder = Path.join(workspaceRoot, target)
+    const debug = runNarracInScratch(
+      context,
+      scratch.root,
+      scratch.work,
+      ["run", "-sanitize", memberFolder],
+    )
+    const checked = Common.expectRun(debug, 0, want.value)
+    if (checked is Err(message)) {
+      return Err(`${target}: ${message}`)
+    }
+    if (Fs.exists(Path.join(memberFolder, "narra.lock"))) {
+      return Err(`${target}: a lock was written inside the member`)
+    }
+    // A workspace with no git dependency has no lock.
+    if (!hasRepositories) {
+      continue
+    }
+    const lock = Fs.readText(lockPath)
+    if (lock is Err(message)) {
+      return Err(`${target}: no lock at the workspace root: ${message}`)
+    }
+    if (firstLock == "") {
+      firstLock = lock.value
+    }
+    const sameLock = Common.compareText(
+      `the root lock after building ${target}`,
+      firstLock,
+      lock.value,
+    )
+    if (sameLock is Err(message)) {
+      return Err(message)
+    }
+    // A second build, in release mode, writes the same lock.
+    const release = runNarracInScratch(
+      context,
+      scratch.root,
+      scratch.work,
+      ["run", "-release", memberFolder],
+    )
+    const releaseChecked = Common.expectRun(release, 0, want.value)
+    if (releaseChecked is Err(message)) {
+      return Err(`${target} release: ${message}`)
+    }
+    const again = Fs.readText(lockPath)
+    if (again is Err(message)) {
+      return Err(message)
+    }
+    const stable = Common.compareText(
+      `the root lock after a second build of ${target}`,
+      firstLock,
+      again.value,
+    )
+    if (stable is Err(message)) {
+      return Err(message)
+    }
+    // The next member starts from no lock, so the result cannot depend on the build order.
+    const removed = Shell.runScript("rm -f \"$1\"", [lockPath])
+    if (removed.code != 0) {
+      return Err(`cannot remove the lock: ${Str.trim(removed.errorOutput)}`)
+    }
+  }
+  const wanted = Fs.readText(Path.join(source, "lock.has"))
+  if (wanted is Ok(text)) {
+    if (!Str.contains(firstLock, Str.trim(text))) {
+      return Err(`the root lock has no ${Str.trim(text)}:\n${firstLock}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runLoadCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  // A load case is a workspace in `root/`, optional git repositories in `repos/`, and either
+  // `run.out` (the output of each member listed in `runs`, `app` by default) or `error.txt` (a part
+  // of the error message that building `app` prints). `lock.has` names a part the root lock holds.
+  if (!Fixtures.isGitAvailable()) {
+    print(`packages/${testCase.name}: skipped, git is not on PATH`)
+    return Ok(true)
+  }
+  const made = makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const caseFolder = Path.join(scratch.root, "case")
+  const repositoriesFolder = Path.join(scratch.root, "repos")
+  let outcome: Result<bool, string> = Ok(true)
+  const copied = Shell.runScript("cp -R \"$1\" \"$2\"", [testCase.path, caseFolder])
+  if (copied.code != 0) {
+    outcome = Err(`cannot copy ${testCase.path}: ${Str.trim(copied.errorOutput)}`)
+  } else {
+    const substituted = Shell.runScript(SUBSTITUTE_SCRIPT, [
+      caseFolder,
+      `file://${repositoriesFolder}`,
+    ])
+    if (substituted.code != 0) {
+      outcome = Err(`cannot fill in the URLs: ${Str.trim(substituted.errorOutput)}`)
+    } else {
+      const built = buildRepositories(caseFolder, repositoriesFolder)
+      if (built is Err(message)) {
+        outcome = Err(message)
+      } else {
+        outcome = runLoadChecks(context, scratch, caseFolder, testCase.path)
+      }
+    }
+  }
+  Fixtures.removeFixtures(scratch.root)
+  return outcome
+}
+
+function checkStepOutput(
+  wants: string,
+  result: Shell.CommandResult,
+): Result<bool, string> uses alloc {
+  const text = `${result.output}${result.errorOutput}`
+  for (const raw of Arrays.values(splitString(wants, " && "))) {
+    const want = Str.replace(Str.trim(raw), "\\n", "\n")
+    if (want == "") {
+      continue
+    }
+    if (Str.startsWith(want, "!")) {
+      const unwanted = Str.sliceFrom(want, 1)
+      if (Str.contains(text, unwanted)) {
+        return Err(`the output has "${unwanted}":\n${Common.describeRun(result)}`)
+      }
+    } else if (!Str.contains(text, want)) {
+      return Err(`the output has no "${want}":\n${Common.describeRun(result)}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runCommandStep(
+  context: Context,
+  rootFolder: string,
+  parts: Array<string>,
+): Result<bool, string> uses io, alloc {
+  if (parts[0] == "exists") {
+    if (!Fs.exists(Path.join(rootFolder, parts[1]))) {
+      return Err(`${parts[1]} was not made`)
+    }
+    return Ok(true)
+  }
+  if (parts[0] == "write") {
+    return writeFile(Path.join(rootFolder, parts[1]), Str.replace(parts[2], "\\n", "\n"))
+  }
+  const wantCode = Int.parse(parts[0], 10)
+  if (wantCode is Err(message)) {
+    return Err(`bad exit code ${parts[0]}: ${message}`)
+  }
+  let arguments: Array<string> = []
+  for (const argument of Arrays.values(splitString(parts[1], " "))) {
+    if (argument != "") {
+      Arrays.push(mutable arguments, argument)
+    }
+  }
+  const result = Common.runNarracWith(context, rootFolder, [], arguments)
+  if (result.code != wantCode.value) {
+    return Err(`want exit code ${parts[0]}, got ${Common.describeRun(result)}`)
+  }
+  return checkStepOutput(parts[2], result)
+}
+
+function runCommandSteps(
+  context: Context,
+  rootFolder: string,
+  steps: string,
+): Result<bool, string> uses io, alloc {
+  let number = 0
+  for (const rawLine of Arrays.values(splitString(steps, "\n"))) {
+    number++
+    const line = Str.trim(rawLine)
+    if (line == "" || Str.startsWith(line, "#")) {
+      continue
+    }
+    let parts: Array<string> = []
+    for (const part of Arrays.values(splitString(line, "::"))) {
+      Arrays.push(mutable parts, Str.trim(part))
+    }
+    while (Arrays.length(parts) < 3) {
+      Arrays.push(mutable parts, "")
+    }
+    const ran = runCommandStep(context, rootFolder, parts)
+    if (ran is Err(message)) {
+      return Err(`step ${Int.toString(number)} (${line}): ${message}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runCommandsCase(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  // A commands case is a workspace in `root/` and a `steps` file. Each step line is `EXIT :: ARGS ::
+  // WANTS` (a run of narrac from `root/`, whose output must hold each want joined by ` && `, or
+  // not hold one that starts with `!`), `exists :: PATH` or `write :: PATH :: TEXT`. The case runs
+  // in a copy.
+  const made = makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const caseFolder = Path.join(scratch.root, "case")
+  let outcome: Result<bool, string> = Ok(true)
+  const copied = Shell.runScript("cp -R \"$1\" \"$2\"", [testCase.path, caseFolder])
+  if (copied.code != 0) {
+    outcome = Err(`cannot copy ${testCase.path}: ${Str.trim(copied.errorOutput)}`)
+  } else {
+    const steps = Common.readExpected(Path.join(testCase.path, "steps"))
+    if (steps is Err(message)) {
+      outcome = Err(message)
+    } else {
+      outcome = runCommandSteps(context, Path.join(caseFolder, "root"), steps.value)
+    }
+  }
+  removeScratch(scratch)
+  return outcome
 }

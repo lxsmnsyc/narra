@@ -358,4 +358,31 @@ Narra trusts the folder where it keeps downloaded packages. The default is `.cac
 
 The editor support (`narrac lsp`) never downloads anything and never changes `narra.lock`. It reads the lock and the cache. Run `narrac build` once after adding a dependency so the editor can find it.
 
+## Workspaces
+
+A workspace is a folder with several packages that you build together. Its `narra.toml` has a `[workspace]` table that lists the member folders. A `*` stands for one whole folder name, and an entry that starts with `!` leaves folders out:
+
+```toml
+[workspace]
+members = ["packages/*", "!packages/old"]
+```
+
+Each member is a package with its own `narra.toml` and a unique name. A member uses another member by name, and `workspace = true` stands in place of a repository and a version:
+
+```toml
+[dependencies]
+json = { workspace = true }
+```
+
+All members share one `narra.lock`, at the workspace root, and one version of each package that comes from git. A member folder holds no lock of its own.
+
+The commands take a folder, and the folder decides how much work they do:
+
+- A member folder (`narrac test packages/json`) works on that member.
+- The workspace root (`narrac test .`) works on every member. `build` makes every binary of every member, `test` runs the tests of each member in the order of the `members` entries (the folders that one `*` entry matches are sorted by name), `check` reports the errors of every member, `fmt` formats the files under every member and `query` looks in every member.
+- `narrac run -bin tool .` finds the binary named `tool` in whichever member has it. Two members may not have binaries with one name, because a build writes all binaries to one folder.
+- With a member folder, `-dependents` adds the members that depend on it, directly or not, and `-dependencies` adds the members it depends on: `narrac test packages/json -dependents` also runs the tests of the members that use `json`. These flags work with `build`, `test` and `check`, and they need a member folder. A folder that is not a member, or the workspace root, is an error.
+
+`narrac fmt` gives a member without a `[fmt]` table the `[fmt]` table of the workspace root, and the defaults when the root has none. A `narra.toml` that has neither a `[package]` nor a `[fmt]` table is skipped when `narrac fmt` looks for its settings.
+
 Next: [9. Memory and `mutable`](09-memory-and-mutable.md).

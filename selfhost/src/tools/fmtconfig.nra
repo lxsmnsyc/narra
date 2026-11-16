@@ -3,6 +3,7 @@
 // read here (the package loader skips [fmt]). An unknown key in [fmt] or a
 // value of the wrong type is an error `narra.toml:<line>: <message>`.
 import { dropLast, splitString, substring } from "narrac/driver/textops"
+import { findWorkspace } from "narrac/driver/workspace"
 import * as Fs from "std/fs"
 import * as Env from "std/env"
 import * as Int from "std/int"
@@ -200,6 +201,41 @@ export function getDirectory(path: string, isDirectory: bool): string uses io, a
   return Str.join(kept, "/")
 }
 
+struct ManifestTables {
+  hasPackage: bool
+  hasFormat: bool
+}
+
+function findManifestTables(text: string): ManifestTables uses alloc {
+  let tables = ManifestTables { hasPackage: false, hasFormat: false }
+  for (const rawLine of Arrays.values(splitString(text, "\n"))) {
+    const line = Str.trim(stripComment(rawLine))
+    if (Str.startsWith(line, "[") && Str.endsWith(line, "]")) {
+      const name = Str.trim(substring(line, 1, Str.length(line) - 1))
+      if (name == "package") {
+        tables.hasPackage = true
+      } else if (name == "fmt") {
+        tables.hasFormat = true
+      }
+    }
+  }
+  return tables
+}
+
+function findWorkspaceConfig(directory: string): Result<FmtConfig, string> uses io, alloc {
+  // A member without [fmt] takes the [fmt] of the workspace root.
+  const found = findWorkspace(directory)
+  if (found is Some(workspace)) {
+    const read = Fs.readText(`${workspace.root}/narra.toml`)
+    if (read is Ok(text)) {
+      if (findManifestTables(text).hasFormat) {
+        return parseFmtConfig(text)
+      }
+    }
+  }
+  return Ok(createDefaultConfig())
+}
+
 export function findConfig(directory: string): Result<FmtConfig, string> uses io, alloc {
   let current = directory
   // A relative directory climbs with `..`, up to 64 levels.
@@ -213,7 +249,15 @@ export function findConfig(directory: string): Result<FmtConfig, string> uses io
       if (read is Err(message)) {
         return Err(message)
       }
-      return parseFmtConfig(read.value)
+      const tables = findManifestTables(read.value)
+      if (tables.hasFormat) {
+        return parseFmtConfig(read.value)
+      }
+      // A package without [fmt] stops the climb. A manifest with neither table (the root of a
+      // workspace that has no package) is skipped.
+      if (tables.hasPackage) {
+        return findWorkspaceConfig(current)
+      }
     }
     if (current == "/") {
       break

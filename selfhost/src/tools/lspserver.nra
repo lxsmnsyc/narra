@@ -1,7 +1,7 @@
 // The state and the work of narrac lsp: the documents the editor holds, the
 // check of the package a document belongs to, the diagnostics it publishes and
 // whole-document formatting. lsp.nra owns the protocol (framing and dispatch).
-import { splitString, substring } from "narrac/driver/textops"
+import { hasName, splitString, substring } from "narrac/driver/textops"
 import * as Arrays from "std/array"
 import * as Char from "std/char"
 import * as Fs from "std/fs"
@@ -12,6 +12,14 @@ import * as Str from "std/string"
 import { Value } from "std/shape"
 import { CheckCache, checkLoaded, createCheckCache, loadPackage } from "narrac/tools/lspcache"
 import { isDependencyPath } from "narrac/driver/depload"
+import {
+  findWorkspace,
+  isRootWithoutPackage,
+  listMembers,
+  makeAbsolute,
+  readManifestAt,
+} from "narrac/driver/workspace"
+import { selectMembers } from "narrac/driver/workspaceselect"
 import * as Fmt from "narrac/tools/fmt"
 import * as FmtConfig from "narrac/tools/fmtconfig"
 import { getPath, makeNotification, makeRecord } from "narrac/tools/lspserverjson"
@@ -211,7 +219,9 @@ export function countUnits(lineText: string, characters: int, utf8: bool): int {
 export function findPackageDirectory(path: string): Option<string> uses io, alloc {
   let directory = Path.dirname(path)
   for (const _level of Ranges.upTo(64)) {
-    if (Fs.exists(Path.join(directory, "narra.toml"))) {
+    const manifestPath = Path.join(directory, "narra.toml")
+    // A manifest with no [package] (a workspace root) is not a package; keep looking up.
+    if (Fs.exists(manifestPath) && !isRootWithoutPackageAt(directory)) {
       return Some(directory)
     }
     const parent = Path.dirname(directory)
@@ -221,6 +231,59 @@ export function findPackageDirectory(path: string): Option<string> uses io, allo
     directory = parent
   }
   return None
+}
+
+function isRootWithoutPackageAt(directory: string): bool uses io, alloc {
+  // A manifest that does not parse stays a package, so the loader reports its error.
+  const read = readManifestAt(directory)
+  if (read is Ok(manifest)) {
+    return isRootWithoutPackage(manifest)
+  }
+  return false
+}
+
+function listDependentPrograms(directory: string): Array<string> uses io, alloc {
+  // The member itself first, then every member that depends on it through `workspace = true`,
+  // directly or not. A directory that is not a member is a program of its own.
+  let programs = [directory]
+  const selected = selectMembers(directory, true, false, false)
+  if (selected is Err(_)) {
+    return programs
+  }
+  if (selected.value is Some(members)) {
+    const absolute = makeAbsolute(directory)
+    for (const member of Arrays.values(members)) {
+      if (makeAbsolute(member.directory) != absolute) {
+        Arrays.push(mutable programs, member.directory)
+      }
+    }
+  }
+  return programs
+}
+
+function listMemberNames(directory: string): Array<string> uses io, alloc {
+  let names: Array<string> = []
+  const maybeWorkspace = findWorkspace(directory)
+  if (maybeWorkspace is None) {
+    return names
+  }
+  const listed = listMembers(maybeWorkspace.value)
+  if (listed is Ok(members)) {
+    for (const member of Arrays.values(members)) {
+      if (member.directory != directory) {
+        Arrays.push(mutable names, member.name)
+      }
+    }
+  }
+  return names
+}
+
+function isMemberFile(memberNames: Array<string>, file: string): bool {
+  const slash = Str.indexOf(file, "/")
+  if (slash is None) {
+    return false
+  }
+  return hasName(memberNames, substring(file, 0, slash.value))
 }
 
 function readFileText(overrides: Map<string, string>, path: string): string uses io, alloc {
@@ -332,18 +395,49 @@ export function checkDocumentPackage(
       openUris[found] = documentUri
     }
   }
-  let loadPath = path
-  let directory = ""
-  if (maybeDirectory is Some(found)) {
-    loadPath = found
-    directory = found
+  if (maybeDirectory is None) {
+    return checkProgram(mutable server, uri, path, path, "", overrides, openUris)
   }
+  // The member and the members that depend on it, each as its own program.
+  let messages: Array<Value> = []
+  for (const programDirectory of Arrays.values(listDependentPrograms(maybeDirectory.value))) {
+    for (const message of Arrays.values(
+      checkProgram(
+        mutable server,
+        uri,
+        path,
+        programDirectory,
+        programDirectory,
+        overrides,
+        openUris,
+      ),
+    )) {
+      Arrays.push(mutable messages, message)
+    }
+  }
+  return messages
+}
+
+function checkProgram(
+  mutable server: Server,
+  uri: string,
+  path: string,
+  loadPath: string,
+  directory: string,
+  overrides: Map<string, string>,
+  openUris: Map<string, string>,
+): Array<Value> uses io, alloc {
   // The problems and the files of the package's own modules.
   let problems: Array<Problem> = []
   let moduleFiles: Array<string> = []
   const loaded = loadPackage(mutable server.cache, loadPath, overrides)
   if (loaded is Err(errors)) {
+    // A member's own errors are published by the member's program, not by its dependents.
+    const memberNames = listMemberNames(loadPath)
     for (const error of errors) {
+      if (isMemberFile(memberNames, error.file)) {
+        continue
+      }
       Arrays.push(mutable problems, Problem {
         file: error.file,
         line: error.line,

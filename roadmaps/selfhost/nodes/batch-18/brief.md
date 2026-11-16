@@ -1,7 +1,7 @@
 ---
 id: batch-18
 title: "Batch 18: E0971 renames and the workspace manifest"
-status: active
+status: done
 priority: should
 type: story
 story: 

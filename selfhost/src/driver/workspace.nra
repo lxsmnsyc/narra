@@ -26,7 +26,7 @@ function createWorkspaceError(file: string, code: string, message: string): Load
   return LoadError { code, file, line: 0, column: 1, message }
 }
 
-function joinDirectory(root: string, relative: string): string uses alloc {
+export function joinDirectory(root: string, relative: string): string uses alloc {
   if (relative == ".") {
     return root
   }
@@ -36,7 +36,7 @@ function joinDirectory(root: string, relative: string): string uses alloc {
   return `${root}/${relative}`
 }
 
-function normalizeDirectory(path: string): string uses alloc {
+export function normalizeDirectory(path: string): string uses alloc {
   const isAbsolute = Str.startsWith(path, "/")
   let segments: Array<string> = []
   for (const segment of Arrays.values(splitString(path, "/"))) {
@@ -67,7 +67,7 @@ function normalizeDirectory(path: string): string uses alloc {
   return Str.join(segments, "/")
 }
 
-function makeAbsolute(path: string): string uses io, alloc {
+export function makeAbsolute(path: string): string uses io, alloc {
   if (Str.startsWith(path, "/")) {
     return normalizeDirectory(path)
   }
@@ -233,7 +233,6 @@ function collectMemberPaths(workspace: Workspace): Result<Array<string>, LoadErr
       }
     }
   }
-  sortNames(mutable included)
   return Ok(included)
 }
 
@@ -295,6 +294,39 @@ export function listMembers(
     Arrays.push(mutable members, Member { directory, name: parsed.value.name })
   }
   return Ok(members)
+}
+
+export function readManifestAt(directory: string): Result<Manifest, LoadError> uses io, alloc {
+  const manifestPath = Path.join(directory, "narra.toml")
+  const text = Fs.readText(manifestPath)
+  if (text is Err(message)) {
+    return Err(LoadError {
+      code: "E0458",
+      file: manifestPath,
+      line: 0,
+      column: 1,
+      message: `cannot read or write ${manifestPath}: ${message}`,
+    })
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(error)) {
+    return Err(LoadError { ...error, file: manifestPath })
+  }
+  return parsed
+}
+
+// A manifest with no [package] is a workspace root that is not a package of its own.
+export function isRootWithoutPackage(manifest: Manifest): bool {
+  return manifest.name == ""
+}
+
+export function findWorkspaceRoot(path: string): Option<Workspace> uses io, alloc {
+  if (readManifestAt(path) is Ok(manifest)) {
+    if (manifest.isWorkspace) {
+      return Some(Workspace { root: normalizeDirectory(path), manifest })
+    }
+  }
+  return None
 }
 
 export function findWorkspace(packageDirectory: string): Option<Workspace> uses io, alloc {
@@ -377,27 +409,18 @@ function formatErrors(errors: Array<LoadError>): string uses alloc {
 
 export function runWorkspaceCommand(arguments: Array<string>): int uses io, alloc {
   const directory = arguments[Arrays.length(arguments) - 1]
-  let rootManifest: Option<Manifest> = None
-  const rootText = Fs.readText(Path.join(directory, "narra.toml"))
-  if (rootText is Ok(text)) {
-    const parsed = parseManifest(text)
-    if (parsed is Err(error)) {
-      const _ = Fs.writeText(
-        "/dev/stderr",
-        formatErrors([LoadError { ...error, file: Path.join(directory, "narra.toml") }]),
-      )
+  // A manifest that does not parse is the only error; a missing one means no workspace.
+  if (Fs.exists(Path.join(directory, "narra.toml"))) {
+    const root = readManifestAt(directory)
+    if (root is Err(error)) {
+      const _ = Fs.writeText("/dev/stderr", formatErrors([error]))
       return 1
     }
-    rootManifest = Some(parsed.value)
   }
   let found = findWorkspace(directory)
   // A directory whose narra.toml has [workspace] but no [package] is listed as the root.
   if (found is None) {
-    if (rootManifest is Some(manifest)) {
-      if (manifest.isWorkspace) {
-        found = Some(Workspace { root: normalizeDirectory(directory), manifest })
-      }
-    }
+    found = findWorkspaceRoot(directory)
   }
   if (found is Some(workspace)) {
     const printed = formatWorkspace(workspace)

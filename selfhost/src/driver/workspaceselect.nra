@@ -1,0 +1,273 @@
+// Choosing the members a driver command works on. A path that is the workspace root selects every
+// member; a member directory with -dependents or -dependencies selects that member and the members
+// related to it through `workspace = true` dependencies.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Path from "std/path"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { LoadError } from "narrac/driver/manifest"
+import {
+  Member,
+  Workspace,
+  findWorkspace,
+  findWorkspaceRoot,
+  listMembers,
+  makeAbsolute,
+  normalizeDirectory,
+  readManifestAt,
+} from "narrac/driver/workspace"
+
+function createSelectionError(code: string, file: string, message: string): LoadError {
+  return LoadError { code, file, line: 0, column: 1, message }
+}
+
+function findSelectionFile(path: string): string uses io, alloc {
+  // The workspace root's manifest when the path is a root; otherwise the path as given.
+  const root = findWorkspaceRoot(path)
+  if (root is Some(workspace)) {
+    return Path.join(workspace.root, "narra.toml")
+  }
+  return path
+}
+
+function listDependencyIndexes(members: Array<Member>): Array<Array<int>> uses io, alloc {
+  let edges: Array<Array<int>> = []
+  for (const member of Arrays.values(members)) {
+    let targets: Array<int> = []
+    const manifest = readManifestAt(member.directory)
+    if (manifest is Ok(found)) {
+      for (const dependency of Arrays.values(found.dependencies)) {
+        if (!dependency.workspace) {
+          continue
+        }
+        for (const index of Ranges.between(0, Arrays.length(members))) {
+          if (members[index].name == dependency.name) {
+            Arrays.push(mutable targets, index)
+          }
+        }
+      }
+    }
+    Arrays.push(mutable edges, targets)
+  }
+  return edges
+}
+
+function collectReachable(start: int, edges: Array<Array<int>>): Array<bool> uses alloc {
+  let reached: Array<bool> = []
+  for (const _index of Ranges.between(0, Arrays.length(edges))) {
+    Arrays.push(mutable reached, false)
+  }
+  let pending: Array<int> = [start]
+  let cursor = 0
+  while (cursor < Arrays.length(pending)) {
+    const current = pending[cursor]
+    cursor++
+    for (const next of Arrays.values(edges[current])) {
+      if (!reached[next]) {
+        reached[next] = true
+        Arrays.push(mutable pending, next)
+      }
+    }
+  }
+  return reached
+}
+
+function findCycle(
+  workspace: Workspace,
+  members: Array<Member>,
+  edges: Array<Array<int>>,
+): Option<LoadError> uses alloc {
+  for (const index of Ranges.between(0, Arrays.length(members))) {
+    if (collectReachable(index, edges)[index]) {
+      return Some(
+        createSelectionError(
+          "E0490",
+          Path.join(workspace.root, "narra.toml"),
+          `the member ${members[index].name} depends on itself through workspace = true dependencies`,
+        ),
+      )
+    }
+  }
+  return None
+}
+
+function describeFlags(dependents: bool, dependencies: bool): string {
+  if (dependents && dependencies) {
+    return "-dependents and -dependencies"
+  }
+  if (dependents) {
+    return "-dependents"
+  }
+  return "-dependencies"
+}
+
+function selectEveryMember(
+  workspace: Workspace,
+  checksCycles: bool,
+): Result<Option<Array<Member>>, Array<LoadError>> uses io, alloc {
+  const listed = listMembers(workspace)
+  if (listed is Err(errors)) {
+    return Err(errors)
+  }
+  if (checksCycles) {
+    const edges = listDependencyIndexes(listed.value)
+    if (findCycle(workspace, listed.value, edges) is Some(cycle)) {
+      return Err([cycle])
+    }
+  }
+  return Ok(Some(listed.value))
+}
+
+function describeNotMember(flagNames: string, path: string): LoadError uses io, alloc {
+  return createSelectionError(
+    "E0489",
+    findSelectionFile(path),
+    `${flagNames} needs the directory of a workspace member; ${path} is not one`,
+  )
+}
+
+export function selectMembers(
+  path: string,
+  dependents: bool,
+  dependencies: bool,
+  checksCycles: bool,
+): Result<Option<Array<Member>>, Array<LoadError>> uses io, alloc {
+  const wantsRelated = dependents || dependencies
+  const flagNames = describeFlags(dependents, dependencies)
+  if (!Fs.isDir(path)) {
+    if (wantsRelated) {
+      return Err([describeNotMember(flagNames, path)])
+    }
+    return Ok(None)
+  }
+  // The workspace root selects every member.
+  const root = findWorkspaceRoot(path)
+  if (root is Some(workspace)) {
+    if (wantsRelated) {
+      return Err([
+        createSelectionError(
+          "E0489",
+          findSelectionFile(path),
+          `${flagNames} needs the directory of a workspace member; ${path} is the workspace root, which covers every member`,
+        ),
+      ])
+    }
+    return selectEveryMember(workspace, checksCycles)
+  }
+  const found = findWorkspace(path)
+  if (found is None) {
+    if (wantsRelated) {
+      return Err([describeNotMember(flagNames, path)])
+    }
+    return Ok(None)
+  }
+  // Without a flag the member folder is the whole selection.
+  if (!wantsRelated) {
+    return Ok(None)
+  }
+  const listed = listMembers(found.value)
+  if (listed is Err(errors)) {
+    return Err(errors)
+  }
+  const members = listed.value
+  // The member whose directory is the path. The working directory is read once.
+  const working = makeAbsolute(".")
+  const absolutePath = makeAbsolute(path)
+  let selfIndex = -1
+  for (const index of Ranges.between(0, Arrays.length(members))) {
+    let memberPath = members[index].directory
+    if (!Str.startsWith(memberPath, "/")) {
+      memberPath = normalizeDirectory(`${working}/${memberPath}`)
+    }
+    if (memberPath == absolutePath) {
+      selfIndex = index
+    }
+  }
+  if (selfIndex < 0) {
+    return Err([describeNotMember(flagNames, path)])
+  }
+  const edges = listDependencyIndexes(members)
+  if (findCycle(found.value, members, edges) is Some(cycle)) {
+    return Err([cycle])
+  }
+  // The member itself, then what it depends on, then what depends on it.
+  let selected: Array<bool> = []
+  for (const _index of Ranges.between(0, Arrays.length(members))) {
+    Arrays.push(mutable selected, false)
+  }
+  selected[selfIndex] = true
+  if (dependencies) {
+    const reached = collectReachable(selfIndex, edges)
+    for (const index of Ranges.between(0, Arrays.length(members))) {
+      if (reached[index]) {
+        selected[index] = true
+      }
+    }
+  }
+  if (dependents) {
+    for (const index of Ranges.between(0, Arrays.length(members))) {
+      if (collectReachable(index, edges)[selfIndex]) {
+        selected[index] = true
+      }
+    }
+  }
+  let chosen: Array<Member> = []
+  for (const index of Ranges.between(0, Arrays.length(members))) {
+    if (selected[index]) {
+      Arrays.push(mutable chosen, members[index])
+    }
+  }
+  return Ok(Some(chosen))
+}
+
+export function listMemberBinaries(member: Member): Array<string> uses io, alloc {
+  let names: Array<string> = []
+  const manifest = readManifestAt(member.directory)
+  if (manifest is Ok(found)) {
+    for (const binary of Arrays.values(found.binaries)) {
+      Arrays.push(mutable names, binary.name)
+    }
+  }
+  return names
+}
+
+export function findBinaryOwners(
+  members: Array<Member>,
+  binaryName: string,
+): Result<Array<Member>, LoadError> uses io, alloc {
+  let owners: Array<Member> = []
+  for (const member of Arrays.values(members)) {
+    let owns = false
+    for (const name of Arrays.values(listMemberBinaries(member))) {
+      if (name == binaryName) {
+        owns = true
+      }
+    }
+    if (owns) {
+      Arrays.push(mutable owners, copy(member))
+    }
+  }
+  if (Arrays.length(owners) > 1) {
+    return Err(
+      createSelectionError(
+        "E0488",
+        Path.join(owners[0].directory, "narra.toml"),
+        `the members ${owners[0].name} and ${owners[1].name} both have a binary named ${binaryName}; binary names must be unique in a workspace`,
+      ),
+    )
+  }
+  return Ok(owners)
+}
+
+export function checkBinaryNames(members: Array<Member>): Result<bool, LoadError> uses io, alloc {
+  for (const member of Arrays.values(members)) {
+    for (const name of Arrays.values(listMemberBinaries(member))) {
+      const owners = findBinaryOwners(members, name)
+      if (owners is Err(error)) {
+        return Err(error)
+      }
+    }
+  }
+  return Ok(true)
+}

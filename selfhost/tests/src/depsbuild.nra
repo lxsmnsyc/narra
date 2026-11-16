@@ -17,6 +17,7 @@ import { CommandResult } from "testrunner/shell"
 
 const CASE_NAMES = [
   "build-app",
+  "build-member",
   "build-locked",
   "build-locked-transitive",
   "build-stale-lock",
@@ -61,6 +62,9 @@ export function collectBuildCases(context: Context): Array<TestCase> uses alloc 
 }
 
 function chooseFixture(variant: string): string {
+  if (variant == "build-member") {
+    return "../workspace_member_build"
+  }
   if (
     variant == "build-locked" ||
       variant == "build-locked-transitive" ||
@@ -181,6 +185,35 @@ function runApp(
     return Err(message)
   }
   return Common.compareText("narra.lock after the second build", firstLock.value, secondLock.value)
+}
+
+function runMember(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  const want = Common.readExpected(Path.join(caseFolder, "run.out"))
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  // json is a member of a fetched workspace, and it imports its sibling core.
+  const run = runNarrac(context, scratch, scratch.work, [], ["run", "-sanitize", appFolder])
+  const checked = Common.expectRun(run, 0, want.value)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  const lock = Fs.readText(Path.join(appFolder, "narra.lock"))
+  if (lock is Err(message)) {
+    return Err(message)
+  }
+  if (
+    !Str.contains(lock.value, "tag = \"json/v1.1.0\"") ||
+      !Str.contains(lock.value, "tag = \"core/v1.0.0\"")
+  ) {
+    return Err(`the lock does not name the member tags:\n${lock.value}`)
+  }
+  return Ok(true)
 }
 
 function runLocked(
@@ -481,6 +514,9 @@ function runBuilt(
   const appFolder = Path.join(caseFolder, "roots/app")
   if (variant == "build-app") {
     return runApp(context, scratch, appFolder, caseFolder)
+  }
+  if (variant == "build-member") {
+    return runMember(context, scratch, appFolder, caseFolder)
   }
   if (variant == "build-locked") {
     return runLocked(context, scratch, appFolder)

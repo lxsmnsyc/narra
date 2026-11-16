@@ -1263,7 +1263,7 @@ Sources: pnpm docs (pnpm.io `workspaces`, `pnpm-workspace_yaml`, `filtering`, `c
 - **`[fmt]`.** A member without a `[fmt]` table uses the `[fmt]` of the workspace root, then the defaults. A member's own `[fmt]` wins.
 - **Exports.** A member is a dependency package to the members that import it, so D97 applies without a new rule. package-exports lands first in batch-16, and the workspace children test `[exports]` between members.
 - **This repository.** Root `narra.toml` with `[workspace] members = ["selfhost", "selfhost/tests"]`, with no `[package]` and no `[fmt]`. A root `[fmt]` would format every `testdata/` file through `findConfig`. `std/` stays embedded through `stdtext.nra` and is not a member. `bench/` programs stay single files. The testrunner imports no `narrac/` module, so the move adds no member dependency. `sh selfhost/bootstrap.sh` and `sh scripts/test.sh` keep their paths.
-- **Codes.** E0480-E0489 for workspace errors. Override errors take codes from deps-resolve's E0450-E0459.
+- **Codes.** E0480-E0490 for workspace errors. Override errors take codes from deps-resolve's E0450-E0459.
 - **Reason.** Every driver command takes a directory, so a workspace needs one new table, one dependency form and a walk up to the root. Member dependencies reuse the loader, the hash rule and the exports check of package-dependencies and package-exports. One lock and one selection over all members give one version per package across the repository (SPEC section 15). Naming members by name, as pnpm's `workspace:*` does, lets a member move without editing its dependents, and lets a fetched checkout turn the dependency into a versioned git requirement.
 - **Cost.** Six nodes, five M and one S (`roadmaps/selfhost/nodes/workspace-design/outcome.md`), plus proposed brief changes to deps-fetch and deps-resolve. `contracts/dependencies.md` goes to version 2: `Dependency` gains `workspace: bool`, and `checkoutPath` is keyed by the tag, since `json/v1.2.0` and `core/v1.2.0` of one repository are different commits. A root check of N members is N full checks, and a member shared by several dependents is checked once per dependent. A fetched member pins its siblings at the versions in its own commit, so an author who changes a sibling must bump and tag it before the dependent's tag.
 - **Rejected: `{ path = "../json" }` between members.** A name finds the member wherever it sits, and a path breaks when a member moves. pnpm keeps `workspace:../path` as a second form. One form is enough here.
@@ -1281,7 +1281,7 @@ Sources: pnpm docs (pnpm.io `workspaces`, `pnpm-workspace_yaml`, `filtering`, `c
 - **Rejected: a shared target directory.** The driver writes no build products besides the executables.
 - **Rejected: a `go.work` file next to `narra.toml`.** A second manifest format for the same facts.
 
-Not built yet.
+Built in batches 18 and 19: the `[workspace]` table, `workspace = true`, `[overrides]` and the root lock, the commands at the workspace root with `-dependents` and `-dependencies`, the language service over members, git dependencies on a member of another repository, and this repository as a workspace. Not built: go to definition into a git dependency, and the double body check in the language service.
 
 ## D102. Contracts get `||` and relations between parameters; no `!`, no `&&` inside a pattern
 

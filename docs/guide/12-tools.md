@@ -304,7 +304,7 @@ narrac query --json type-of src/main.nra:5:17
 {"query": "type-of", "location": {"file": "src/main.nra", "range": {"start": [5, 17], "end": [5, 18]}}, "type": "string", "effects": ["alloc"]}
 ```
 
-`hovers` also works on a file with errors: it lists the errors and the names the checker could type. With `--json`, each hover has `line`, `column` and `length` (in characters) and `text`, and each error has the same three and a `code` and `message`.
+`hovers` also works on a file with errors: it lists the errors and the names the checker could type. This holds for errors in that file. When another file of the package fails to load, `hovers` prints no hovers and exits with code 1. With `--json`, each hover has `line`, `column` and `length` (in characters) and `text`, and each error has the same three and a `code` and `message`.
 
 A query exits with code 0 when it has an answer, an empty one included. An unknown name, a place with no expression, or a package with errors exits with code 1. With `--json`, the errors of a package that does not check come as `{"errors": [...]}`, each one in the form of `narrac check --json`.
 

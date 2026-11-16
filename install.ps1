@@ -4,7 +4,7 @@
 # release, copies narrac.exe to %LOCALAPPDATA%\narra\bin and adds that folder to your PATH.
 # Variables (environment):
 #   NARRA_VERSION   the version to install, such as 0.1.0 or v0.1.0 (default: the latest release;
-#                   when there is only a prerelease, the newest prerelease)
+#                   when there is only a prerelease, the newest release of any kind)
 #   NARRA_INSTALL   the folder that receives narrac.exe (default: %LOCALAPPDATA%\narra\bin)
 #   NARRA_NO_PATH   set to 1 to leave the PATH alone
 #   NARRA_BASE_URL  the folder that holds the archive and its .sha256 file
@@ -17,6 +17,12 @@ function Stop-Install([string]$message) {
 }
 
 $repository = 'lxsmnsyc/narra'
+
+# Windows PowerShell 5.1 does not use TLS 1.2 by default, and GitHub requires it.
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {
+}
 
 # Only 64-bit x86 Windows has a prebuilt binary.
 $architecture = $env:PROCESSOR_ARCHITEW6432
@@ -84,11 +90,17 @@ try {
   }
 
   # Check the SHA-256 before anything is unpacked.
-  $line = (Get-Content -Path $sumFile -TotalCount 1).Trim()
+  $line = ''
+  $firstLine = @(Get-Content -Path $sumFile -TotalCount 1)
+  if ($firstLine.Count -gt 0 -and $firstLine[0]) { $line = ([string]$firstLine[0]).Trim() }
+  if (-not $line) { Stop-Install "the checksum file of $name.zip is empty" }
   $parts = $line -split '\s+', 2
   $expected = $parts[0].ToLowerInvariant()
   $listed = ''
   if ($parts.Count -gt 1) { $listed = $parts[1].TrimStart('*') }
+  if ($expected -notmatch '^[0-9a-f]{64}$' -or -not $listed) {
+    Stop-Install "the checksum file of $name.zip is malformed"
+  }
   if ($listed -ne "$name.zip") {
     Stop-Install "the checksum file names '$listed', not $name.zip"
   }

@@ -6,7 +6,7 @@
 # to ~/.local/bin.
 # Variables:
 #   NARRA_VERSION   the version to install, such as 0.1.0 or v0.1.0 (default: the latest release;
-#                   when there is only a prerelease, the newest prerelease)
+#                   when there is only a prerelease, the newest release of any kind)
 #   NARRA_INSTALL   the folder that receives narrac (default: $HOME/.local/bin)
 #   NARRA_BASE_URL  the folder that holds the archive and its .sha256 file
 #                   (default: the release of NARRA_VERSION on GitHub); for tests; it may
@@ -31,6 +31,10 @@ case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
   *) fail "unsupported processor: $(uname -m). Build from source: docs/install.md" ;;
 esac
+# A shell that runs under Rosetta on Apple Silicon reports x86_64; install the arm64 build.
+if [ "$os" = macos ] && [ "$arch" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
+  arch=arm64
+fi
 # A musl system, such as Alpine, needs the musl archive.
 libc=
 if [ "$os" = linux ]; then

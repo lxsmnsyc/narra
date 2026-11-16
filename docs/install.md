@@ -40,11 +40,13 @@ export PATH="$HOME/.local/bin:$PATH"
 | System | Processor |
 | --- | --- |
 | macOS | arm64, x64 |
-| Linux (glibc) | arm64, x64 |
+| Linux (glibc 2.28 or newer) | arm64, x64 |
 | Linux (musl, such as Alpine) | arm64, x64 |
 | Windows | x64 |
 
-The shell script picks the musl archive on a musl system. On another system, build from source (below).
+The shell script picks the musl archive on a musl system. The glibc archives need glibc 2.28 or newer, which means Debian 10, Ubuntu 18.04 or RHEL 8 and later. The musl archives are static and run on any Linux. On another system, build from source (below).
+
+On an Apple Silicon Mac, the shell script installs the arm64 build even when the terminal runs under Rosetta.
 
 ### Options
 
@@ -52,6 +54,7 @@ The shell script picks the musl archive on a musl system. On another system, bui
 | --- | --- | --- |
 | `NARRA_VERSION` | The version to install, such as `0.1.0`. | The latest release. |
 | `NARRA_INSTALL` | The folder that receives `narrac`. | See the table above. |
+| `NARRA_NO_PATH` | Set to `1` to leave your `PATH` alone. Windows only. | Not set. |
 
 Set them before `sh` in the shell command, or in the environment before the PowerShell command. For example, this installs version 0.1.0 into `/usr/local/bin`:
 
@@ -59,7 +62,7 @@ Set them before `sh` in the shell command, or in the environment before the Powe
 curl -fsSL https://github.com/lxsmnsyc/narra/releases/latest/download/install.sh | NARRA_VERSION=0.1.0 NARRA_INSTALL=/usr/local/bin sh
 ```
 
-When a release is marked as a prerelease, GitHub's `latest` link skips it. The scripts then look for the newest release of any kind.
+GitHub's `latest` link skips prereleases. While a project has only prereleases, the one-line commands above fail with a 404, because they download the script from `releases/latest`. In that case, download the script from the release itself, for example `https://github.com/lxsmnsyc/narra/releases/download/v0.1.0-rc1/install.sh`, or set `NARRA_VERSION`. A script that runs without `NARRA_VERSION` installs the latest release, or the newest release of any kind when there is only a prerelease.
 
 `NARRA_BASE_URL` is a testing override. It names a folder that holds the archive and its `.sha256` file instead of the GitHub release, and it must start with `https://`. Only `http://localhost` and `http://127.0.0.1` are allowed without TLS, and the shell script also takes a `file://` folder. The script needs `HOME` or `NARRA_INSTALL` to know where to install.
 

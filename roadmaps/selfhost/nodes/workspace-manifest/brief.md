@@ -1,7 +1,7 @@
 ---
 id: workspace-manifest
 title: "[workspace] table, workspace = true dependencies and finding the workspace root"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-18
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-15
-spent:
+spent: 372064
 owns:
   - roadmaps/selfhost/nodes/workspace-manifest/**
   - selfhost/src/driver/workspace.nra

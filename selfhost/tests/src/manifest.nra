@@ -7,6 +7,7 @@
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Path from "std/path"
+import * as Str from "std/string"
 import * as Common from "testrunner/context"
 import { Context, TestCase } from "testrunner/context"
 import * as Files from "testrunner/files"
@@ -35,7 +36,27 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       })
     }
   }
+  const workspaceFolder = Path.join(context.testdata, "workspaces")
+  for (const path of Arrays.values(Files.listPaths(workspaceFolder, ""))) {
+    if (Fs.isDir(path) && Str.startsWith(Path.basename(path), "manifest_")) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "manifest",
+        name: `workspaces/${Path.basename(path)}`,
+        path: path,
+        variant: "workspace",
+      })
+    }
+  }
   return cases
+}
+
+function readStartDirectory(folder: string): string uses io, alloc {
+  // `start` names the directory to start from, relative to the folder; "." without it.
+  const read = Fs.readText(Path.join(folder, "start"))
+  if (read is Ok(text)) {
+    return Str.trim(text)
+  }
+  return "."
 }
 
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
@@ -43,7 +64,18 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   if (testCase.variant == "deps") {
     command = ["pkg", "--codes", "--deps", "."]
   }
-  const result = Common.runNarracWith(context, testCase.path, [], command)
+  if (testCase.variant == "workspace") {
+    command = ["pkg", "--codes", "--workspace", readStartDirectory(testCase.path)]
+  }
+  let runFolder = testCase.path
+  if (testCase.variant == "workspace") {
+    // `cwd` names a folder to run in, so the start can be a relative path that climbs.
+    const working = Fs.readText(Path.join(testCase.path, "cwd"))
+    if (working is Ok(text)) {
+      runFolder = Path.join(testCase.path, Str.trim(text))
+    }
+  }
+  const result = Common.runNarracWith(context, runFolder, [], command)
   let goldenName = "expected.dump"
   let got = result.output
   let wantCode = 0

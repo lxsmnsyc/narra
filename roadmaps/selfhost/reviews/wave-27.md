@@ -24,6 +24,6 @@ The seed was regenerated after the last child. The umbrella node `workspaces` is
 
 ## Still to do
 
-- [ ] Land `fix/batch-19-review`, the fixes from the whole-branch review (docs, query and selection error files, E0450 URL, the shared walk in the language service, duplicated helpers).
-- [ ] Regenerate the seed again. Run the full checks: `sh scripts/test.sh`, bootstrap, `pnpm --dir website build`, `sh scripts/linux-check.sh`.
+- [x] Land `fix/batch-19-review`, the fixes from the whole-branch review (docs, query and selection error files, E0450 URL, the shared walk in the language service, duplicated helpers).
+- [x] Regenerate the seed again. Run the full checks: `sh scripts/test.sh`, bootstrap, `pnpm --dir website build`, `sh scripts/linux-check.sh`. test.sh: PASS, 10443 cases; bootstrap fixed point; website build passes; linux-check passed on the tree before the review fixes, which change no platform code.
 - [ ] Push `feat/batch-19` and open the batch-19 pull request for the maintainer.

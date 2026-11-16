@@ -52,5 +52,5 @@ When every child is done, the umbrella node `workspaces` is set `done` with `ful
 
 ## Acceptance
 
-- [ ] Every child done or out of the batch with a reason.
-- [ ] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes.
+- [x] Every child done or out of the batch with a reason.
+- [x] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes. test.sh: PASS, 10443 cases on the final tree; bootstrap fixed point, seed current; website build passes; linux-check: PASS before the review fixes.

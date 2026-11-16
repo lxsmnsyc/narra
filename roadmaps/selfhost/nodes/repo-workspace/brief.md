@@ -1,7 +1,7 @@
 ---
 id: repo-workspace
 title: "This repository becomes a workspace"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-19

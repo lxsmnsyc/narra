@@ -216,22 +216,32 @@ export async function queryHovers(samples: Map<number, Sample>): Promise<Map<num
     return result;
   }
   const pending: Promise<void>[] = [];
-  const queue: [string, Sample][] = [];
+  const queue: [string, Sample, (answer: Answer | undefined) => void][] = [];
   const keys = new Map<number, string>();
   for (const [index, sample] of samples) {
     const key = makeKey(sample);
     keys.set(index, key);
     if (!answers.has(key)) {
-      // A placeholder keeps a second fence with the same sample out of the queue.
-      answers.set(key, Promise.resolve(undefined));
-      queue.push([key, sample]);
+      // The real promise is stored before queuing, so a concurrent call for the same sample waits for it.
+      let settle: (answer: Answer | undefined) => void = () => {};
+      answers.set(
+        key,
+        new Promise<Answer | undefined>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      queue.push([key, sample, settle]);
     }
   }
   async function work(): Promise<void> {
     for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
-      const running = answerSample(narrac!, item[1], item[0]);
-      answers.set(item[0], running);
-      await running;
+      let answer: Answer | undefined;
+      try {
+        answer = await answerSample(narrac!, item[1], item[0]);
+      } catch {
+        answer = undefined;
+      }
+      item[2](answer);
     }
   }
   for (let worker = 0; worker < Math.min(POOL_SIZE, queue.length); worker++) {

@@ -37,8 +37,9 @@ export function loadIndex(): Promise<MiniSearch<SearchEntry>> {
   return loading;
 }
 
-function createSnippet(text: string, terms: string[]): string {
-  // The snippet starts a little before the first query word that the text holds.
+function createSnippet(text: string, terms: string[], heading: string): string {
+  // The text is cut by code point, so a surrogate pair stays whole.
+  const points = Array.from(text);
   const lower = text.toLowerCase();
   let at = -1;
   for (const term of terms) {
@@ -47,9 +48,30 @@ function createSnippet(text: string, terms: string[]): string {
       at = found;
     }
   }
-  const start = Math.max(0, at - 30);
-  const end = start + SNIPPET_LENGTH;
-  return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+  // The text of a section starts with nothing the heading already says.
+  let first = 0;
+  if (heading !== '' && text.startsWith(`${heading}. `)) {
+    first = Array.from(`${heading}. `).length;
+  }
+  // The index of a UTF-16 position in code points.
+  const atPoint = at === -1 ? 0 : Array.from(text.slice(0, at)).length;
+  let start = Math.max(first, atPoint - 30);
+  // The start and the end move to the nearest space, so no word is cut.
+  if (start > first) {
+    while (start < points.length && points[start - 1] !== ' ') {
+      start++;
+    }
+  }
+  let end = Math.min(points.length, start + SNIPPET_LENGTH);
+  if (end < points.length) {
+    while (end > start && points[end] !== ' ') {
+      end--;
+    }
+    if (end === start) {
+      end = Math.min(points.length, start + SNIPPET_LENGTH);
+    }
+  }
+  return (start > first ? '…' : '') + points.slice(start, end).join('').trim() + (end < points.length ? '…' : '');
 }
 
 export async function runSearch(query: string): Promise<SearchResult[]> {
@@ -69,7 +91,7 @@ export async function runSearch(query: string): Promise<SearchResult[]> {
       href: String(hit.href),
       page: String(hit.page),
       heading: String(hit.heading),
-      snippet: createSnippet(String(hit.text), terms),
+      snippet: createSnippet(String(hit.text), terms, String(hit.heading)),
       section: Boolean(hit.section),
     });
   }

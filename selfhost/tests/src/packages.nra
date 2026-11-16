@@ -5,6 +5,7 @@
 // testdata/packages/errors belong to the errors suite.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
+import * as Int from "std/int"
 import * as Path from "std/path"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
@@ -13,7 +14,7 @@ import * as Files from "testrunner/files"
 import * as Fixtures from "testrunner/gitfixtures"
 import * as Shell from "testrunner/shell"
 import { SUBSTITUTE_SCRIPT, buildRepositories } from "testrunner/depsresolve"
-import { Scratch, makeScratch } from "testrunner/scratch"
+import { Scratch, makeScratch, removeScratch, writeFile } from "testrunner/scratch"
 import { splitString } from "testrunner/textops"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
@@ -41,6 +42,14 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
         variant: "load",
       })
     }
+    if (Fs.isDir(path) && Str.startsWith(Path.basename(path), "commands_")) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "packages",
+        name: `workspaces/${Path.basename(path)}`,
+        path: path,
+        variant: "commands",
+      })
+    }
   }
   return cases
 }
@@ -48,6 +57,9 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
   if (testCase.variant == "load") {
     return runLoadCase(context, testCase)
+  }
+  if (testCase.variant == "commands") {
+    return runCommandsCase(context, testCase)
   }
   if (testCase.variant == "tests") {
     const tested = Common.runNarrac(context, ["test", "-sanitize", testCase.path])
@@ -230,5 +242,115 @@ function runLoadCase(context: Context, testCase: TestCase): Result<bool, string>
     }
   }
   Fixtures.removeFixtures(scratch.root)
+  return outcome
+}
+
+function checkStepOutput(
+  wants: string,
+  result: Shell.CommandResult,
+): Result<bool, string> uses alloc {
+  const text = `${result.output}${result.errorOutput}`
+  for (const raw of Arrays.values(splitString(wants, " && "))) {
+    const want = Str.replace(Str.trim(raw), "\\n", "\n")
+    if (want == "") {
+      continue
+    }
+    if (Str.startsWith(want, "!")) {
+      const unwanted = Str.sliceFrom(want, 1)
+      if (Str.contains(text, unwanted)) {
+        return Err(`the output has "${unwanted}":\n${Common.describeRun(result)}`)
+      }
+    } else if (!Str.contains(text, want)) {
+      return Err(`the output has no "${want}":\n${Common.describeRun(result)}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runCommandStep(
+  context: Context,
+  rootFolder: string,
+  parts: Array<string>,
+): Result<bool, string> uses io, alloc {
+  if (parts[0] == "exists") {
+    if (!Fs.exists(Path.join(rootFolder, parts[1]))) {
+      return Err(`${parts[1]} was not made`)
+    }
+    return Ok(true)
+  }
+  if (parts[0] == "write") {
+    return writeFile(Path.join(rootFolder, parts[1]), Str.replace(parts[2], "\\n", "\n"))
+  }
+  const wantCode = Int.parse(parts[0], 10)
+  if (wantCode is Err(message)) {
+    return Err(`bad exit code ${parts[0]}: ${message}`)
+  }
+  let arguments: Array<string> = []
+  for (const argument of Arrays.values(splitString(parts[1], " "))) {
+    if (argument != "") {
+      Arrays.push(mutable arguments, argument)
+    }
+  }
+  const result = Common.runNarracWith(context, rootFolder, [], arguments)
+  if (result.code != wantCode.value) {
+    return Err(`want exit code ${parts[0]}, got ${Common.describeRun(result)}`)
+  }
+  return checkStepOutput(parts[2], result)
+}
+
+function runCommandSteps(
+  context: Context,
+  rootFolder: string,
+  steps: string,
+): Result<bool, string> uses io, alloc {
+  let number = 0
+  for (const rawLine of Arrays.values(splitString(steps, "\n"))) {
+    number++
+    const line = Str.trim(rawLine)
+    if (line == "" || Str.startsWith(line, "#")) {
+      continue
+    }
+    let parts: Array<string> = []
+    for (const part of Arrays.values(splitString(line, "::"))) {
+      Arrays.push(mutable parts, Str.trim(part))
+    }
+    while (Arrays.length(parts) < 3) {
+      Arrays.push(mutable parts, "")
+    }
+    const ran = runCommandStep(context, rootFolder, parts)
+    if (ran is Err(message)) {
+      return Err(`step ${Int.toString(number)} (${line}): ${message}`)
+    }
+  }
+  return Ok(true)
+}
+
+function runCommandsCase(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  // A commands case is a workspace in `root/` and a `steps` file. Each step line is `EXIT :: ARGS ::
+  // WANTS` (a run of narrac from `root/`, whose output must hold each want joined by ` && `, or
+  // not hold one that starts with `!`), `exists :: PATH` or `write :: PATH :: TEXT`. The case runs
+  // in a copy.
+  const made = makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const caseFolder = Path.join(scratch.root, "case")
+  let outcome: Result<bool, string> = Ok(true)
+  const copied = Shell.runScript("cp -R \"$1\" \"$2\"", [testCase.path, caseFolder])
+  if (copied.code != 0) {
+    outcome = Err(`cannot copy ${testCase.path}: ${Str.trim(copied.errorOutput)}`)
+  } else {
+    const steps = Common.readExpected(Path.join(testCase.path, "steps"))
+    if (steps is Err(message)) {
+      outcome = Err(message)
+    } else {
+      outcome = runCommandSteps(context, Path.join(caseFolder, "root"), steps.value)
+    }
+  }
+  removeScratch(scratch)
   return outcome
 }

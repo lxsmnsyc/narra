@@ -32,6 +32,8 @@ import { Token, TokenKind, formatLexError, lex } from "narrac/syntax/lexer"
 import * as Modules from "narrac/driver/modules"
 import { Package, SourceModule } from "narrac/driver/modules"
 import { LoadError } from "narrac/driver/manifest"
+import { Member } from "narrac/driver/workspace"
+import { selectMembers } from "narrac/driver/workspaceselect"
 import {
   Checker,
   BodyRoot,
@@ -132,25 +134,149 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
     return runHovers(directory, json, operand)
   }
 
+  const selected = selectMembers(directory, false, false, false)
+  if (selected is Err(errors)) {
+    return reportLoadErrors(json, errors)
+  }
+  if (selected.value is Some(members)) {
+    return runQueryOnMembers(json, command, operand, members)
+  }
+  const answered = answerQuery(directory, "", json, command, operand)
+  if (answered is Err(failure)) {
+    return reportFailure(failure)
+  }
+  return writeStdout(answered.value)
+}
+
+// An answer that did not come out: the text for stdout and for stderr, and whether the package
+// loaded and checked but had no answer to the question.
+struct Failure {
+  output: string
+  errorOutput: string
+  isLookup: bool
+}
+
+function reportFailure(failure: Failure): int uses io, alloc {
+  if (failure.output != "") {
+    const _ = writeStdout(failure.output)
+  }
+  if (failure.errorOutput != "") {
+    const _ = Fs.writeText("/dev/stderr", failure.errorOutput)
+  }
+  return 1
+}
+
+function runQueryOnMembers(
+  json: bool,
+  command: string,
+  operand: string,
+  members: Array<Member>,
+): int uses io, alloc {
+  // Every member answers on its own. A member that has no answer is skipped while another has one;
+  // a member that does not load or check fails the query.
+  let answers = ""
+  let answerTexts: Array<string> = []
+  let hasAnswer = false
+  let lookupFailure: Option<Failure> = None
+  for (const member of Arrays.values(members)) {
+    const answered = answerQuery(member.directory, member.directory, json, command, operand)
+    if (answered is Ok(text)) {
+      answers = `${answers}${text}`
+      Arrays.push(mutable answerTexts, text)
+      hasAnswer = true
+    } else if (answered is Err(failure)) {
+      if (!failure.isLookup) {
+        return reportFailure(failure)
+      }
+      if (lookupFailure is None) {
+        lookupFailure = Some(failure)
+      }
+    }
+  }
+  if (!hasAnswer) {
+    if (lookupFailure is Some(failure)) {
+      return reportFailure(failure)
+    }
+    return 1
+  }
+  if (json) {
+    return writeStdout(mergeJsonAnswers(command, answerTexts))
+  }
+  return writeStdout(answers)
+}
+
+function mergeJsonAnswers(command: string, answers: Array<string>): string uses alloc {
+  // The answers of several members become one object: the list of the first answer, extended by the
+  // lists of the others. A command that answers with one place keeps the first answer.
+  let key = ""
+  if (command == "def") {
+    key = "matches"
+  } else if (command == "refs") {
+    key = "uses"
+  } else if (command == "callers") {
+    key = "callers"
+  } else if (command == "interface") {
+    key = "declarations"
+  } else if (command == "recursion") {
+    key = "groups"
+  }
+  const marker = `"${key}": [`
+  if (key == "" || Arrays.length(answers) == 1) {
+    return answers[0]
+  }
+  let prefix = ""
+  let items: Array<string> = []
+  for (const answer of Arrays.values(answers)) {
+    const at = Str.indexOf(answer, marker)
+    if (at is None) {
+      return answers[0]
+    }
+    const start = at.value + Str.length(marker)
+    // The list ends before the closing `]}` and the newline.
+    const inner = substring(answer, start, Str.length(answer) - 3)
+    if (prefix == "") {
+      prefix = substring(answer, 0, start)
+    }
+    if (inner != "") {
+      Arrays.push(mutable items, inner)
+    }
+  }
+  return `${prefix}${Str.join(items, ", ")}]}\n`
+}
+
+function answerQuery(
+  directory: string,
+  filePrefix: string,
+  json: bool,
+  command: string,
+  operand: string,
+): Result<string, Failure> uses io, alloc {
   // Load and check the package as `narrac types` does.
   const loaded = Modules.load(directory)
   if (loaded is Err(loadErrors)) {
-    return reportLoadErrors(json, loadErrors)
+    return Err(describeLoadFailure(json, loadErrors))
   }
   const package = loaded.value
   let checker = copy(Body.checkPackage(package))
   if (Arrays.length(checker.errors) > 0) {
-    return reportCheckErrors(json, checker.errors)
+    return Err(describeCheckFailure(json, checker.errors))
   }
   let effects = Effects.checkEffects(mutable checker)
   if (Arrays.length(checker.errors) > 0) {
-    return reportCheckErrors(json, checker.errors)
+    return Err(describeCheckFailure(json, checker.errors))
   }
   const views = buildViews(checker, package, Map {})
   if (views is Err(message)) {
-    return reportAnswer(json, Err(message))
+    return Err(describeAnswerFailure(json, message))
   }
-  const query = Query { json, views: views.value }
+  // At a workspace root each location names its member folder.
+  let namedViews = copy(views.value)
+  if (filePrefix != "" && filePrefix != ".") {
+    for (const index of Ranges.between(0, Arrays.length(namedViews))) {
+      namedViews[index].file = `${filePrefix}/${namedViews[index].file}`
+    }
+  }
+  const query = Query { json, views: namedViews }
 
   // Answer.
   let answer: Result<string, string> = Err("")
@@ -167,7 +293,12 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
   } else {
     answer = queryRecursion(checker, effects, query, operand)
   }
-  return reportAnswer(json, answer)
+  if (answer is Err(message)) {
+    let failure = describeAnswerFailure(json, message)
+    failure.isLookup = true
+    return Err(failure)
+  }
+  return Ok(answer.value)
 }
 
 // One identifier of a file and the text the language server shows for it.
@@ -613,43 +744,57 @@ function writeStdout(text: string): int uses io, alloc {
   return 0
 }
 
+function describeAnswerFailure(json: bool, message: string): Failure uses alloc {
+  if (json) {
+    return Failure {
+      output: `{"error": ${quoteJson(message)}}\n`,
+      errorOutput: "",
+      isLookup: false,
+    }
+  }
+  return Failure { output: "", errorOutput: `error ${message}\n`, isLookup: false }
+}
+
 function reportAnswer(json: bool, answer: Result<string, string>): int uses io, alloc {
   if (answer is Err(message)) {
-    if (json) {
-      const _ = writeStdout(`{"error": ${quoteJson(message)}}\n`)
-    } else {
-      printError(`error ${message}`)
-    }
-    return 1
+    return reportFailure(describeAnswerFailure(json, message))
   }
   return writeStdout(answer.value)
 }
 
-function reportLoadErrors(json: bool, errors: Array<LoadError>): int uses io, alloc {
+function describeLoadFailure(json: bool, errors: Array<LoadError>): Failure uses alloc {
   if (!json) {
-    const _ = Fs.writeText("/dev/stderr", Modules.errorText(errors))
-    return 1
+    return Failure { output: "", errorOutput: Modules.errorText(errors), isLookup: false }
   }
   let parts: Array<string> = []
   for (const error of Arrays.values(errors)) {
     const pos = Pos { line: error.line, column: error.column }
     Arrays.push(mutable parts, writeDiagnostic(error.file, pos, error.code, error.message))
   }
-  const _ = writeStdout(`{"errors": [${Str.join(parts, ", ")}]}\n`)
-  return 1
+  return Failure {
+    output: `{"errors": [${Str.join(parts, ", ")}]}\n`,
+    errorOutput: "",
+    isLookup: false,
+  }
 }
 
-function reportCheckErrors(json: bool, errors: Array<CheckError>): int uses io, alloc {
+function reportLoadErrors(json: bool, errors: Array<LoadError>): int uses io, alloc {
+  return reportFailure(describeLoadFailure(json, errors))
+}
+
+function describeCheckFailure(json: bool, errors: Array<CheckError>): Failure uses alloc {
   if (!json) {
-    const _ = Fs.writeText("/dev/stderr", errorText(errors))
-    return 1
+    return Failure { output: "", errorOutput: errorText(errors), isLookup: false }
   }
   let parts: Array<string> = []
   for (const error of Arrays.values(errors)) {
     Arrays.push(mutable parts, writeDiagnostic(error.file, error.pos, error.code, error.message))
   }
-  const _ = writeStdout(`{"errors": [${Str.join(parts, ", ")}]}\n`)
-  return 1
+  return Failure {
+    output: `{"errors": [${Str.join(parts, ", ")}]}\n`,
+    errorOutput: "",
+    isLookup: false,
+  }
 }
 
 export function buildViews(
@@ -671,6 +816,11 @@ export function buildViews(
     } else {
       const read = Fs.readText(filePath)
       if (read is Err(message)) {
+        // A module of a dependency has a file below the dependency's name, not below this
+        // package, so it has no text here unless overrides holds it.
+        if (!package.single && !Str.startsWith(module.file, "src/")) {
+          continue
+        }
         return Err(message)
       }
       text = read.value

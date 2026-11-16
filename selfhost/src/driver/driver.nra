@@ -46,6 +46,13 @@ import { quoteGo } from "narrac/syntax/parser"
 import * as Modules from "narrac/driver/modules"
 import { Package } from "narrac/driver/modules"
 import { LoadError } from "narrac/driver/manifest"
+import { Member } from "narrac/driver/workspace"
+import {
+  checkBinaryNames,
+  findBinaryOwners,
+  listMemberBinaries,
+  selectMembers,
+} from "narrac/driver/workspaceselect"
 import * as Body from "narrac/check/body"
 import * as Effects from "narrac/check/effects"
 import { Checker } from "narrac/check/check"
@@ -94,6 +101,8 @@ struct DriverOptions {
   filter: string
   stdinPath: string
   targetName: string
+  dependents: bool
+  dependencies: bool
   path: string
   programArguments: Array<string>
 }
@@ -143,10 +152,22 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
     printError("-target is for `narrac build` and `narrac check`")
     return 2
   }
+  if (command == "run" && (options.dependents || options.dependencies)) {
+    printError("-dependents and -dependencies are for `narrac build`, `test` and `check`")
+    return 2
+  }
   const rejected = checkTargetOptions(options)
   if (rejected != "") {
     printError(rejected)
     return 2
+  }
+  const selected = selectMembers(options.path, options.dependents, options.dependencies, true)
+  if (selected is Err(errors)) {
+    printError(formatDiagnostics(convertLoadErrors(errors)))
+    return exitWithoutRelease(1)
+  }
+  if (selected.value is Some(members)) {
+    return exitWithoutRelease(runMembers(options, command, members))
   }
   if (command == "build") {
     return runBuild(options)
@@ -157,17 +178,20 @@ export function runDriver(arguments: Array<string>): int uses io, alloc {
 function usageText(): string {
   const lines = [
     "usage:",
-    "  narrac build [-release] [-sanitize] [-target name] [-bin name] [-o output] [-emit-c file.c] file.nra|dir",
+    "  narrac build [-release] [-sanitize] [-target name] [-bin name] [-o output] [-emit-c file.c] [-dependents] [-dependencies] file.nra|dir",
     "  narrac run [-release] [-sanitize] [-bin name] [-stdin file] file.nra|dir [args...]",
-    "  narrac test [-filter text] [-time] [-release] [-sanitize] [-stdin file] file.nra|dir",
-    "  narrac check [--json] [--all-targets] [--target name] file.nra|dir",
+    "  narrac test [-filter text] [-time] [-release] [-sanitize] [-stdin file] [-dependents] [-dependencies] file.nra|dir",
+    "  narrac check [--json] [--all-targets] [--target name] [-dependents] [-dependencies] file.nra|dir",
     "                                            report errors, on every target with --all-targets",
     "  narrac targets                            list the targets of -target: name and C compiler triple",
     "  narrac explain CODE                       explain a diagnostic code",
     "",
     "A dir is a package: a directory with narra.toml and src/. Without -bin,",
     "build makes every [[binary]] of the package; run needs the package to have",
-    "one binary.",
+    "one binary. The root of a workspace stands for every member: build makes",
+    "every binary, run finds -bin across members, test and check cover each",
+    "member. A member directory with -dependents or -dependencies adds the",
+    "members that depend on it or that it depends on.",
     "",
     "run and test show the program's output when it ends: all of stdout, then",
     "all of stderr. Without -stdin, the program's stdin is closed.",
@@ -204,6 +228,8 @@ function parseOptions(arguments: Array<string>): Result<DriverOptions, string> u
     filter: "",
     stdinPath: "",
     targetName: "",
+    dependents: false,
+    dependencies: false,
     path: "",
     programArguments: [],
   }
@@ -263,7 +289,17 @@ function parseOptions(arguments: Array<string>): Result<DriverOptions, string> u
     options.path = arguments[index]
     index++
     while (index < Arrays.length(arguments)) {
-      Arrays.push(mutable options.programArguments, arguments[index])
+      // After the path, build and test also take the member selection flags.
+      const trailing = arguments[index]
+      if (arguments[1] != "run" && (trailing == "-dependents" || trailing == "--dependents")) {
+        options.dependents = true
+      } else if (
+        arguments[1] != "run" && (trailing == "-dependencies" || trailing == "--dependencies")
+      ) {
+        options.dependencies = true
+      } else {
+        Arrays.push(mutable options.programArguments, trailing)
+      }
       index++
     }
   }
@@ -271,7 +307,11 @@ function parseOptions(arguments: Array<string>): Result<DriverOptions, string> u
 }
 
 function isBoolFlag(name: string): bool {
-  return name == "release" || name == "time" || name == "sanitize"
+  return name == "release" ||
+    name == "time" ||
+    name == "sanitize" ||
+    name == "dependents" ||
+    name == "dependencies"
 }
 
 function isValueFlag(name: string): bool {
@@ -316,6 +356,10 @@ function setBoolFlag(mutable options: DriverOptions, name: string, value: bool) 
     options.release = value
   } else if (name == "time") {
     options.showTime = value
+  } else if (name == "dependents") {
+    options.dependents = value
+  } else if (name == "dependencies") {
+    options.dependencies = value
   } else {
     options.sanitize = value
   }
@@ -867,6 +911,10 @@ function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
 // --- build ------------------------------------------------------------------
 
 function runBuild(options: DriverOptions): int uses io, alloc {
+  return exitWithoutRelease(buildPath(options))
+}
+
+function buildPath(options: DriverOptions): int uses io, alloc {
   if (!Fs.isDir(options.path)) {
     // A file: the executable is named after it. A missing or broken file is
     // reported by buildExecutable.
@@ -875,12 +923,12 @@ function runBuild(options: DriverOptions): int uses io, alloc {
       output = Str.replace(Path.basename(options.path), ".nra", "")
     }
     const built = buildExecutable(options, options.binaryName, false, output)
-    return exitWithoutRelease(finishBuild(built))
+    return finishBuild(built)
   }
   const loaded = Modules.load(options.path)
   if (loaded is Err(errors)) {
     printError(formatDiagnostics(convertLoadErrors(errors)))
-    return exitWithoutRelease(1)
+    return 1
   }
   const package = loaded.value
   // A package: the selected binary, or every binary.
@@ -894,13 +942,13 @@ function runBuild(options: DriverOptions): int uses io, alloc {
   }
   if (Arrays.length(names) == 0) {
     printError(`narra.toml: package ${package.name} has no [[binary]]; it is a library`)
-    return exitWithoutRelease(1)
+    return 1
   }
   if (options.output != "" && Arrays.length(names) > 1) {
     printError(
       `-o needs one binary; the package has ${Str.join(names, ", ")}, choose one with -bin`,
     )
-    return exitWithoutRelease(1)
+    return 1
   }
   let builds: Array<Result<CompiledProgram, string>> = []
   for (const name of Arrays.values(names)) {
@@ -910,10 +958,10 @@ function runBuild(options: DriverOptions): int uses io, alloc {
     }
     Arrays.push(mutable builds, buildExecutable(options, name, false, output))
     if (finishBuild(builds[Arrays.length(builds) - 1]) != 0) {
-      return exitWithoutRelease(1)
+      return 1
     }
   }
-  return exitWithoutRelease(0)
+  return 0
 }
 
 function finishBuild(built: Result<CompiledProgram, string>): int uses io, alloc {
@@ -924,9 +972,147 @@ function finishBuild(built: Result<CompiledProgram, string>): int uses io, alloc
   return 0
 }
 
+// --- workspace members --------------------------------------------------------
+
+function createMemberOptions(
+  options: DriverOptions,
+  member: Member,
+): DriverOptions from options uses alloc {
+  return DriverOptions { ...options, path: member.directory }
+}
+
+function runMembers(
+  options: DriverOptions,
+  command: string,
+  members: Array<Member>,
+): int uses io, alloc {
+  if (Arrays.length(members) == 0) {
+    printError("the workspace has no members")
+    return 1
+  }
+  if (command == "build") {
+    return buildMembers(options, members)
+  }
+  if (command == "run") {
+    return runMemberBinary(options, members)
+  }
+  // Each member's tests run as one program, in the order of the members. The exit code is 1 when
+  // any member fails. With a filter, a member that has no matching test is skipped; the command
+  // fails only when no member matched.
+  let status = 0
+  let matched = 0
+  const skipsUnmatched = options.filter != "" && Arrays.length(members) > 1
+  for (const member of Arrays.values(members)) {
+    let header = ""
+    if (Arrays.length(members) > 1) {
+      header = `== ${member.name} (${member.directory}) ==\n`
+    }
+    const code = runProgramWith(createMemberOptions(options, member), true, header, skipsUnmatched)
+    if (code == -1) {
+      continue
+    }
+    matched++
+    if (code != 0) {
+      status = 1
+    }
+  }
+  if (matched == 0 && skipsUnmatched) {
+    printError(`no tests match "${options.filter}"`)
+    return 1
+  }
+  return status
+}
+
+function buildMembers(options: DriverOptions, members: Array<Member>): int uses io, alloc {
+  // Every binary of every member goes to one directory, so a name must belong to one member.
+  const unique = checkBinaryNames(members)
+  if (unique is Err(error)) {
+    printError(formatDiagnostics(convertLoadErrors([error])))
+    return 1
+  }
+  let selected: Array<Member> = []
+  let binaryCount = 0
+  for (const member of Arrays.values(members)) {
+    const names = listMemberBinaries(member)
+    if (options.binaryName == "" && Arrays.length(names) > 0) {
+      Arrays.push(mutable selected, copy(member))
+      binaryCount += Arrays.length(names)
+    }
+    for (const name of Arrays.values(names)) {
+      if (options.binaryName != "" && name == options.binaryName) {
+        Arrays.push(mutable selected, copy(member))
+        binaryCount++
+      }
+    }
+  }
+  if (binaryCount == 0) {
+    if (options.binaryName != "") {
+      printError(`no member has a binary named ${options.binaryName}`)
+    } else {
+      printError("no member has a [[binary]]; the members are libraries")
+    }
+    return 1
+  }
+  if (options.output != "" && binaryCount > 1) {
+    printError("-o needs one binary; choose one with -bin")
+    return 1
+  }
+  for (const member of Arrays.values(selected)) {
+    if (buildPath(createMemberOptions(options, member)) != 0) {
+      return 1
+    }
+  }
+  return 0
+}
+
+function runMemberBinary(options: DriverOptions, members: Array<Member>): int uses io, alloc {
+  let binaryName = options.binaryName
+  if (binaryName == "") {
+    // Without -bin the workspace must have exactly one binary.
+    let names: Array<string> = []
+    for (const member of Arrays.values(members)) {
+      for (const name of Arrays.values(listMemberBinaries(member))) {
+        Arrays.push(mutable names, name)
+      }
+    }
+    if (Arrays.length(names) != 1) {
+      printError(
+        `the workspace has ${Int.toString(Arrays.length(names))} binaries; choose one with -bin`,
+      )
+      return 1
+    }
+    binaryName = names[0]
+  }
+  const owners = findBinaryOwners(members, binaryName)
+  if (owners is Err(error)) {
+    printError(formatDiagnostics(convertLoadErrors([error])))
+    return 1
+  }
+  if (Arrays.length(owners.value) == 0) {
+    printError(`no member has a binary named ${binaryName}`)
+    return 1
+  }
+  let memberOptions = copy(createMemberOptions(options, owners.value[0]))
+  memberOptions.binaryName = binaryName
+  return runProgramCode(memberOptions, false)
+}
+
 // --- run and test -----------------------------------------------------------
 
 function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
+  return exitWithoutRelease(runProgramCode(options, tests))
+}
+
+function runProgramCode(options: DriverOptions, tests: bool): int uses io, alloc {
+  return runProgramWith(options, tests, "", false)
+}
+
+function runProgramWith(
+  options: DriverOptions,
+  tests: bool,
+  header: string,
+  skipsUnmatched: bool,
+): int uses io, alloc {
   let programArguments = options.programArguments
   if (tests) {
     // In test mode it is the test program, with the arguments of testArguments in front.
@@ -942,7 +1128,7 @@ function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
     const made = makeTempDirectory()
     if (made is Err(message)) {
       printError(message)
-      return exitWithoutRelease(1)
+      return 1
     }
     directory = made.value
     output = Path.join(directory, "program")
@@ -951,19 +1137,26 @@ function runProgram(options: DriverOptions, tests: bool): int uses io, alloc {
   if (built is Err(message)) {
     printError(message)
     removeProgramDirectory(directory, output)
-    return exitWithoutRelease(1)
+    return 1
   }
   const ran = startProgram(output, programArguments, options.stdinPath)
   removeProgramDirectory(directory, output)
   if (ran is Err(message)) {
     printError(message)
-    return exitWithoutRelease(1)
+    return 1
   }
   // The program's stdout and stderr are captured and written once it ends, stdout first.
   const #[code, standardOutput, standardError] = ran.value
+  // A member of several that has no test with the filter's text is skipped, with no output.
+  if (skipsUnmatched && code == 1 && Str.startsWith(standardOutput, "no tests match")) {
+    return -1
+  }
+  if (header != "") {
+    writeStandardOutput(header)
+  }
   writeStandardOutput(standardOutput)
   writeStandardError(standardError)
-  return exitWithoutRelease(code)
+  return code
 }
 
 function removeProgramDirectory(directory: string, output: string) uses io, alloc {
@@ -1056,6 +1249,8 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
   let allTargets = false
   let targetName = ""
   let takesTarget = false
+  let dependents = false
+  let dependencies = false
   let paths: Array<string> = []
   for (const index of Ranges.between(2, Arrays.length(arguments))) {
     const argument = arguments[index]
@@ -1068,6 +1263,10 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
       asJson = true
     } else if (argument == "--all-targets" || argument == "-all-targets") {
       allTargets = true
+    } else if (argument == "--dependents" || argument == "-dependents") {
+      dependents = true
+    } else if (argument == "--dependencies" || argument == "-dependencies") {
+      dependencies = true
     } else {
       Arrays.push(mutable paths, argument)
     }
@@ -1078,18 +1277,26 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
       takesTarget ||
       (allTargets && targetName != "")
   ) {
-    printError("usage: narrac check [--json] [--all-targets | --target name] file.nra|dir")
+    printError(
+      "usage: narrac check [--json] [--all-targets | --target name] [-dependents] [-dependencies] file.nra|dir",
+    )
     return 2
   }
   if (targetName != "" && findTargetRow(targetName) is None) {
     printError(describeUnknownTarget(targetName))
     return 2
   }
-  const diagnostics = (
-    allTargets
-      ? checkEveryTarget(paths[0])
-      : findPathDiagnostics(paths[0], targetName)
-  )
+  let diagnostics: Array<Diagnostic> = []
+  const selected = selectMembers(paths[0], dependents, dependencies, true)
+  if (selected is Err(errors)) {
+    diagnostics = convertLoadErrors(errors)
+  } else if (selected.value is Some(members)) {
+    diagnostics = findMemberDiagnostics(members, allTargets, targetName)
+  } else if (allTargets) {
+    diagnostics = checkEveryTarget(paths[0])
+  } else {
+    diagnostics = findPathDiagnostics(paths[0], targetName)
+  }
   // Exit 0: no diagnostics. Exit 1: errors or an unreadable path. Exit 2: usage.
   if (Arrays.length(diagnostics) == 0) {
     return 0
@@ -1111,6 +1318,60 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
     printError(formatDiagnostics(diagnostics))
   }
   return 1
+}
+
+function findMemberDiagnostics(
+  members: Array<Member>,
+  allTargets: bool,
+  targetName: string,
+): Array<Diagnostic> uses io, alloc {
+  // Each member is checked as its own program; a file is named from the member's directory so
+  // diagnostics of two members stay apart.
+  let diagnostics: Array<Diagnostic> = []
+  for (const member of Arrays.values(members)) {
+    let found: Array<Diagnostic> = []
+    if (allTargets) {
+      found = checkEveryTarget(member.directory)
+    } else {
+      found = findPathDiagnostics(member.directory, targetName)
+    }
+    for (const diagnostic of Arrays.values(found)) {
+      // A file of the member itself is `src/...` or `narra.toml`; a file of a dependency starts
+      // with the dependency's name, and a member's own run reports it.
+      let file = diagnostic.file
+      if (file == "narra.toml" || Str.startsWith(file, "src/")) {
+        file = Path.join(member.directory, file)
+      } else if (isMemberFile(members, file)) {
+        continue
+      }
+      // A dependency that is not selected is reported by each member that uses it; once is enough.
+      let isRepeated = false
+      for (const known of Arrays.values(diagnostics)) {
+        if (
+          known.file == file &&
+            known.line == diagnostic.line &&
+            known.column == diagnostic.column &&
+            known.code == diagnostic.code &&
+            known.message == diagnostic.message
+        ) {
+          isRepeated = true
+        }
+      }
+      if (!isRepeated) {
+        Arrays.push(mutable diagnostics, Diagnostic { ...diagnostic, file })
+      }
+    }
+  }
+  return sortDiagnostics(diagnostics)
+}
+
+function isMemberFile(members: Array<Member>, file: string): bool uses alloc {
+  for (const member of Arrays.values(members)) {
+    if (Str.startsWith(file, `${member.name}/src/`)) {
+      return true
+    }
+  }
+  return false
 }
 
 function runApplyFix(arguments: Array<string>): int uses io, alloc {

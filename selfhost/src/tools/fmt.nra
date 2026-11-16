@@ -61,6 +61,7 @@ import {
   LoopReference,
 } from "narrac/syntax/ast"
 import { FmtConfig, getDirectory, findConfig } from "narrac/tools/fmtconfig"
+import { selectMembers } from "narrac/driver/workspaceselect"
 import {
   Settings,
   Printer,
@@ -134,7 +135,20 @@ export function runFmt(arguments: Array<string>): int uses io, alloc {
   let files: Array<string> = []
   for (const path of Arrays.values(paths)) {
     if (Fs.listDir(path) is Ok(_)) {
-      collectFiles(path, mutable files)
+      // The root of a workspace formats the files under every member.
+      const selected = selectMembers(path, false, false, false)
+      if (selected is Err(errors)) {
+        for (const error of Arrays.values(errors)) {
+          printError(`error ${error.file}: ${error.message}`)
+        }
+        status = 1
+      } else if (selected.value is Some(members)) {
+        for (const member of Arrays.values(members)) {
+          collectFiles(member.directory, mutable files)
+        }
+      } else {
+        collectFiles(path, mutable files)
+      }
     } else if (Fs.exists(path)) {
       Arrays.push(mutable files, path)
     } else {
@@ -142,7 +156,13 @@ export function runFmt(arguments: Array<string>): int uses io, alloc {
       status = 1
     }
   }
+  // A file under two members, or under the root package and a member, is formatted once.
+  let formatted: Map<string, bool> = Map {}
   for (const file of Arrays.values(files)) {
+    if (formatted[file] is Some(_)) {
+      continue
+    }
+    formatted[file] = true
     if (formatFile(file, check, mutable configs) != 0) {
       status = 1
     }

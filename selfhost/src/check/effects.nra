@@ -317,10 +317,7 @@ function checkFunctionStores(mutable checker: Checker, mutable state: EffectStat
     if (store.want is Type.TFunc(wantParameters, wantResult, wantEffects, _, wantShared)) {
       if (store.got is Type.TFunc(_, _, gotEffects, _, _)) {
         state.body = store.body
-        let found = gotEffects
-        if (findStoredValue(checker, state, store) is Some(effects)) {
-          found = effects
-        }
+        const found = findStoredValue(checker, state, store) is Some(effects) ? effects : gotEffects
         // Creating a generator allocs its frame, and a function type cannot list that
         // effect apart from the effects of its generator result
         const createsGenerator =
@@ -378,23 +375,23 @@ function generatorEffects(
   type: Type,
 ): Array<string> from type uses alloc {
   let names: Array<string> = []
-  let effects: Array<string> = []
   let origin = -1
   let isGenerator = false
   if (type is Type.TGenerator(_, generatorNames, _, generatorOrigin, _)) {
-    effects = generatorNames
+    // A private function* has no effects in its type: they are the body effects found so far.
+    if (generatorOrigin == -1) {
+      return generatorNames
+    }
     origin = generatorOrigin
     isGenerator = true
   } else if (type is Type.TAsyncGenerator(_, streamNames, _, streamOrigin)) {
-    effects = streamNames
+    if (streamOrigin == -1) {
+      return streamNames
+    }
     origin = streamOrigin
     isGenerator = true
   }
   if (isGenerator) {
-    // A private function* has no effects in its type: they are the body effects found so far.
-    if (origin == -1) {
-      return effects
-    }
     if (origin < -1) {
       return copy(checker.boundGenerators[-2 - origin])
     }
@@ -1115,20 +1112,16 @@ function walkLocalAssignment(
         if (state.locals[key] is Some(existing)) {
           merged = copy(existing)
         } else if (findTypeEffects(checker, state, target) is Some(declared)) {
-          merged = declared
+          merged = copy(declared)
         }
         for (const effect of Arrays.values(set)) {
           if (hasEffect(merged, effect.name)) {
             // The new cause replaces the old one.
-            let replaced: Array<Effect> = []
-            for (const old of Arrays.values(merged)) {
-              if (old.name == effect.name) {
-                Arrays.push(mutable replaced, effect)
-              } else {
-                Arrays.push(mutable replaced, old)
+            for (const position of Ranges.between(0, Arrays.length(merged))) {
+              if (merged[position].name == effect.name) {
+                merged[position] = effect
               }
             }
-            merged = replaced
           } else {
             Arrays.push(mutable merged, effect)
           }
@@ -1561,6 +1554,32 @@ function addTraitCallEffects(
   }
 }
 
+function findParameterEffects(type: Type): Array<string> from type {
+  if (type is Type.TFunc(_, _, functionEffects, _, _)) {
+    return functionEffects
+  }
+  if (type is Type.TGenerator(_, generatorNames, _, _, _)) {
+    return generatorNames
+  }
+  if (type is Type.TAsyncGenerator(_, streamNames, _, _)) {
+    return streamNames
+  }
+  return []
+}
+
+function findParameterBinder(type: Type): int {
+  if (type is Type.TFunc(_, _, _, functionBinder, _)) {
+    return functionBinder
+  }
+  if (type is Type.TGenerator(_, _, generatorBinder, _, _)) {
+    return generatorBinder
+  }
+  if (type is Type.TAsyncGenerator(_, _, streamBinder, _)) {
+    return streamBinder
+  }
+  return -1
+}
+
 function addValueBoundEffects(
   mutable checker: Checker,
   state: EffectState,
@@ -1580,18 +1599,8 @@ function addValueBoundEffects(
       if (index >= Arrays.length(arguments)) {
         continue
       }
-      let parameterEffects: Array<string> = []
-      let binder = -1
-      if (parameters[index] is Type.TFunc(_, _, functionEffects, functionBinder, _)) {
-        parameterEffects = functionEffects
-        binder = functionBinder
-      } else if (parameters[index] is Type.TGenerator(_, generatorNames, generatorBinder, _, _)) {
-        parameterEffects = generatorNames
-        binder = generatorBinder
-      } else if (parameters[index] is Type.TAsyncGenerator(_, streamNames, streamBinder, _)) {
-        parameterEffects = streamNames
-        binder = streamBinder
-      }
+      const parameterEffects = findParameterEffects(parameters[index])
+      const binder = findParameterBinder(parameters[index])
       if (binder < 0) {
         continue
       }

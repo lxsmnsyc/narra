@@ -186,6 +186,15 @@ struct WriteWalk {
   // Writes that hit a local before its block ends. Each is reported unless
   // a later use reports its site first.
   heldWrites: Array<FoundWrite>
+  // Renames of a tracked value, reported after the walk, once for each position.
+  renames: Array<FoundRename>
+  renamePositions: Map<int, bool>
+}
+
+struct FoundRename {
+  pos: Pos
+  fixes: Array<Fix>
+  message: string
 }
 
 // How a write reaches a place: an assignment copies the places above it; a
@@ -375,6 +384,8 @@ function createWalk(): WriteWalk uses alloc {
     loopHeld: [],
     scopeEnds: [],
     heldWrites: [],
+    renames: [],
+    renamePositions: Map {},
   }
 }
 
@@ -421,6 +432,10 @@ function startBody(checker: Checker, mutable walk: WriteWalk) uses alloc {
   }
   if (Arrays.length(walk.heldWrites) > 0) {
     walk.heldWrites = []
+  }
+  if (Arrays.length(walk.renames) > 0) {
+    walk.renames = []
+    walk.renamePositions = Map {}
   }
   if (!isEmptyDeadState(walk.breakState)) {
     walk.breakState = createDeadState()
@@ -637,7 +652,7 @@ function extendPlace(
   if (suffix == "") {
     return place
   }
-  let extended = place
+  let extended = copy(place)
   let start = 0
   for (const i of Ranges.between(1, Str.length(suffix) + 1)) {
     if (i < Str.length(suffix)) {
@@ -666,7 +681,7 @@ function extendPlaceByRest(
     Arrays.push(mutable rest, places.parts[current])
     current = places.parents[current]
   }
-  let extended = place
+  let extended = copy(place)
   let index = Arrays.length(rest) - 1
   while (index >= 0) {
     extended = extendByPart(mutable places, extended, rest[index])
@@ -1486,9 +1501,12 @@ function canWriteInStatement(statement: Stmt): bool {
   // the references of `for (mutable ...)` must update this skip.
   return match (statement) {
     Stmt.BlockStmt(block) => canWriteInBlock(block)
-    Stmt.VarStmt(_, _, _, _, _, _, value) => canWriteInExpression(value)
+    Stmt.VarStmt(_, _, _, _, _, _, value) => isNameExpression(value) || canWriteInExpression(value)
     Stmt.AssignStmt(_, target, value) =>
-      isPartTarget(target) || canWriteInExpression(target) || canWriteInExpression(value)
+      isPartTarget(target) ||
+      isNameExpression(value) ||
+      canWriteInExpression(target) ||
+      canWriteInExpression(value)
     Stmt.CompoundAssignStmt(_, target, _, value) =>
       isPartTarget(target) || canWriteInExpression(target) || canWriteInExpression(value)
     Stmt.ExprStmt(_, expression) => canWriteInExpression(expression)
@@ -1524,6 +1542,10 @@ function canWriteInOptionalExpression(expression: Option<Expr>): bool {
     return canWriteInExpression(present)
   }
   return false
+}
+
+function isNameExpression(expression: Expr): bool {
+  return expression is Expr.Ident(_, _, _)
 }
 
 function isPartTarget(target: Expr): bool {
@@ -1700,8 +1722,13 @@ function collectScopedLocals(
 function walkStatement(checker: Checker, mutable walk: WriteWalk, statement: Stmt) uses alloc {
   match (statement) {
     Stmt.BlockStmt(block) => walkBlock(checker, mutable walk, block)
-    Stmt.VarStmt(nodeId, _, _, _, pattern, _, value) => {
-      const shares = evaluateBound(checker, mutable walk, value)
+    Stmt.VarStmt(nodeId, _, _, name, pattern, _, value) => {
+      let shares = evaluateBound(checker, mutable walk, value)
+      if (pattern is None) {
+        if (reportRename(checker, mutable walk, name, value)) {
+          shares = []
+        }
+      }
       if (pattern is Some(bound)) {
         bindPattern(checker, mutable walk, bound, shares, Some(value))
       } else {
@@ -1830,13 +1857,80 @@ function walkStatement(checker: Checker, mutable walk: WriteWalk, statement: Stm
   }
 }
 
+function reportRename(
+  checker: Checker,
+  mutable walk: WriteWalk,
+  name: string,
+  value: Expr,
+): bool uses alloc {
+  // A bare name of a tracked type bound to another name: the new name would
+  // be a second name for a value that changes in place.
+  if (value is Expr.Ident(nodeId, pos, source)) {
+    if (Str.startsWith(name, "__") || Str.startsWith(source, "__") || name == source) {
+      return false
+    }
+    const ref = getRef(checker, nodeId)
+    if (ref is Ref.Local(local)) {
+      if (walk.hiddenLoops[local] is Some(_)) {
+        return false
+      }
+    } else if (!(ref is Ref.Const(_))) {
+      return false
+    }
+    if (getNodeType(checker, nodeId) is Some(type)) {
+      if (!isCopyTracked(checker, type) || type is Type.TParam(_)) {
+        return false
+      }
+      const end = Pos { line: pos.line, column: pos.column + Str.length(source) }
+      const fixes = [createFix("copy the value", [insertAt(pos, "copy("), insertAt(end, ")")])]
+      const noun = describeTracked(checker, type)
+      const key = pos.line * POSITION_STRIDE + pos.column
+      if (walk.renamePositions[key] is None) {
+        walk.renamePositions[key] = true
+        Arrays.push(mutable walk.renames, FoundRename {
+          pos,
+          fixes,
+          message: `${name} would be a second name for the ${noun} in ${source}; use ${source}, or copy(${source}) for ${article(noun)} ${noun} of its own`,
+        })
+      }
+      return true
+    }
+  }
+  return false
+}
+
+function describeTracked(checker: Checker, type: Type): string {
+  return match (type) {
+    Type.TArray(_) => "array"
+    Type.TFixedArray(_, _) => "fixed array"
+    Type.TMap(_, _) => "map"
+    Type.TBox(_) => "box"
+    Type.TStringBuilder => "string builder"
+    Type.TGenerator(_, _, _, _, input) => input == Type.TVoid ? "generator" : "coroutine"
+    Type.TStruct(index) => checker.structs[index].tuple ? "tuple" : "struct"
+    _ => "value"
+  }
+}
+
+function article(noun: string): string {
+  if (Str.startsWith(noun, "a")) {
+    return "an"
+  }
+  return "a"
+}
+
 function walkAssign(
   checker: Checker,
   mutable walk: WriteWalk,
   target: Expr,
   value: Expr,
 ) uses alloc {
-  const shares = evaluate(checker, mutable walk, value)
+  let shares = evaluate(checker, mutable walk, value)
+  if (target is Expr.Ident(_, _, targetName)) {
+    if (reportRename(checker, mutable walk, targetName, value)) {
+      shares = []
+    }
+  }
   evaluatePlaceParts(checker, mutable walk, target)
   if (findPlace(checker, mutable walk, target) is Some(place)) {
     const start = findExpressionStart(target)
@@ -2607,6 +2701,9 @@ function reportFound(
   walk: WriteWalk,
   errorPlaces: Map<string, Array<Pos>>,
 ) uses alloc {
+  for (const rename of Arrays.values(walk.renames)) {
+    reportErrorFix(mutable checker, rename.pos, "E0971", rename.fixes, rename.message)
+  }
   // In the order of the writes; most bodies found none.
   if (Arrays.length(walk.found) == 0 && Arrays.length(walk.heldWrites) == 0) {
     return

@@ -753,17 +753,18 @@ function buildSharedSlotFix(
     return []
   }
   const type = found[0]
-  let end = Pos { line: 0, column: 0 }
-  if (type.result is Some(boxed)) {
-    const key = getPosKey("r", boxed.value.pos)
-    if (checker.scopes[checker.current].facts.resultEnds[key] is Some(resultEnd)) {
-      end = resultEnd
-    } else {
-      return []
-    }
-  } else {
+  const boxed = type.result
+  if (boxed is None) {
     return []
   }
+  const resultEnd = checker.scopes[checker.current].facts.resultEnds[getPosKey(
+    "r",
+    boxed.value.value.pos,
+  )]
+  if (resultEnd is None) {
+    return []
+  }
+  const end = resultEnd.value
   // An unnamed parameter is named `source`, unless the type already uses that name.
   let name = ""
   if (shared < Arrays.length(type.parameterNames)) {
@@ -1585,14 +1586,13 @@ function buildLengthFix(
   targetType: Type,
 ): Array<Fix> from target uses alloc {
   // The target must be a name that touches the dot on one line.
-  let targetPos = Pos { line: 0, column: 0 }
   let targetName = ""
-  if (target is Expr.Ident(_, identPos, identName)) {
-    targetPos = identPos
+  if (target is Expr.Ident(_, _, identName)) {
     targetName = identName
   } else {
     return []
   }
+  const targetPos = getExpressionPos(target)
   const dot = Pos { line: pos.line, column: pos.column - 1 }
   if (targetPos.line != dot.line || targetPos.column + Str.charCount(targetName) != dot.column) {
     return []
@@ -1842,6 +1842,16 @@ function collectConcatLeaves(
   }
 }
 
+function findLeafEnd(last: Expr): Option<Pos> from last {
+  if (last is Expr.Ident(_, lastPos, lastName)) {
+    return Some(moveColumn(lastPos, Str.charCount(lastName)))
+  }
+  if (last is Expr.StringLit(_, _, _, lastEnd)) {
+    return Some(lastEnd)
+  }
+  return None
+}
+
 function buildConcatFix(
   checker: Checker,
   operator: string,
@@ -1875,13 +1885,8 @@ function buildConcatFix(
   }
   Str.append(mutable builder, "`")
   const start = getExpressionPos(leaves[0])
-  let end = start
   const last = leaves[Arrays.length(leaves) - 1]
-  if (last is Expr.Ident(_, lastPos, lastName)) {
-    end = moveColumn(lastPos, Str.charCount(lastName))
-  } else if (last is Expr.StringLit(_, _, _, lastEnd)) {
-    end = lastEnd
-  }
+  const end = (findLeafEnd(last) is Some(leafEnd) ? leafEnd : start)
   return [
     createFix(
       "join the strings with a template string",

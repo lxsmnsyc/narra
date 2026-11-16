@@ -8,7 +8,7 @@ import * as Path from "std/path"
 import * as Process from "std/process"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
-import { splitString } from "narrac/driver/textops"
+import { dropLast, splitString } from "narrac/driver/textops"
 import { LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
 import { quoteGo } from "narrac/syntax/parser"
 
@@ -50,11 +50,7 @@ function normalizeDirectory(path: string): string uses alloc {
         Arrays.length(segments) > 0 &&
         segments[Arrays.length(segments) - 1] != ".."
     ) {
-      let kept: Array<string> = []
-      for (const index of Ranges.upTo(Arrays.length(segments) - 1)) {
-        Arrays.push(mutable kept, segments[index])
-      }
-      segments = kept
+      segments = dropLast(segments)
       continue
     }
     if (segment == ".." && isAbsolute) {
@@ -146,28 +142,36 @@ function sortNames(mutable names: Array<string>) {
 function expandSegments(root: string, segments: Array<string>): Array<string> uses io, alloc {
   let paths: Array<string> = ["."]
   for (const segment of Arrays.values(segments)) {
-    let next: Array<string> = []
-    for (const path of Arrays.values(paths)) {
-      if (segment != "*") {
-        Arrays.push(mutable next, joinDirectory(path, segment))
-        continue
-      }
-      // `*` takes every child directory that has a narra.toml.
-      const listed = Fs.listDir(joinDirectory(root, path))
-      if (listed is Ok(names)) {
-        let sorted = copy(names)
-        sortNames(mutable sorted)
-        for (const name of Arrays.values(sorted)) {
-          const child = joinDirectory(path, name)
-          if (Fs.exists(Path.join(joinDirectory(root, child), "narra.toml"))) {
-            Arrays.push(mutable next, child)
-          }
+    paths = expandSegment(root, paths, segment)
+  }
+  return paths
+}
+
+function expandSegment(
+  root: string,
+  paths: Array<string>,
+  segment: string,
+): Array<string> uses io, alloc {
+  let next: Array<string> = []
+  for (const path of Arrays.values(paths)) {
+    if (segment != "*") {
+      Arrays.push(mutable next, joinDirectory(path, segment))
+      continue
+    }
+    // `*` takes every child directory that has a narra.toml.
+    const listed = Fs.listDir(joinDirectory(root, path))
+    if (listed is Ok(names)) {
+      let sorted = copy(names)
+      sortNames(mutable sorted)
+      for (const name of Arrays.values(sorted)) {
+        const child = joinDirectory(path, name)
+        if (Fs.exists(Path.join(joinDirectory(root, child), "narra.toml"))) {
+          Arrays.push(mutable next, child)
         }
       }
     }
-    paths = next
   }
-  return paths
+  return next
 }
 
 function matchesPattern(path: string, pattern: Array<string>): bool uses alloc {

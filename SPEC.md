@@ -1103,7 +1103,7 @@ import * as Ranges from "std/range"
 ```narra
 let squares: Array<int> = []
 if (Arrays.filled(0, 1000) is Some(zeros)) {
-  squares = zeros
+  squares = copy(zeros)
 }
 for (const i of Ranges.upTo(1000)) {
   squares[i] = i * i          // the count is 1, so the write is in place
@@ -1168,6 +1168,18 @@ const count: Option<int> = Some(3)
 const same = copy(count)      // E0975: remove the call
 ```
 
+### Renames
+
+A second name for a value that changes in place is a compile error (E0971, D124). `const b = a`, `let b = a` and `b = a`, where `a` is a bare name and its type is a struct, `Array`, `Map`, `FixedArray`, `Box`, `StringBuilder` or generator, would name one array or struct twice, and a write through one name would not show in the other. Use `a`, or `copy(a)` for a value of its own; `narrac apply-fix` writes the copy.
+
+<!-- error: E0971 -->
+```narra
+const prices = [100, 200]
+const synonym = prices        // E0971: synonym would be a second name for prices
+```
+
+A tuple counts when one of its elements does. A name of a number, `bool`, `char`, `string`, `bytes`, an enum, a tuple of those or a function value can be renamed, since none of them changes in place. Reading a field or an element (`const items = bag.items`), passing an argument and keeping a result are not renames; the rules below cover them. A top-level `const ALIAS = TABLE` and a destructuring declaration are not checked.
+
 ### Shared writes
 
 A write to a place is a compile error while another name that is still used shares that place, a place that contains it or a place inside it (E0978, D94). Without the rule the write would copy the value, and the source would not show it. Sharing starts where a value is read into a second name and ends when that name is no longer used:
@@ -1204,7 +1216,7 @@ const seen = items[0] + bag.items[0]    // 1 + 9
 ```
 
 - **What writes.** An assignment to a field or element, `Arrays.push(mutable items, v)` and any other `mutable` argument. Passing `mutable R` writes `R` and everything below it. A non-escaping closure that writes a captured `const` writes it where the closure is passed. All-scalar structs are checked too, though they live inline and a write never copies them.
-- **What shares.** A `const` or `let` initialized from a place, an assignment, a pattern, destructured or `for (const ...)` binding, a struct, array, tuple or map holding the place, the result of a call whose callee has `from` for that argument (above), and a function value made from an arrow function, which shares what it captured: calling it uses those values. A parameter, a top-level constant, a `Cell` and a value read from an identity type count as used for the whole body, so a write to the value they share is an error at once. `copy(x)` shares nothing. Sharing runs in both directions and through chains: after `const b = a; const c = b`, a write to any of the three is checked against the other two.
+- **What shares.** A `const` or `let` initialized from a field or an element, an assignment of one, a pattern, destructured or `for (const ...)` binding, a struct, array, tuple or map holding the place, the result of a call whose callee has `from` for that argument (above), and a function value made from an arrow function, which shares what it captured: calling it uses those values. A parameter, a top-level constant, a `Cell` and a value read from an identity type count as used for the whole body, so a write to the value they share is an error at once. `copy(x)` shares nothing. Sharing runs in both directions and through chains: after `const b = a.items; const c = [b]`, a write to `a.items`, `b` or `c` is checked against the other two.
 - **When it ends.** Assigning a local or a field path (`bag = other`, `bag.items = []`) ends its sharing; assigning an indexed place (`rows[0] = x`) does not. Liveness is checked inside one function body: the error names the later use. A `const` or `let` holds its value until its block ends, so a write after its last use is still an error when the write would copy an array, map, `Box`, `StringBuilder` or generator it holds; the error then names the end of the block (D104). A write that copies nothing is accepted after the last use: a field of a struct of numbers, or a `mutable` call on a struct that holds the shared value only inside an enum, whose payload is not a place. An enum built from a place holds that place's value like any other value: after `const held = Some(bag.items)`, `Arrays.push(mutable bag.items, 4)` is an error until `held`'s block ends. A destructuring `const` or `let` holds its fields the same way. A `const` or `let` initialized with `copy(...)` holds its value the same way: a part taken out of it shares the original until its block ends. The bindings of an `is` or a `match` on a value that is not a place (a call result, a constructor) hold it until the `if` block or the arm ends, and so does a `for (const ...)` binding over such a value until the body ends; bindings of a place end at their last use, since the place keeps the value. While a `for ... of` loop other than `for (mutable ...)` runs, its iterator holds the place it walks, so a write to that place in the body is an error; loop over `copy(items)` or write after the loop.
 - **Which index places are the same.** Two different integer literal indexes name different places: `const first = rows[0]; rows[1][0] = 4` is accepted. Every other index may name any element, so an identifier or other expression (`rows[i]` and `rows[j]`, `rows[i]` and `rows[0]`) and a map key match every element and the other indexes. The same literal index is one place, and assigning it does not end its sharing (a known false positive: `let row = grid[0]; grid[0] = [9]; row[0] = 5` is reported while `grid[0]` is used later).
 - **Known gap: a part of a temporary copy of a heap enum.** `copy(x)` shares nothing, so `let row = takeLeftRow(copy(tree))` is not paired with `tree`. The temporary copy ends with the statement and takes its credits back, so a later write to `row` copies `tree`'s part without a `copy(...)` that explains it. The debug copy check reports it. Take `copy(...)` of the part instead.

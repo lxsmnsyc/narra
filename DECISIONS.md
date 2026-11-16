@@ -2069,4 +2069,4 @@ Decision (maintainer, 2026-11-16, from the debate `roadmaps/selfhost/debate/valu
 - **Amends** D94 (a rename is no longer a sharing start that E0978 checks; it is rejected at the binding) and D104.
 - **Cost.** About 13 typed sites in the compiler (all a default reassigned later), some of 30 untyped std sites, error samples, SPEC section 6 and guide chapters 2, 9 and 13. About 100k to 200k tokens, 50 to 150 lines.
 
-Not built yet (node restrict-renames).
+Built (node restrict-renames). The check runs in the shared-write walk (`selfhost/src/check/sharedwrites.nra`), at `const b = a`, `let b = a` and `b = a` when `a` is a bare local, parameter, pattern or loop binding or top-level constant of a tracked type; a type parameter is not checked. It reports E0971 with an `apply-fix` that wraps the name in `copy(...)`, and the rename starts no sharing, so E0978 does not repeat it. A destructuring declaration is not a rename. The compiler and std had 67 sites, all rewritten with `copy(...)`.

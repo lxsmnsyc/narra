@@ -1,7 +1,7 @@
 ---
 id: restrict-renames
 title: "A second name for a value that changes in place is an error (E0971)"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-18
@@ -20,7 +20,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-16
-spent:
+spent: 549151
 owns:
   - selfhost/src/check/sharedwrites.nra
   - selfhost/src/driver/diagnostics.nra

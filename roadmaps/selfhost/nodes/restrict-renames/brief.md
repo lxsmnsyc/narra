@@ -1,10 +1,10 @@
 ---
 id: restrict-renames
 title: "A second name for a value that changes in place is an error (E0971)"
-status: todo
+status: active
 priority: should
 type: feature
-story: 
+story: batch-18
 early: false
 outline: false
 milestone: p3-review

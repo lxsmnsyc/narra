@@ -1,10 +1,10 @@
 ---
 id: workspace-manifest
 title: "[workspace] table, workspace = true dependencies and finding the workspace root"
-status: todo
+status: active
 priority: could
 type: feature
-story:
+story: batch-18
 early: false
 outline: false
 milestone: p4-packages
@@ -23,12 +23,12 @@ added: 2026-11-15
 spent:
 owns:
   - roadmaps/selfhost/nodes/workspace-manifest/**
-  - selfhost/src/workspace.nra
+  - selfhost/src/driver/workspace.nra
   - testdata/workspaces/manifest_*/**
   - testdata/errors/workspace_*
 shared:
-  - selfhost/src/manifest.nra
-  - selfhost/src/diagnostics.nra
+  - selfhost/src/driver/manifest.nra
+  - selfhost/src/driver/diagnostics.nra
   - selfhost/tests/src/manifest.nra
   - selfhost/tests/src/packages.nra
 reserves: [diag E0480-E0483]
@@ -42,7 +42,7 @@ depends_on:
 
 ## Goal
 
-`parseManifest` reads `[workspace] members` and `json = { workspace = true }`. A new module `selfhost/src/workspace.nra` exports two functions. `findWorkspace(packageDirectory): Option<Workspace>` finds the workspace. `listMembers(root): Result<Array<Member>, Array<LoadError>>` lists each member's directory and name. Nothing loads members yet.
+`parseManifest` reads `[workspace] members` and `json = { workspace = true }`. A new module `selfhost/src/driver/workspace.nra` exports two functions. `findWorkspace(packageDirectory): Option<Workspace>` finds the workspace. `listMembers(root): Result<Array<Member>, Array<LoadError>>` lists each member's directory and name. Nothing loads members yet.
 
 ## Context
 

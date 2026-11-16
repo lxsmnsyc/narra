@@ -23,6 +23,7 @@
 // --json: `{"error": ...}` to stdout) and exits 1; a usage error exits 2.
 import { splitString, substring } from "narrac/driver/textops"
 import * as Fs from "std/fs"
+import * as Path from "std/path"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
@@ -254,16 +255,16 @@ function answerQuery(
   // Load and check the package as `narrac types` does.
   const loaded = Modules.load(directory)
   if (loaded is Err(loadErrors)) {
-    return Err(describeLoadFailure(json, loadErrors))
+    return Err(describeLoadFailure(json, filePrefix, loadErrors))
   }
   const package = loaded.value
   let checker = copy(Body.checkPackage(package))
   if (Arrays.length(checker.errors) > 0) {
-    return Err(describeCheckFailure(json, checker.errors))
+    return Err(describeCheckFailure(json, filePrefix, checker.errors))
   }
   let effects = Effects.checkEffects(mutable checker)
   if (Arrays.length(checker.errors) > 0) {
-    return Err(describeCheckFailure(json, checker.errors))
+    return Err(describeCheckFailure(json, filePrefix, checker.errors))
   }
   const views = buildViews(checker, package, Map {})
   if (views is Err(message)) {
@@ -762,12 +763,35 @@ function reportAnswer(json: bool, answer: Result<string, string>): int uses io, 
   return writeStdout(answer.value)
 }
 
-function describeLoadFailure(json: bool, errors: Array<LoadError>): Failure uses alloc {
+function prefixMemberFile(filePrefix: string, file: string): string uses alloc {
+  // A file of the member itself is `src/...` or `narra.toml`; the file of a dependency starts with
+  // the dependency's name and stays as it is.
+  if (filePrefix == "" || filePrefix == ".") {
+    return file
+  }
+  if (file == "narra.toml" || Str.startsWith(file, "src/")) {
+    return Path.join(filePrefix, file)
+  }
+  return file
+}
+
+function describeLoadFailure(
+  json: bool,
+  filePrefix: string,
+  errors: Array<LoadError>,
+): Failure uses alloc {
+  let named: Array<LoadError> = []
+  for (const error of Arrays.values(errors)) {
+    Arrays.push(mutable named, LoadError {
+      ...error,
+      file: prefixMemberFile(filePrefix, error.file),
+    })
+  }
   if (!json) {
-    return Failure { output: "", errorOutput: Modules.errorText(errors), isLookup: false }
+    return Failure { output: "", errorOutput: Modules.errorText(named), isLookup: false }
   }
   let parts: Array<string> = []
-  for (const error of Arrays.values(errors)) {
+  for (const error of Arrays.values(named)) {
     const pos = Pos { line: error.line, column: error.column }
     Arrays.push(mutable parts, writeDiagnostic(error.file, pos, error.code, error.message))
   }
@@ -779,15 +803,26 @@ function describeLoadFailure(json: bool, errors: Array<LoadError>): Failure uses
 }
 
 function reportLoadErrors(json: bool, errors: Array<LoadError>): int uses io, alloc {
-  return reportFailure(describeLoadFailure(json, errors))
+  return reportFailure(describeLoadFailure(json, "", errors))
 }
 
-function describeCheckFailure(json: bool, errors: Array<CheckError>): Failure uses alloc {
+function describeCheckFailure(
+  json: bool,
+  filePrefix: string,
+  errors: Array<CheckError>,
+): Failure uses alloc {
+  let named: Array<CheckError> = []
+  for (const error of Arrays.values(errors)) {
+    Arrays.push(mutable named, CheckError {
+      ...error,
+      file: prefixMemberFile(filePrefix, error.file),
+    })
+  }
   if (!json) {
-    return Failure { output: "", errorOutput: errorText(errors), isLookup: false }
+    return Failure { output: "", errorOutput: errorText(named), isLookup: false }
   }
   let parts: Array<string> = []
-  for (const error of Arrays.values(errors)) {
+  for (const error of Arrays.values(named)) {
     Arrays.push(mutable parts, writeDiagnostic(error.file, error.pos, error.code, error.message))
   }
   return Failure {

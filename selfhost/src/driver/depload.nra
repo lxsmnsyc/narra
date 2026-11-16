@@ -15,13 +15,20 @@ import {
   resolveDependencies,
 } from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
-import { Dependency, ExportEntry, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
-import { Member, Workspace, findWorkspace, listMembers } from "narrac/driver/workspace"
+import { Dependency, ExportEntry, LoadError, Manifest } from "narrac/driver/manifest"
+import {
+  Member,
+  Workspace,
+  findWorkspace,
+  listMembers,
+  readManifestAt,
+} from "narrac/driver/workspace"
 
 export struct DependencyPackage {
   name: string
   version: string
   directory: string // the checkout of the version
+  git: string // the URL it was fetched from; empty for a member of the workspace
   declared: Array<string> // the names in the [dependencies] of its manifest
   exports: Array<ExportEntry> // its [exports] table; empty when every module is exposed
 }
@@ -76,6 +83,7 @@ function listPackages(
     Arrays.push(mutable packages, DependencyPackage {
       name: entry.name,
       version: entry.version,
+      git: entry.git,
       directory: found.value.directory,
       declared,
       exports: manifest.exports,
@@ -217,19 +225,6 @@ function findMemberIndex(members: Array<Member>, name: string): int {
   return -1
 }
 
-function readMemberManifest(directory: string): Result<Manifest, LoadError> uses io, alloc {
-  const manifestPath = `${directory}/narra.toml`
-  const text = Fs.readText(manifestPath)
-  if (text is Err(message)) {
-    return Err(createDependencyError("E0458", `cannot read or write ${manifestPath}: ${message}`))
-  }
-  const parsed = parseManifest(text.value)
-  if (parsed is Err(error)) {
-    return Err(LoadError { ...error, file: manifestPath })
-  }
-  return parsed
-}
-
 function keepGitDependencies(
   manifest: Manifest,
   overrides: Array<Dependency>,
@@ -333,7 +328,7 @@ function prepareWorkspaceDependencies(
   const members = listed.value
   let manifests: Array<Manifest> = []
   for (const member of Arrays.values(members)) {
-    const read = readMemberManifest(member.directory)
+    const read = readManifestAt(member.directory)
     if (read is Err(error)) {
       return Err(error)
     }
@@ -359,7 +354,7 @@ function prepareWorkspaceDependencies(
       return Err(
         createDependencyError(
           "E0450",
-          `package ${gitPackage.name} is a member of the workspace and is also required from ${gitPackage.directory}`,
+          `package ${gitPackage.name} is a member of the workspace and is also required from ${gitPackage.git}`,
         ),
       )
     }
@@ -395,6 +390,7 @@ function prepareWorkspaceDependencies(
     Arrays.push(mutable packages, DependencyPackage {
       name,
       version: manifests[found].version,
+      git: "",
       directory: members[found].directory,
       declared,
       exports: copy(manifests[found].exports),

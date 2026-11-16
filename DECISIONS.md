@@ -1281,7 +1281,7 @@ Sources: pnpm docs (pnpm.io `workspaces`, `pnpm-workspace_yaml`, `filtering`, `c
 - **Rejected: a shared target directory.** The driver writes no build products besides the executables.
 - **Rejected: a `go.work` file next to `narra.toml`.** A second manifest format for the same facts.
 
-Built: the `[workspace]` table, `workspace = true`, `[overrides]` and the root lock (batch 18 and 19), and the commands at the workspace root with `-dependents` and `-dependencies` (workspace-commands). Not built yet: the language service over members, git dependencies on a member of another repository, and this repository as a workspace.
+Built in batches 18 and 19: the `[workspace]` table, `workspace = true`, `[overrides]` and the root lock, the commands at the workspace root with `-dependents` and `-dependencies`, the language service over members, git dependencies on a member of another repository, and this repository as a workspace. Not built: go to definition into a git dependency, and the double body check in the language service.
 
 ## D102. Contracts get `||` and relations between parameters; no `!`, no `&&` inside a pattern
 

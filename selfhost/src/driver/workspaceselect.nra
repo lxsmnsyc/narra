@@ -6,54 +6,37 @@ import * as Fs from "std/fs"
 import * as Path from "std/path"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
-import { LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import { LoadError } from "narrac/driver/manifest"
 import {
   Member,
   Workspace,
   findWorkspace,
+  findWorkspaceRoot,
   listMembers,
   makeAbsolute,
   normalizeDirectory,
+  readManifestAt,
 } from "narrac/driver/workspace"
 
-function createSelectionError(code: string, directory: string, message: string): LoadError {
-  return LoadError { code, file: Path.join(directory, "narra.toml"), line: 0, column: 1, message }
+function createSelectionError(code: string, file: string, message: string): LoadError {
+  return LoadError { code, file, line: 0, column: 1, message }
 }
 
-function readMemberManifest(member: Member): Option<Manifest> uses io, alloc {
-  const read = Fs.readText(Path.join(member.directory, "narra.toml"))
-  if (read is Ok(text)) {
-    const parsed = parseManifest(text)
-    if (parsed is Ok(manifest)) {
-      return Some(manifest)
-    }
+function findSelectionFile(path: string): string uses io, alloc {
+  // The workspace root's manifest when the path is a root; otherwise the path as given.
+  const root = findWorkspaceRoot(path)
+  if (root is Some(workspace)) {
+    return Path.join(workspace.root, "narra.toml")
   }
-  return None
-}
-
-function findWorkspaceRoot(path: string): Option<Workspace> uses io, alloc {
-  const manifestPath = Path.join(path, "narra.toml")
-  if (!Fs.exists(manifestPath)) {
-    return None
-  }
-  const read = Fs.readText(manifestPath)
-  if (read is Ok(text)) {
-    const parsed = parseManifest(text)
-    if (parsed is Ok(manifest)) {
-      if (manifest.isWorkspace) {
-        return Some(Workspace { root: normalizeDirectory(path), manifest })
-      }
-    }
-  }
-  return None
+  return path
 }
 
 function listDependencyIndexes(members: Array<Member>): Array<Array<int>> uses io, alloc {
   let edges: Array<Array<int>> = []
   for (const member of Arrays.values(members)) {
     let targets: Array<int> = []
-    const manifest = readMemberManifest(member)
-    if (manifest is Some(found)) {
+    const manifest = readManifestAt(member.directory)
+    if (manifest is Ok(found)) {
       for (const dependency of Arrays.values(found.dependencies)) {
         if (!dependency.workspace) {
           continue
@@ -100,7 +83,7 @@ function findCycle(
       return Some(
         createSelectionError(
           "E0490",
-          workspace.root,
+          Path.join(workspace.root, "narra.toml"),
           `the member ${members[index].name} depends on itself through workspace = true dependencies`,
         ),
       )
@@ -136,10 +119,10 @@ function selectEveryMember(
   return Ok(Some(listed.value))
 }
 
-function describeNotMember(flagNames: string, path: string): LoadError uses alloc {
+function describeNotMember(flagNames: string, path: string): LoadError uses io, alloc {
   return createSelectionError(
     "E0489",
-    path,
+    findSelectionFile(path),
     `${flagNames} needs the directory of a workspace member; ${path} is not one`,
   )
 }
@@ -165,7 +148,7 @@ export function selectMembers(
       return Err([
         createSelectionError(
           "E0489",
-          path,
+          findSelectionFile(path),
           `${flagNames} needs the directory of a workspace member; ${path} is the workspace root, which covers every member`,
         ),
       ])
@@ -240,8 +223,8 @@ export function selectMembers(
 
 export function listMemberBinaries(member: Member): Array<string> uses io, alloc {
   let names: Array<string> = []
-  const manifest = readMemberManifest(member)
-  if (manifest is Some(found)) {
+  const manifest = readManifestAt(member.directory)
+  if (manifest is Ok(found)) {
     for (const binary of Arrays.values(found.binaries)) {
       Arrays.push(mutable names, binary.name)
     }
@@ -269,7 +252,7 @@ export function findBinaryOwners(
     return Err(
       createSelectionError(
         "E0488",
-        owners[0].directory,
+        Path.join(owners[0].directory, "narra.toml"),
         `the members ${owners[0].name} and ${owners[1].name} both have a binary named ${binaryName}; binary names must be unique in a workspace`,
       ),
     )

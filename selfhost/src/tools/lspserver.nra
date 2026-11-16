@@ -1,7 +1,7 @@
 // The state and the work of narrac lsp: the documents the editor holds, the
 // check of the package a document belongs to, the diagnostics it publishes and
 // whole-document formatting. lsp.nra owns the protocol (framing and dispatch).
-import { splitString, substring } from "narrac/driver/textops"
+import { hasName, splitString, substring } from "narrac/driver/textops"
 import * as Arrays from "std/array"
 import * as Char from "std/char"
 import * as Fs from "std/fs"
@@ -12,8 +12,14 @@ import * as Str from "std/string"
 import { Value } from "std/shape"
 import { CheckCache, checkLoaded, createCheckCache, loadPackage } from "narrac/tools/lspcache"
 import { isDependencyPath } from "narrac/driver/depload"
-import { parseManifest } from "narrac/driver/manifest"
-import { findWorkspace, listMembers } from "narrac/driver/workspace"
+import {
+  findWorkspace,
+  isRootWithoutPackage,
+  listMembers,
+  makeAbsolute,
+  readManifestAt,
+} from "narrac/driver/workspace"
+import { selectMembers } from "narrac/driver/workspaceselect"
 import * as Fmt from "narrac/tools/fmt"
 import * as FmtConfig from "narrac/tools/fmtconfig"
 import { getPath, makeNotification, makeRecord } from "narrac/tools/lspserverjson"
@@ -215,7 +221,7 @@ export function findPackageDirectory(path: string): Option<string> uses io, allo
   for (const _level of Ranges.upTo(64)) {
     const manifestPath = Path.join(directory, "narra.toml")
     // A manifest with no [package] (a workspace root) is not a package; keep looking up.
-    if (Fs.exists(manifestPath) && !isRootWithoutPackage(manifestPath)) {
+    if (Fs.exists(manifestPath) && !isRootWithoutPackageAt(directory)) {
       return Some(directory)
     }
     const parent = Path.dirname(directory)
@@ -227,69 +233,28 @@ export function findPackageDirectory(path: string): Option<string> uses io, allo
   return None
 }
 
-function isRootWithoutPackage(manifestPath: string): bool uses io, alloc {
-  const read = Fs.readText(manifestPath)
-  if (read is Err(_)) {
-    return false
-  }
+function isRootWithoutPackageAt(directory: string): bool uses io, alloc {
   // A manifest that does not parse stays a package, so the loader reports its error.
-  const parsed = parseManifest(read.value)
-  if (parsed is Ok(manifest)) {
-    return manifest.name == ""
+  const read = readManifestAt(directory)
+  if (read is Ok(manifest)) {
+    return isRootWithoutPackage(manifest)
   }
   return false
 }
 
 function listDependentPrograms(directory: string): Array<string> uses io, alloc {
   // The member itself first, then every member that depends on it through `workspace = true`,
-  // directly or not, in member order.
+  // directly or not. A directory that is not a member is a program of its own.
   let programs = [directory]
-  const maybeWorkspace = findWorkspace(directory)
-  if (maybeWorkspace is None) {
+  const selected = selectMembers(directory, true, false, false)
+  if (selected is Err(_)) {
     return programs
   }
-  const listed = listMembers(maybeWorkspace.value)
-  if (listed is Err(_)) {
-    return programs
-  }
-  let changedNames: Array<string> = []
-  let memberDependencies: Array<Array<string>> = []
-  for (const member of Arrays.values(listed.value)) {
-    if (member.directory == directory) {
-      Arrays.push(mutable changedNames, member.name)
-    }
-    let names: Array<string> = []
-    const read = Fs.readText(Path.join(member.directory, "narra.toml"))
-    if (read is Ok(text)) {
-      const parsed = parseManifest(text)
-      if (parsed is Ok(manifest)) {
-        for (const dependency of Arrays.values(manifest.dependencies)) {
-          if (dependency.workspace) {
-            Arrays.push(mutable names, dependency.name)
-          }
-        }
-      }
-    }
-    Arrays.push(mutable memberDependencies, names)
-  }
-  if (Arrays.length(changedNames) == 0) {
-    return programs
-  }
-  let added = true
-  while (added) {
-    added = false
-    for (const index of Ranges.upTo(Arrays.length(listed.value))) {
-      const member = listed.value[index]
-      if (containsName(changedNames, member.name)) {
-        continue
-      }
-      for (const name of Arrays.values(memberDependencies[index])) {
-        if (containsName(changedNames, name)) {
-          Arrays.push(mutable changedNames, member.name)
-          Arrays.push(mutable programs, member.directory)
-          added = true
-          break
-        }
+  if (selected.value is Some(members)) {
+    const absolute = makeAbsolute(directory)
+    for (const member of Arrays.values(members)) {
+      if (makeAbsolute(member.directory) != absolute) {
+        Arrays.push(mutable programs, member.directory)
       }
     }
   }
@@ -318,16 +283,7 @@ function isMemberFile(memberNames: Array<string>, file: string): bool {
   if (slash is None) {
     return false
   }
-  return containsName(memberNames, substring(file, 0, slash.value))
-}
-
-function containsName(names: Array<string>, name: string): bool {
-  for (const known of Arrays.values(names)) {
-    if (known == name) {
-      return true
-    }
-  }
-  return false
+  return hasName(memberNames, substring(file, 0, slash.value))
 }
 
 function readFileText(overrides: Map<string, string>, path: string): string uses io, alloc {

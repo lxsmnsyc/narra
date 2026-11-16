@@ -10,45 +10,144 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.row }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
       matrix:
-        os:
-          - macos-14
-          - ubuntu-24.04
+        include:
+          # The first row of each runner is built from the native compiler and runs the tests.
+          # The other rows are cross builds with zig cc and do not run the tests. The glibc
+          # Linux rows are always built with zig against glibc 2.28. The smoke job runs every
+          # archive before the release job publishes.
+          - { os: macos-14, row: MacOS-Arm64, cross: false }
+          - { os: macos-14, row: MacOS-X86_64, cross: true }
+          - { os: ubuntu-24.04, row: Linux-X86_64, cross: false }
+          - { os: ubuntu-24.04, row: Linux-Arm64, cross: true }
+          - { os: ubuntu-24.04, row: Linux-X86_64-musl, cross: true }
+          - { os: ubuntu-24.04, row: Linux-Arm64-musl, cross: true }
+          - { os: ubuntu-24.04, row: Windows-X86_64, cross: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install zig
+        if: matrix.cross || startsWith(matrix.row, 'Linux-')
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/python3" -m pip install ziglang==0.17.1
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
       - name: Build, test and pack
         env:
           TAG: ${{ github.ref_name }}
-        run: sh scripts/release-build.sh "${TAG#v}"
+          ROW: ${{ matrix.row }}
+        run: sh scripts/release-build.sh --target "$ROW" "${TAG#v}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: archive-${{ matrix.os }}
+          name: archive-${{ matrix.row }}
           path: dist/*
           if-no-files-found: error
 
+  smoke:
+    name: smoke (${{ matrix.row }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Each archive runs on a machine of its own processor. The Linux rows run in a
+          # container: Debian 12 for the glibc rows, Alpine for the musl rows.
+          - { os: macos-14, row: MacOS-Arm64, platform: macos-arm64 }
+          - { os: macos-14, row: MacOS-X86_64, platform: macos-x86_64, prefix: "arch -x86_64" }
+          - { os: ubuntu-24.04, row: Linux-X86_64, platform: linux-x86_64, image: "debian:12" }
+          - { os: ubuntu-24.04-arm, row: Linux-Arm64, platform: linux-arm64, image: "debian:12" }
+          - { os: ubuntu-24.04, row: Linux-X86_64-musl, platform: linux-x86_64-musl, image: "alpine:3.20" }
+          - { os: ubuntu-24.04-arm, row: Linux-Arm64-musl, platform: linux-arm64-musl, image: "alpine:3.20" }
+          - { os: windows-latest, row: Windows-X86_64, platform: windows-x86_64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: archive-${{ matrix.row }}
+          path: dist
+      - name: Run the archive (host)
+        if: runner.os == 'macOS'
+        env:
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+          NARRA_RUN_PREFIX: ${{ matrix.prefix }}
+        run: sh scripts/release-build.sh --check-archive "dist/narra-${TAG#v}-$PLATFORM.tar.gz"
+      - name: Run the archive (container)
+        if: runner.os == 'Linux'
+        env:
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          # narrac calls a C compiler, so the container gets one.
+          case "$IMAGE" in
+            alpine*) setup='apk add -q gcc musl-dev' ;;
+            *) setup='apt-get update -qq >/dev/null && apt-get install -y -qq gcc libc6-dev >/dev/null' ;;
+          esac
+          docker run --rm -v "$PWD:/work" -w /work -e CC=gcc "$IMAGE" \
+            sh -c "set -eu; $setup; sh scripts/release-build.sh --check-archive dist/narra-${TAG#v}-$PLATFORM.tar.gz"
+      - name: Run the archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          CC: gcc
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          $name = "narra-$version-windows-x86_64"
+          Expand-Archive -Path "dist/$name.zip" -DestinationPath unpack
+          Set-Content -Path hello.nra -Value @('export function run(args: Array<string>): int {', '  print("hello, narra")', '  return 0', '}')
+          $got = (& "unpack/$name/narrac.exe" run hello.nra) -join "`n"
+          if ($got.Trim() -ne 'hello, narra') { throw "narrac.exe printed: $got" }
+          Write-Host 'ok: narrac.exe runs'
+
   release:
     name: release
-    needs: build
+    needs: [build, smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: archive-*
           merge-multiple: true
+      - name: Collect the assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          # Every archive and its checksum file must be there.
+          for platform in macos-arm64 macos-x86_64 linux-x86_64 linux-arm64 linux-x86_64-musl linux-arm64-musl windows-x86_64; do
+            case "$platform" in
+              windows-*) extension=zip ;;
+              *) extension=tar.gz ;;
+            esac
+            for file in "narra-$version-$platform.$extension" "narra-$version-$platform.$extension.sha256"; do
+              if [ ! -f "dist/$file" ]; then
+                echo "missing asset: $file" >&2
+                exit 1
+              fi
+            done
+          done
+          # One file with every checksum, and the installers.
+          (cd dist && cat narra-*.sha256 > checksums.txt)
+          cp install.sh install.ps1 dist/
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          # A tag with a suffix such as v1.0.0-rc1 is a prerelease
+          # A tag with a suffix such as v1.0.0-rc1 is a prerelease. The one-liner in the
+          # docs fetches install.sh from releases/latest, which skips prereleases, so the
+          # first tag must have no suffix (v0.1.0).
           case "$TAG" in
             *-*) prerelease=--prerelease ;;
             *) prerelease= ;;

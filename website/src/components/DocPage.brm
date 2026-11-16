@@ -1,7 +1,10 @@
 <script>
-  import { $props } from 'brumate/signals';
+  import { $bind, $client, $props, $signal } from 'brumate/signals';
+  import Icon from './Icon.brm';
+  import { addCopyButtons, followHeadings } from '../docs/enhance.ts';
   import { chapters } from '../pages.ts';
   import type { Page } from '../pages.ts';
+  import { startTwoslash } from '../twoslash/client.ts';
   import Meta from './Meta.brm';
 
   // A document of the site: the chapters of the guide in a sidebar when `slug` names one, the
@@ -26,10 +29,32 @@
       outline.push(heading);
     }
   }
+  // A chapter's title is written as `6. Option and Result`; the page shows the number apart.
+  const chapterMatch = /^(\d+)\.\s+(.*)$/.exec(page.title);
+  const chapterNumber = index !== -1 && chapterMatch ? chapterMatch[1] : undefined;
+  const heading = chapterNumber && chapterMatch ? chapterMatch[2] : page.title;
+  const kicker = chapterNumber ? `Chapter ${chapterNumber}` : path === 'spec' ? 'Reference' : path === 'install' ? 'Get started' : 'Guide';
+
+  let article = $signal<HTMLElement>();
+  let toc = $signal<HTMLElement>();
+
+  $client(() => {
+    if (!article) {
+      return;
+    }
+    addCopyButtons(article);
+    startTwoslash();
+    if (toc) {
+      return followHeadings(article, toc);
+    }
+    return undefined;
+  }, 'load');
+
   const title = page.title === 'The Narra guide' ? 'Guide | Narra' : `${page.title} | Narra`;
 </script>
 
 <Meta {title} description=page.description {path} />
+<div class="progress" aria-hidden="true"></div>
 <div class={ docs: true, 'no-sidebar': !hasSidebar }>
   #if (hasSidebar) {
     <details class="menu">
@@ -41,27 +66,41 @@
     <nav class="sidebar" aria-label="Chapters">
       <p class="sidebar-title">Guide</p>
       <a href="/guide" aria-current=(slug === '' ? 'page' : undefined)>Overview</a>
-      #for (chapter of chapters by chapter.slug) {
-        <a href=(`/guide/${chapter.slug}`) aria-current=(chapter.slug === slug ? 'page' : undefined)>{chapter.title}</a>
+      #for (chapter, position of chapters by chapter.slug) {
+        <a href=(`/guide/${chapter.slug}`) aria-current=(chapter.slug === slug ? 'page' : undefined)>
+          <span class="sidebar-number">{String(position + 1).padStart(2, '0')}</span>
+          <span>{chapter.title.replace(/^(\d+)\.\s+/, '')}</span>
+        </a>
       }
     </nav>
   }
-  <article class="prose">
-    {page.html}
+  <article class="prose" ref=$bind(article)>
+    <header class="doc-head">
+      <p class="doc-kicker">{kicker}</p>
+      <h1 class="doc-title">{heading}</h1>
+    </header>
+    <div class="doc-body">{page.html}</div>
     #if (previous || next) {
       <nav class="pager" aria-label="Chapters">
         #if (previous) {
-          <a class="previous" href=(`/guide/${previous.slug}`)><small>Previous</small>{previous.title}</a>
+          <a class="previous" href=(`/guide/${previous.slug}`)>
+            <small><span class="pager-icon"><Icon name="arrow-left" size=(14) /></span>Previous</small>
+            <span>{previous.title}</span>
+          </a>
         }
         #if (next) {
-          <a class="next" href=(`/guide/${next.slug}`)><small>Next</small>{next.title}</a>
+          <a class="next" href=(`/guide/${next.slug}`)>
+            <small>Next<span class="pager-icon"><Icon name="arrow-right" size=(14) /></span></small>
+            <span>{next.title}</span>
+          </a>
         }
       </nav>
     }
   </article>
-  <nav class="toc" aria-label="On this page">
+  <nav class="toc" aria-label="On this page" ref=$bind(toc)>
     #if (outline.length > 0) {
       <p class="toc-title">On this page</p>
+      <span class="toc-indicator" aria-hidden="true"></span>
       #for (heading of outline by heading.id) {
         <a href=(`#${heading.id}`) class={ 'level-3': heading.level === 3 }>{heading.text}</a>
       }

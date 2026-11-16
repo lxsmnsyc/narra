@@ -42,7 +42,7 @@ depends_on:
     kind: behavior
     via: dependencies
   - on: package-exports
-    kind: behavior
+    kind: hard
     why: exports between members are tested here
 ---
 # Load member dependencies, resolve from every member, one lock at the root

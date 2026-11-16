@@ -1,0 +1,220 @@
+<script>
+  import { $bind, $client, $effect, $memo, $signal } from 'brumate/signals';
+  import { prevent } from 'brumate/events';
+  import Icon from './Icon.brm';
+  import { loadIndex, runSearch } from '../search/search.ts';
+  import type { SearchResult } from '../search/search.ts';
+
+  // The trigger in the header and the search palette. The palette is always in the page, hidden
+  // and inert while closed, so it can animate in both directions. The entries and the search
+  // library load when it opens for the first time.
+  let open = $signal(false);
+  let query = $signal('');
+  let results = $signal<SearchResult[]>([]);
+  let active = $signal(0);
+  let modifier = $signal('Ctrl');
+  let trigger = $signal<HTMLButtonElement>();
+  let input = $signal<HTMLInputElement>();
+
+  const hasQuery = $memo(query.trim() !== '');
+  const activeId = $memo(results.length > 0 ? `search-option-${active}` : undefined);
+  const status = $memo(
+    !hasQuery
+      ? ''
+      : results.length === 0
+        ? 'No results'
+        : `${results.length} ${results.length === 1 ? 'result' : 'results'}`,
+  );
+
+  // Only the newest query may write its results.
+  let latest = 0;
+
+  function openSearch() {
+    open = true;
+    // Show the palette and focus its input now, not after the next render, so keys typed right
+    // after Cmd+K or / land in the input.
+    const root = input?.closest<HTMLElement>('.search');
+    if (root && input) {
+      root.removeAttribute('inert');
+      root.dataset.state = 'open';
+      input.focus();
+    }
+    // The entries load while the palette animates in.
+    loadIndex();
+  }
+
+  function closeSearch() {
+    open = false;
+  }
+
+  async function search(value: string) {
+    query = value;
+    latest += 1;
+    const turn = latest;
+    const found = await runSearch(value);
+    if (turn === latest) {
+      results = found;
+      active = 0;
+    }
+  }
+
+  function openResult(result: SearchResult) {
+    // A link that is clicked goes through the client navigation of the site.
+    const link = document.createElement('a');
+    link.href = result.href;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    closeSearch();
+  }
+
+  function onInputKey(event: KeyboardEvent) {
+    if (event.key === 'ArrowDown' && results.length > 0) {
+      active = (active + 1) % results.length;
+    } else if (event.key === 'ArrowUp' && results.length > 0) {
+      active = (active - 1 + results.length) % results.length;
+    } else if (event.key === 'Enter') {
+      // The result on screen opens, so a query still on its way does not change the target.
+      const result = results[active];
+      if (result) {
+        openResult(result);
+      }
+    }
+  }
+
+  function onPanelKey(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      closeSearch();
+    }
+  }
+
+  function keepFocus(event: FocusEvent) {
+    // Focus that leaves the palette goes back to its input.
+    const panel = event.currentTarget as HTMLElement;
+    if (input && event.relatedTarget instanceof Node && !panel.contains(event.relatedTarget)) {
+      input.focus();
+    }
+  }
+
+  // Focus moves to the input when the palette opens and back to the trigger when it closes.
+  $effect(() => {
+    document.documentElement.toggleAttribute('data-search', open);
+    if (open) {
+      requestAnimationFrame(() => {
+        input?.focus();
+        input?.select();
+      });
+    } else {
+      trigger?.focus({ preventScroll: true });
+    }
+  });
+
+  // The active result stays in view.
+  $effect(() => {
+    if (open && activeId) {
+      document.getElementById(activeId)?.scrollIntoView({ block: 'nearest' });
+    }
+  });
+
+  $client(() => {
+    modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
+    // Cmd or Ctrl and K open search anywhere, and `/` opens it outside a field.
+    function onShortcut(event: KeyboardEvent) {
+      const target = event.target;
+      const typing =
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (open) {
+          closeSearch();
+        } else {
+          openSearch();
+        }
+      } else if (event.key === '/' && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        openSearch();
+      }
+    }
+    document.addEventListener('keydown', onShortcut);
+    return () => document.removeEventListener('keydown', onShortcut);
+  }, 'load');
+</script>
+
+<button
+  class="search-trigger"
+  type="button"
+  ref=$bind(trigger)
+  aria-haspopup="dialog"
+  aria-expanded=(open ? 'true' : 'false')
+  aria-keyshortcuts="Control+K Meta+K"
+  onClick=openSearch
+>
+  <Icon name="search" size=(16) />
+  <span class="search-trigger-label">Search</span>
+  <kbd class="search-trigger-key">{modifier} K</kbd>
+</button>
+<div class="search" data-state=(open ? 'open' : 'closed') inert=(!open)>
+  <div class="search-overlay" onClick=closeSearch></div>
+  <div
+    class="search-panel"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Search the docs"
+    onKeyDown=(prevent(onPanelKey, 'Escape'))
+    onFocusOut=keepFocus
+  >
+    <div class="search-input-row">
+      <Icon name="search" size=(18) />
+      <input
+        class="search-input"
+        type="text"
+        role="combobox"
+        placeholder="Search the docs"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-label="Search the docs"
+        aria-autocomplete="list"
+        aria-controls="search-results"
+        aria-expanded=(results.length > 0 ? 'true' : 'false')
+        aria-activedescendant=activeId
+        ref=$bind(input)
+        value=query
+        onInput=((event) => search(event.currentTarget.value))
+        onKeyDown=(prevent(onInputKey, 'ArrowDown', 'ArrowUp', 'Enter'))
+      >
+      <kbd class="search-esc">Esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" role="listbox" aria-label="Results">
+      #for (result, position of results by result.id) {
+        <a
+          class="search-result"
+          id=(`search-option-${position}`)
+          role="option"
+          href=(result.href)
+          tabindex="-1"
+          aria-selected=(position === active ? 'true' : 'false')
+          onClick=closeSearch
+          onMouseMove=(() => (active = position))
+        >
+          <span class="search-result-icon"><Icon name=(result.section ? 'hash' : 'file') size=(16) /></span>
+          <span class="search-result-body">
+            <span class="search-result-title">
+              {result.heading}
+              #if (result.section) {
+                <span class="search-result-page">{result.page}</span>
+              }
+            </span>
+            <span class="search-result-text">{result.snippet}</span>
+          </span>
+          <span class="search-result-enter"><Icon name="corner-down-left" size=(16) /></span>
+        </a>
+      }
+    </div>
+    #if (results.length === 0) {
+      <p class="search-empty">{hasQuery ? `No results for “${query.trim()}”` : 'Search the guide, install and spec.'}</p>
+    }
+    <p class="search-status" role="status">{status}</p>
+  </div>
+</div>

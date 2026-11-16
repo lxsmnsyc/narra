@@ -11,3 +11,10 @@ declare module '*.md' {
   const page: Page;
   export default page;
 }
+
+declare module 'virtual:search-index' {
+  import type { SearchEntry } from '../plugins/search.ts';
+
+  const entries: SearchEntry[];
+  export default entries;
+}

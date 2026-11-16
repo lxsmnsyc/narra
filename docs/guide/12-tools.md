@@ -105,7 +105,7 @@ The text form is for people. A program that reads the errors, such as an editor 
 narrac check --json hello.nra
 ```
 
-```text
+```json
 {"code":"E0003","severity":"error","message":"semicolons are not used; end the statement with a line break","file":"hello.nra","range":{"start":[3,17],"end":[3,17]},"fixes":[{"title":"remove the semicolon","edits":[{"file":"hello.nra","range":{"start":[3,17],"end":[3,18]},"text":""}]}]}
 ```
 
@@ -148,7 +148,7 @@ The first line is the message. Where the message names something from your code,
 narrac apply-fix hello.nra
 ```
 
-```text
+```narra fragment
 // error: 3:17: semicolons are not used; end the statement with a line break
 export function run(args: Array<string>): int {
   print("hello")
@@ -233,6 +233,7 @@ Some lines stay long, whatever the width. A template string is never split, so l
 | `callers FUNCTION` | every call of a function, and the function each call is in |
 | `interface MODULE` | the exported declarations of a module, as signatures |
 | `recursion MODULE` | the groups of functions in a module that call each other in a cycle |
+| `hovers FILE` | the hover text of every name in a file, and its errors, in one answer |
 
 `FILE` is the path from the package folder, as errors print it. Line and column count from 1. The local `best` starts at line 13, column 7 of `src/convert.nra`:
 
@@ -285,7 +286,7 @@ The note means what it says: a function passed as a value and called later is no
 narrac query interface weather/convert
 ```
 
-```text
+```narra fragment
 export function toFahrenheit(celsius: int): int
 export function describe(celsius: int): string uses alloc
 export function hottest(readings: Array<int>): int
@@ -299,9 +300,11 @@ By default the query runs on the package in the current folder. `--package DIR` 
 narrac query --json type-of src/main.nra:5:17
 ```
 
-```text
+```json
 {"query": "type-of", "location": {"file": "src/main.nra", "range": {"start": [5, 17], "end": [5, 18]}}, "type": "string", "effects": ["alloc"]}
 ```
+
+`hovers` also works on a file with errors: it lists the errors and the names the checker could type. This holds for errors in that file. When another file of the package fails to load, `hovers` prints no hovers and exits with code 1. With `--json`, each hover has `line`, `column` and `length` (in characters) and `text`, and each error has the same three and a `code` and `message`.
 
 A query exits with code 0 when it has an answer, an empty one included. An unknown name, a place with no expression, or a package with errors exits with code 1. With `--json`, the errors of a package that does not check come as `{"errors": [...]}`, each one in the form of `narrac check --json`.
 

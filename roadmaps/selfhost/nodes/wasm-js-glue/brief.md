@@ -45,7 +45,7 @@ depends_on:
     kind: hard
     why: the wasi runtime the module imports
   - on: node-addon
-    kind: behavior
+    kind: hard
     why: same sample and same `.d.ts`
 ---
 # JS wrappers for a wasm library, written by narrac

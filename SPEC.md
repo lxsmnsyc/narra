@@ -654,7 +654,7 @@ export function length(r: Range): int {
 
 `type Name = T` gives a type a second name. `export type` exports it.
 
-```
+```narra fragment
 type Tok = Token
 type Pair<T> = #[T, T]
 export type Token = Text.Token
@@ -1840,7 +1840,7 @@ export function configDir(): string uses io, alloc {
 ```
 
 - **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. `std/build` also exports their types, the enums `Os` (`MacOS`, `Linux`, `Windows`, `Wasi`) and `Arch` (`Arm64`, `X86_64`, `Wasm32`). `Build.debug` is `false` in a `-release` build and `true` otherwise.
-- **The host is the target.** The compiler takes `Build.os` and `Build.arch` from the target the C compiler built the compiler itself for (its `Build.hostTarget()`), and only when the package imports `std/build`. A compiler can run on `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64` and `Windows-X86_64`; the other rows of the table below (the musl rows and `Wasi-Wasm32`) are targets only. The environment variable `NARRA_HOST_TARGET`, when set, names the target as `<os>-<arch>` in place of the host; it is the only input besides the host that sets the target. A host, or a `NARRA_HOST_TARGET`, with no supported target is a compile error at the module's import of `std/build`.
+- **The host is the target.** The compiler takes `Build.os` and `Build.arch` from the target the C compiler built the compiler itself for (its `Build.hostTarget()`), and only when the package imports `std/build`. A compiler can run on `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64`, `Linux-X86_64-musl`, `Linux-Arm64-musl` and `Windows-X86_64`; `Wasi-Wasm32` is a target only. The environment variable `NARRA_HOST_TARGET`, when set, names the target as `<os>-<arch>` in place of the host; it is the only input besides the host that sets the target. A host, or a `NARRA_HOST_TARGET`, with no supported target is a compile error at the module's import of `std/build`.
 - **`Build.hostTarget()`** returns `Option<Target>`, where `Target` is a struct of `os: Os` and `arch: Arch`: the target the C compiler builds the program for, read from its predefined macros (`__APPLE__`, `__linux__`, `__aarch64__`, `__x86_64__`) when the program runs. It is `None` for any other combination. It does not run `uname`.
 - **`narra emit` writes the C of a debug build.** The C of a release build comes from `narra build -release -emit-c file.c`.
 - **An `if` that tests only these constants is resolved at compile time.** The output contains no runtime check, only the matching branch, or nothing when no branch matches. The condition may combine the constants with `==`, `!=`, `is` (a variant without fields), `!`, `&&` and `||`, and each `else if` of a chain is resolved on its own. A condition that mixes the constants with any other value, or a `match` on them, is an ordinary runtime test.
@@ -2022,6 +2022,7 @@ function firstSlot(items: Array<int>): int {
 | `narra query callers FUNCTION` | Every function that calls it |
 | `narra query interface MODULE` | The module's exported signatures |
 | `narra query recursion MODULE` | The module's recursive functions |
+| `narra query hovers FILE` | The hover text of every name in a file, and its diagnostics |
 
 All query commands accept `--json`.
 

@@ -1,7 +1,6 @@
 // Turns the Markdown files of the repository into modules that export their title, summary,
 // headings and HTML. Code is highlighted with twinkleplop at build time, so a page loads no
 // highlighting script. The HTML is a `raw` value, so markup inserts it as it is.
-import { language as bash } from '@twinkleplop/bash';
 import { language as json } from '@twinkleplop/json';
 import twinkleplop from '@twinkleplop/markdown-it';
 import { language as typescript } from '@twinkleplop/typescript';
@@ -9,7 +8,13 @@ import MarkdownIt from 'markdown-it';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
+import { readFenceLanguage } from '../src/highlight/fences.ts';
+import { language as lua } from '../src/highlight/lua.ts';
 import { language as narra } from '../src/highlight/narra.ts';
+import { language as sh } from '../src/highlight/sh.ts';
+import { language as toml } from '../src/highlight/toml.ts';
+import { annotate, collectSamples, queryHovers, readFenceKind } from './twoslash.ts';
+import type { Answer } from './twoslash.ts';
 
 const REPOSITORY = 'https://github.com/lxsmnsyc/narra';
 
@@ -32,12 +37,16 @@ export interface Page {
   html: unknown;
 }
 
-const LANGUAGES = {
+export const LANGUAGES = {
   narra: narra(),
-  sh: 'bash',
-  bash: bash(),
+  sh: sh(),
+  bash: sh(),
+  // The PowerShell samples are one-line commands with a pipe, which the shell grammar reads right.
+  powershell: sh(),
   json: json(),
   ts: typescript(),
+  toml: toml(),
+  lua: lua(),
 };
 
 function rewriteLink(href: string, from: string): string {
@@ -62,7 +71,7 @@ function rewriteLink(href: string, from: string): string {
   return `${REPOSITORY}/blob/main/${target}${rest}`;
 }
 
-function makeSlug(text: string): string {
+export function makeSlug(text: string): string {
   // As GitHub makes it, so the links inside the documents keep working.
   return text
     .toLowerCase()
@@ -101,11 +110,20 @@ function createRenderer(from: string): MarkdownIt {
   // scrolls and a scrolling region must take focus. A table scrolls the same way.
   const renderFence = parser.renderer.rules.fence!;
   parser.renderer.rules.fence = (tokens, index, options, env, self) => {
-    const language = tokens[index]!.info.trim().split(/\s+/)[0] ?? '';
-    const block = renderFence(tokens, index, options, env, self).replace(
+    // The language comes from the info string, so `narra file shop narra.toml` is TOML.
+    const token = tokens[index]!;
+    const kind = readFenceKind(token.info);
+    const language = readFenceLanguage(token.info);
+    token.info = language;
+    let block = renderFence(tokens, index, options, env, self).replace(
       /<pre(?=[\s>])/,
       '<pre tabindex="0" role="group" aria-label="Code"',
     );
+    // The answers of narrac were collected before the render; a sample without one stays plain.
+    const answer = kind ? (env as { answers?: Map<number, Answer> }).answers?.get(index) : undefined;
+    if (answer) {
+      block = annotate(block, answer, kind === 'error');
+    }
     const label =
       language && language !== 'text'
         ? `<span class="code-lang">${parser.utils.escapeHtml(language)}</span>`
@@ -162,7 +180,7 @@ export default function markdown(): Plugin {
   return {
     name: 'narra-markdown',
     enforce: 'pre',
-    transform(source, id) {
+    async transform(source, id) {
       const file = id.split('?')[0]!;
       if (!file.endsWith('.md')) {
         return undefined;
@@ -170,7 +188,16 @@ export default function markdown(): Plugin {
       this.addWatchFile(file);
       const from = path.relative(ROOT, file).split(path.sep).join('/');
       const parser = createRenderer(from);
-      const env: { headings: Heading[] } = { headings: [] };
+      const env: { headings: Heading[]; answers?: Map<number, Answer> } = { headings: [] };
+      // The samples go to narrac together before the page renders, keyed by their place in the
+      // token list, which the render sees in the same order.
+      const fences: { index: number; info: string; content: string }[] = [];
+      for (const [index, token] of parser.parse(source, {}).entries()) {
+        if (token.type === 'fence') {
+          fences.push({ index, info: token.info, content: token.content });
+        }
+      }
+      env.answers = await queryHovers(collectSamples(fences));
       const html = parser.render(source, env);
       let title = '';
       for (const heading of env.headings) {

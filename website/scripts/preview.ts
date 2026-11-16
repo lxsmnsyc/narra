@@ -9,6 +9,7 @@ const root = path.join(
 );
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
+  '.woff2': 'font/woff2',
   '.js': 'text/javascript',
   '.css': 'text/css',
   '.svg': 'image/svg+xml',
@@ -34,7 +35,12 @@ const http = createServer(async (request, response) => {
   }
   response.statusCode = 404;
   response.setHeader('content-type', TYPES['.html']!);
-  response.end(await readFile(path.join(root, '404.html')));
+  try {
+    response.end(await readFile(path.join(root, '404.html')));
+  } catch {
+    // A build in progress may have removed the page; the server keeps running.
+    response.end('Not found');
+  }
 });
 
 const port = Number(process.env.PORT ?? 4173);

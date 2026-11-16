@@ -4,13 +4,15 @@
 // needs git runs in depresolve.nra and depcache.nra.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
+import * as Ranges from "std/range"
 import * as Str from "std/string"
 import { hasName, substring } from "narrac/driver/textops"
 import { ImportDecl } from "narrac/syntax/ast"
 import { checkTree, checkoutPath, isVersionBefore, readRecorded } from "narrac/driver/depcache"
 import { checkAgainstLock, resolveDependencies } from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
-import { ExportEntry, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import { Dependency, ExportEntry, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import { Member, Workspace, findWorkspace, listMembers } from "narrac/driver/workspace"
 
 export struct DependencyPackage {
   name: string
@@ -96,11 +98,12 @@ function listPackages(
 
 function checkLockCovers(
   manifest: Manifest,
+  overrides: Array<Dependency>,
   locked: Array<LockEntry>,
 ): Result<bool, LoadError> uses alloc {
   for (const dependency of Arrays.values(manifest.dependencies)) {
     let wanted = copy(dependency)
-    for (const override of Arrays.values(manifest.overrides)) {
+    for (const override of Arrays.values(overrides)) {
       if (override.name == dependency.name) {
         wanted = copy(override)
       }
@@ -149,17 +152,23 @@ function checkPackagesLocked(
   return Ok(true)
 }
 
-export function prepareDependencies(
-  directory: string,
-  manifest: Manifest,
+function prepareGitPackages(
+  lockPath: string,
+  roots: Array<Manifest>,
+  overrides: Array<Dependency>,
   fetch: bool,
 ): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
-  const lockPath = `${directory}/narra.lock`
-  if (Arrays.length(manifest.dependencies) == 0 && Arrays.length(manifest.overrides) == 0) {
+  let hasRequirements = Arrays.length(overrides) > 0
+  for (const root of Arrays.values(roots)) {
+    if (Arrays.length(root.dependencies) > 0) {
+      hasRequirements = true
+    }
+  }
+  if (!hasRequirements) {
     if (!fetch || !Fs.exists(lockPath)) {
       return Ok([])
     }
-    // A lock that lists packages the manifest no longer names is emptied.
+    // A lock that lists packages the manifests no longer name is emptied.
     const stale = readLock(lockPath)
     if (stale is Err(error)) {
       return Err(error)
@@ -178,9 +187,11 @@ export function prepareDependencies(
   }
   if (!fetch) {
     // The language service reads the lock and the cache as they are.
-    const covered = checkLockCovers(manifest, locked.value)
-    if (covered is Err(error)) {
-      return Err(error)
+    for (const root of Arrays.values(roots)) {
+      const covered = checkLockCovers(root, overrides, locked.value)
+      if (covered is Err(error)) {
+        return Err(error)
+      }
     }
     const listed = listPackages(locked.value)
     if (listed is Err(error)) {
@@ -192,7 +203,7 @@ export function prepareDependencies(
     }
     return listed
   }
-  const resolved = resolveDependencies([manifest], manifest.overrides, locked.value)
+  const resolved = resolveDependencies(roots, overrides, locked.value)
   if (resolved is Err(error)) {
     return Err(error)
   }
@@ -207,6 +218,226 @@ export function prepareDependencies(
     return Err(error)
   }
   return listPackages(resolved.value)
+}
+
+function findMemberIndex(members: Array<Member>, name: string): int {
+  for (const index of Ranges.between(0, Arrays.length(members))) {
+    if (members[index].name == name) {
+      return index
+    }
+  }
+  return -1
+}
+
+function readMemberManifest(directory: string): Result<Manifest, LoadError> uses io, alloc {
+  const manifestPath = `${directory}/narra.toml`
+  const text = Fs.readText(manifestPath)
+  if (text is Err(message)) {
+    return Err(createDependencyError("E0458", `cannot read or write ${manifestPath}: ${message}`))
+  }
+  const parsed = parseManifest(text.value)
+  if (parsed is Err(error)) {
+    return Err(LoadError { ...error, file: manifestPath })
+  }
+  return parsed
+}
+
+function keepGitDependencies(
+  manifest: Manifest,
+  overrides: Array<Dependency>,
+): Manifest from manifest uses alloc {
+  let kept: Array<Dependency> = []
+  for (const dependency of Arrays.values(manifest.dependencies)) {
+    if (!dependency.workspace) {
+      Arrays.push(mutable kept, copy(dependency))
+    }
+  }
+  return Manifest { ...manifest, dependencies: kept, overrides: copy(overrides) }
+}
+
+function checkMembers(
+  workspace: Workspace,
+  members: Array<Member>,
+  manifests: Array<Manifest>,
+): Result<bool, LoadError> uses io, alloc {
+  for (const index of Ranges.between(0, Arrays.length(members))) {
+    const member = members[index]
+    const manifest = manifests[index]
+    const isRoot = member.directory == workspace.root
+    if (!isRoot && Fs.exists(`${member.directory}/narra.lock`)) {
+      return Err(
+        createDependencyError(
+          "E0485",
+          `${member.directory}/narra.lock is inside the member ${member.name}; the workspace keeps one lock at ${workspace.root}/narra.lock`,
+        ),
+      )
+    }
+    if (!isRoot && Arrays.length(manifest.overrides) > 0) {
+      return Err(
+        createDependencyError(
+          "E0454",
+          `[overrides] is allowed in the root manifest of a build only, not in the member ${member.name}`,
+        ),
+      )
+    }
+    for (const dependency of Arrays.values(manifest.dependencies)) {
+      const found = findMemberIndex(members, dependency.name)
+      if (dependency.workspace && found < 0) {
+        return Err(
+          createDependencyError(
+            "E0484",
+            `${member.name} depends on ${dependency.name} with workspace = true, but the workspace has no member named ${dependency.name}`,
+          ),
+        )
+      }
+      if (!dependency.workspace && found >= 0) {
+        return Err(
+          createDependencyError(
+            "E0450",
+            `package ${dependency.name} is a member of the workspace and is also required from ${dependency.git}`,
+          ),
+        )
+      }
+    }
+  }
+  return Ok(true)
+}
+
+function pickReachablePackages(
+  gitPackages: Array<DependencyPackage>,
+  startNames: Array<string>,
+): Array<DependencyPackage> uses alloc {
+  let queue: Array<string> = []
+  for (const name of Arrays.values(startNames)) {
+    if (!hasName(queue, name)) {
+      Arrays.push(mutable queue, name)
+    }
+  }
+  let picked: Array<DependencyPackage> = []
+  let position = 0
+  while (position < Arrays.length(queue)) {
+    const name = queue[position]
+    position++
+    for (const gitPackage of Arrays.values(gitPackages)) {
+      if (gitPackage.name != name) {
+        continue
+      }
+      Arrays.push(mutable picked, copy(gitPackage))
+      for (const declaredName of Arrays.values(gitPackage.declared)) {
+        if (!hasName(queue, declaredName)) {
+          Arrays.push(mutable queue, declaredName)
+        }
+      }
+    }
+  }
+  return picked
+}
+
+function prepareWorkspaceDependencies(
+  workspace: Workspace,
+  manifest: Manifest,
+  fetch: bool,
+): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
+  const listed = listMembers(workspace)
+  if (listed is Err(errors)) {
+    return Err(errors[0])
+  }
+  const members = listed.value
+  let manifests: Array<Manifest> = []
+  for (const member of Arrays.values(members)) {
+    const read = readMemberManifest(member.directory)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    Arrays.push(mutable manifests, read.value)
+  }
+  const checkedMembers = checkMembers(workspace, members, manifests)
+  if (checkedMembers is Err(error)) {
+    return Err(error)
+  }
+  // The versions come from every member, so a member built alone selects what the root build does.
+  const overrides = workspace.manifest.overrides
+  let roots: Array<Manifest> = []
+  for (const memberManifest of Arrays.values(manifests)) {
+    Arrays.push(mutable roots, keepGitDependencies(memberManifest, overrides))
+  }
+  const gitPackages = prepareGitPackages(`${workspace.root}/narra.lock`, roots, overrides, fetch)
+  if (gitPackages is Err(error)) {
+    return Err(error)
+  }
+  // A package deeper in the git graph, or an override, may also take a member's name.
+  for (const gitPackage of Arrays.values(gitPackages.value)) {
+    if (findMemberIndex(members, gitPackage.name) >= 0) {
+      return Err(
+        createDependencyError(
+          "E0450",
+          `package ${gitPackage.name} is a member of the workspace and is also required from ${gitPackage.directory}`,
+        ),
+      )
+    }
+  }
+  // The members the built package depends on, directly or not.
+  let startNames: Array<string> = []
+  let reachable: Array<string> = []
+  let pending: Array<Manifest> = [copy(manifest)]
+  let position = 0
+  while (position < Arrays.length(pending)) {
+    const current = copy(pending[position])
+    position++
+    for (const dependency of Arrays.values(current.dependencies)) {
+      if (!dependency.workspace) {
+        Arrays.push(mutable startNames, dependency.name)
+        continue
+      }
+      const found = findMemberIndex(members, dependency.name)
+      if (found < 0 || dependency.name == manifest.name || hasName(reachable, dependency.name)) {
+        continue
+      }
+      Arrays.push(mutable reachable, dependency.name)
+      Arrays.push(mutable pending, copy(manifests[found]))
+    }
+  }
+  let packages: Array<DependencyPackage> = []
+  for (const name of Arrays.values(reachable)) {
+    const found = findMemberIndex(members, name)
+    let declared: Array<string> = []
+    for (const dependency of Arrays.values(manifests[found].dependencies)) {
+      Arrays.push(mutable declared, dependency.name)
+    }
+    Arrays.push(mutable packages, DependencyPackage {
+      name,
+      version: manifests[found].version,
+      directory: members[found].directory,
+      declared,
+      exports: copy(manifests[found].exports),
+    })
+  }
+  for (const gitPackage of Arrays.values(pickReachablePackages(gitPackages.value, startNames))) {
+    Arrays.push(mutable packages, copy(gitPackage))
+  }
+  return Ok(packages)
+}
+
+export function prepareDependencies(
+  directory: string,
+  manifest: Manifest,
+  fetch: bool,
+): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
+  const found = findWorkspace(directory)
+  if (found is Some(workspace)) {
+    return prepareWorkspaceDependencies(workspace, manifest, fetch)
+  }
+  for (const dependency of Arrays.values(manifest.dependencies)) {
+    if (dependency.workspace) {
+      return Err(
+        createDependencyError(
+          "E0484",
+          `${manifest.name} depends on ${dependency.name} with workspace = true, but it is not a member of a workspace`,
+        ),
+      )
+    }
+  }
+  return prepareGitPackages(`${directory}/narra.lock`, [manifest], manifest.overrides, fetch)
 }
 
 function writeLockIfChanged(

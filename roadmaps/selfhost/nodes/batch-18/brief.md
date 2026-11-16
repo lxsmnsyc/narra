@@ -35,7 +35,7 @@ depends_on:
 
 Finish p3-review with D124 (restrict-renames), and start p4-packages with the first workspace node (workspace-manifest). The two touch different parts of the compiler and run in parallel.
 
-The branch starts from `feat/batch-17` (PR #122) plus the D124 commit, because restrict-renames edits the guide and home pages that batch-17 rewrote. After PR #122 merges, rebase this branch onto `main` and drop the batch-17 commits.
+The branch starts from `main` after PR #122 (batch-17) merged.
 
 ## Children
 

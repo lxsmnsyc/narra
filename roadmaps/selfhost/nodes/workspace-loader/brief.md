@@ -1,7 +1,7 @@
 ---
 id: workspace-loader
 title: "Load member dependencies, resolve from every member, one lock at the root"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-19

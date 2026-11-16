@@ -15,7 +15,7 @@ from:
 size: S
 spike: false
 hypothesis:
-verify: sh scripts/test.sh
+verify: test -z "$(git grep -l -E "npm-package|npm/" -- README.md scripts .github)"
 exclusive: []
 fulfilled_by:
 gate: false

@@ -1,7 +1,7 @@
 ---
 id: narra-twoslash
 title: "Twoslash for Narra on the website"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-17

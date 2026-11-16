@@ -1,7 +1,7 @@
 ---
 id: query-hovers-gaps
 title: "Hovers inside templates and for builtin functions"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-17

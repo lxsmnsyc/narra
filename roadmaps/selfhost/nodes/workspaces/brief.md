@@ -1,7 +1,7 @@
 ---
 id: workspaces
 title: "Workspaces: several packages in one repository"
-status: todo
+status: done
 priority: could
 type: feature
 story:
@@ -16,7 +16,7 @@ spike: false
 hypothesis:
 verify:
 exclusive: []
-fulfilled_by:
+fulfilled_by: batch-19
 gate: false
 added: 2026-11-10
 spent:

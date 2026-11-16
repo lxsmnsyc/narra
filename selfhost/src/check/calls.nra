@@ -197,14 +197,8 @@ function checkFunctionCall<W: Walker>(
   const isGeneric = Arrays.length(info.typeParameters) > 0
 
   // Named arguments go to their parameters first.
-  let ordered = arguments
-  if (
-    matchNamedArguments(mutable checker, nodeId, pos, info.name, arguments, parameters) is Some(
-      matched,
-    )
-  ) {
-    ordered = matched
-  } else {
+  const named = matchNamedArguments(mutable checker, nodeId, pos, info.name, arguments, parameters)
+  if (named is None) {
     setRef(mutable checker, nodeId, Ref.Function(funcIndex))
     checkArgumentsLoosely(mutable checker, walker, arguments)
     if (isGeneric) {
@@ -212,6 +206,7 @@ function checkFunctionCall<W: Walker>(
     }
     return info.result
   }
+  const ordered = named.value
   // A left-out parameter with a default is checked apart and filled in (D115).
   const passedParameters = ParamDefaults.findPassedParameters(parameters, arguments)
   if (isGeneric) {
@@ -452,22 +447,25 @@ function isCloseName(left: string, right: string): bool uses alloc {
     Arrays.push(mutable previous, column)
   }
   for (const row of Ranges.between(1, leftCount + 1)) {
-    let current = [row]
+    // The row is rewritten in place; diagonal keeps the cell above and to the left.
+    let diagonal = previous[0]
+    previous[0] = row
     for (const column of Ranges.between(1, rightCount + 1)) {
       let cost = 1
       if (leftChars[row - 1] == rightChars[column - 1]) {
         cost = 0
       }
-      let best = previous[column - 1] + cost
-      if (previous[column] + 1 < best) {
-        best = previous[column] + 1
+      const above = previous[column]
+      let best = diagonal + cost
+      if (above + 1 < best) {
+        best = above + 1
       }
-      if (current[column - 1] + 1 < best) {
-        best = current[column - 1] + 1
+      if (previous[column - 1] + 1 < best) {
+        best = previous[column - 1] + 1
       }
-      Arrays.push(mutable current, best)
+      previous[column] = best
+      diagonal = above
     }
-    previous = current
   }
   const distance = previous[rightCount]
   return distance <= 2 && distance * 2 < longest
@@ -669,14 +667,13 @@ function buildArrayPushFix(
   if (!(targetType is Type.TArray(_)) || name != "push" || argumentCount == 0) {
     return []
   }
-  let targetPos = Pos { line: 0, column: 0 }
   let targetName = ""
-  if (target is Expr.Ident(_, identPos, identName)) {
-    targetPos = identPos
+  if (target is Expr.Ident(_, _, identName)) {
     targetName = identName
   } else {
     return []
   }
+  const targetPos = getExpressionPos(target)
   const dot = Pos { line: calleePos.line, column: calleePos.column - 1 }
   const nameEnd = targetPos.column + Str.charCount(targetName)
   if (
@@ -1070,22 +1067,19 @@ function checkTraitCall<W: Walker>(
   }
   const traitFunc = copy(checker.traits[traitIndex].functions[funcIndex])
   const parameters = traitFunc.declaration.parameters
-  let ordered = arguments
-  if (
-    matchNamedArguments(
-      mutable checker,
-      nodeId,
-      pos,
-      `${traitName}.${name}`,
-      arguments,
-      parameters,
-    ) is Some(matched)
-  ) {
-    ordered = matched
-  } else {
+  const named = matchNamedArguments(
+    mutable checker,
+    nodeId,
+    pos,
+    `${traitName}.${name}`,
+    arguments,
+    parameters,
+  )
+  if (named is None) {
     checkArgumentsLoosely(mutable checker, walker, arguments)
     return Type.TVoid
   }
+  const ordered = named.value
   const selfParameter = checker.traits[traitIndex].selfParameter
   const self = [selfParameter]
   let bindings: Map<int, Type> = Map {}

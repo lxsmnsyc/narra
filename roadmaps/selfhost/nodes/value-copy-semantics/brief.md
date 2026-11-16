@@ -1,7 +1,7 @@
 ---
 id: value-copy-semantics
 title: "Assigning a shared array: alias, silent copy, or error"
-status: todo
+status: done
 priority: should
 type: spike
 story: 
@@ -52,5 +52,7 @@ Weigh each against the TypeScript learner, the costs (compiler work in E0976 and
 
 ## Acceptance
 
-- [ ] debate.md with the options, evidence and the settled choice; the maintainer approves.
-- [ ] A decision record and follow-up nodes for the chosen option.
+- [x] debate.md with the options, evidence and the settled choice; the maintainer approves.
+- [x] A decision record and follow-up nodes for the chosen option.
+
+Settled 2026-11-16: D124, debate `roadmaps/selfhost/debate/value-copy/debate.md` (approved). Follow-up node: restrict-renames.

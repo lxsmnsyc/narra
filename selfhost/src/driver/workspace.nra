@@ -1,0 +1,413 @@
+// Workspaces: finding the workspace of a package and listing its members. The root narra.toml
+// has a [workspace] table; its members are packages in subdirectories. Nothing here loads a
+// member's modules.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Process from "std/process"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { dropLast, splitString } from "narrac/driver/textops"
+import { LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import { quoteGo } from "narrac/syntax/parser"
+
+export struct Workspace {
+  root: string // the directory of the root narra.toml, as written by the caller
+  manifest: Manifest
+}
+
+export struct Member {
+  directory: string // the root joined with the member's path
+  name: string
+}
+
+function createWorkspaceError(file: string, code: string, message: string): LoadError {
+  return LoadError { code, file, line: 0, column: 1, message }
+}
+
+function joinDirectory(root: string, relative: string): string uses alloc {
+  if (relative == ".") {
+    return root
+  }
+  if (root == ".") {
+    return relative
+  }
+  return `${root}/${relative}`
+}
+
+function normalizeDirectory(path: string): string uses alloc {
+  const isAbsolute = Str.startsWith(path, "/")
+  let segments: Array<string> = []
+  for (const segment of Arrays.values(splitString(path, "/"))) {
+    if (segment == "" || segment == ".") {
+      continue
+    }
+    // A `..` resolves against the segment before it; a relative path that climbs above its
+    // start keeps the `..`.
+    if (
+      segment == ".." &&
+        Arrays.length(segments) > 0 &&
+        segments[Arrays.length(segments) - 1] != ".."
+    ) {
+      segments = dropLast(segments)
+      continue
+    }
+    if (segment == ".." && isAbsolute) {
+      continue
+    }
+    Arrays.push(mutable segments, segment)
+  }
+  if (isAbsolute) {
+    return `/${Str.join(segments, "/")}`
+  }
+  if (Arrays.length(segments) == 0) {
+    return "."
+  }
+  return Str.join(segments, "/")
+}
+
+function makeAbsolute(path: string): string uses io, alloc {
+  if (Str.startsWith(path, "/")) {
+    return normalizeDirectory(path)
+  }
+  // The shell reports the physical working directory, so no environment variable is trusted.
+  const ran = Process.run("sh", ["-c", "pwd -P"])
+  if (ran is Ok(result)) {
+    const #[code, output, _errorOutput] = result
+    const working = Str.trim(output)
+    if (code == 0 && Str.startsWith(working, "/")) {
+      return normalizeDirectory(`${working}/${path}`)
+    }
+  }
+  return normalizeDirectory(path)
+}
+
+function getParentDirectory(path: string): string uses alloc {
+  if (Str.startsWith(path, "/")) {
+    return Path.dirname(path)
+  }
+  // `a/b` gives `a`, `a` gives `.`, `.` gives `..` and `..` gives `../..`.
+  if (path == ".") {
+    return ".."
+  }
+  const parts = splitString(path, "/")
+  if (parts[Arrays.length(parts) - 1] == "..") {
+    return `${path}/..`
+  }
+  if (Arrays.length(parts) == 1) {
+    return "."
+  }
+  let kept: Array<string> = []
+  for (const index of Ranges.upTo(Arrays.length(parts) - 1)) {
+    Arrays.push(mutable kept, parts[index])
+  }
+  return Str.join(kept, "/")
+}
+
+function splitEntry(entry: string): Array<string> uses alloc {
+  let segments: Array<string> = []
+  for (const segment of Arrays.values(splitString(entry, "/"))) {
+    if (segment != "" && segment != ".") {
+      Arrays.push(mutable segments, segment)
+    }
+  }
+  return segments
+}
+
+function isValidEntry(entry: string, segments: Array<string>): bool {
+  if (Str.startsWith(entry, "/") || Arrays.length(segments) == 0) {
+    return false
+  }
+  for (const segment of Arrays.values(segments)) {
+    if (segment == ".." || (Str.contains(segment, "*") && segment != "*")) {
+      return false
+    }
+  }
+  return true
+}
+
+function sortNames(mutable names: Array<string>) {
+  for (const position of Ranges.between(1, Arrays.length(names))) {
+    const name = names[position]
+    let slot = position
+    while (slot > 0 && names[slot - 1] > name) {
+      names[slot] = names[slot - 1]
+      slot--
+    }
+    names[slot] = name
+  }
+}
+
+function expandSegments(root: string, segments: Array<string>): Array<string> uses io, alloc {
+  let paths: Array<string> = ["."]
+  for (const segment of Arrays.values(segments)) {
+    paths = expandSegment(root, paths, segment)
+  }
+  return paths
+}
+
+function expandSegment(
+  root: string,
+  paths: Array<string>,
+  segment: string,
+): Array<string> uses io, alloc {
+  let next: Array<string> = []
+  for (const path of Arrays.values(paths)) {
+    if (segment != "*") {
+      Arrays.push(mutable next, joinDirectory(path, segment))
+      continue
+    }
+    // `*` takes every child directory that has a narra.toml.
+    const listed = Fs.listDir(joinDirectory(root, path))
+    if (listed is Ok(names)) {
+      let sorted = copy(names)
+      sortNames(mutable sorted)
+      for (const name of Arrays.values(sorted)) {
+        const child = joinDirectory(path, name)
+        if (Fs.exists(Path.join(joinDirectory(root, child), "narra.toml"))) {
+          Arrays.push(mutable next, child)
+        }
+      }
+    }
+  }
+  return next
+}
+
+function matchesPattern(path: string, pattern: Array<string>): bool uses alloc {
+  const parts = splitEntry(path)
+  if (Arrays.length(parts) != Arrays.length(pattern)) {
+    return false
+  }
+  for (const index of Ranges.between(0, Arrays.length(parts))) {
+    if (pattern[index] != "*" && pattern[index] != parts[index]) {
+      return false
+    }
+  }
+  return true
+}
+
+function collectMemberPaths(workspace: Workspace): Result<Array<string>, LoadError> uses io, alloc {
+  const file = Path.join(workspace.root, "narra.toml")
+  let included: Array<string> = []
+  let excluded: Array<Array<string>> = []
+  let includePatterns: Array<Array<string>> = []
+  for (const entry of Arrays.values(workspace.manifest.members)) {
+    const isExclusion = Str.startsWith(entry, "!")
+    let text = entry
+    if (isExclusion) {
+      text = Str.sliceFrom(entry, 1)
+    }
+    const segments = splitEntry(text)
+    if (!isValidEntry(text, segments)) {
+      return Err(
+        createWorkspaceError(
+          file,
+          "E0480",
+          `the member entry ${quoteGo(entry)} must be a relative path, with \`*\` only as a whole segment and no \`..\``,
+        ),
+      )
+    }
+    if (isExclusion) {
+      Arrays.push(mutable excluded, segments)
+    } else {
+      Arrays.push(mutable includePatterns, segments)
+    }
+  }
+  for (const segments of Arrays.values(includePatterns)) {
+    for (const path of Arrays.values(expandSegments(workspace.root, segments))) {
+      let skipped = false
+      for (const pattern of Arrays.values(excluded)) {
+        if (matchesPattern(path, pattern)) {
+          skipped = true
+        }
+      }
+      let repeated = false
+      for (const known of Arrays.values(included)) {
+        if (known == path) {
+          repeated = true
+        }
+      }
+      if (!skipped && !repeated && path != ".") {
+        Arrays.push(mutable included, path)
+      }
+    }
+  }
+  sortNames(mutable included)
+  return Ok(included)
+}
+
+export function listMembers(
+  workspace: Workspace,
+): Result<Array<Member>, Array<LoadError>> uses io, alloc {
+  const paths = collectMemberPaths(workspace)
+  if (paths is Err(error)) {
+    return Err([error])
+  }
+  let members: Array<Member> = []
+  // A root with a [package] table is a member of its own workspace.
+  if (workspace.manifest.name != "") {
+    Arrays.push(mutable members, Member {
+      directory: workspace.root,
+      name: workspace.manifest.name,
+    })
+  }
+  for (const path of Arrays.values(paths.value)) {
+    const directory = joinDirectory(workspace.root, path)
+    const manifestPath = Path.join(directory, "narra.toml")
+    if (!Fs.exists(manifestPath)) {
+      return Err([
+        createWorkspaceError(
+          Path.join(workspace.root, "narra.toml"),
+          "E0481",
+          `the member ${quoteGo(path)} has no narra.toml`,
+        ),
+      ])
+    }
+    const read = Fs.readText(manifestPath)
+    if (read is Err(message)) {
+      return Err([createWorkspaceError(manifestPath, "", message)])
+    }
+    const parsed = parseManifest(read.value)
+    if (parsed is Err(error)) {
+      return Err([LoadError { ...error, file: manifestPath }])
+    }
+    if (parsed.value.isWorkspace) {
+      return Err([
+        createWorkspaceError(
+          manifestPath,
+          "E0481",
+          `the member ${quoteGo(path)} has its own [workspace]`,
+        ),
+      ])
+    }
+    for (const member of Arrays.values(members)) {
+      if (member.name == parsed.value.name) {
+        return Err([
+          createWorkspaceError(
+            manifestPath,
+            "E0482",
+            `two members are named ${quoteGo(member.name)}: ${member.directory} and ${directory}`,
+          ),
+        ])
+      }
+    }
+    Arrays.push(mutable members, Member { directory, name: parsed.value.name })
+  }
+  return Ok(members)
+}
+
+export function findWorkspace(packageDirectory: string): Option<Workspace> uses io, alloc {
+  let currentAbsolute = makeAbsolute(packageDirectory)
+  const packageAbsolute = currentAbsolute
+  let current = normalizeDirectory(packageDirectory)
+  for (const _level of Ranges.upTo(64)) {
+    const manifestPath = Path.join(current, "narra.toml")
+    if (Fs.exists(manifestPath)) {
+      const read = Fs.readText(manifestPath)
+      if (read is Ok(text)) {
+        const parsed = parseManifest(text)
+        if (parsed is Ok(manifest)) {
+          if (manifest.isWorkspace) {
+            const workspace = Workspace { root: current, manifest }
+            return findMembership(workspace, currentAbsolute, packageAbsolute)
+          }
+        }
+      }
+    }
+    const parent = getParentDirectory(current)
+    const parentAbsolute = getParentDirectory(currentAbsolute)
+    if (parent == current || parentAbsolute == currentAbsolute) {
+      break
+    }
+    current = parent
+    currentAbsolute = parentAbsolute
+  }
+  return None
+}
+
+function findMembership(
+  workspace: Workspace,
+  rootAbsolute: string,
+  packageAbsolute: string,
+): Option<Workspace> from workspace uses io, alloc {
+  const paths = collectMemberPaths(workspace)
+  // Entries that cannot be read make the root the workspace; listMembers reports them.
+  if (paths is Err(_)) {
+    return Some(workspace)
+  }
+  // The package's path below the root, from the directories climbed.
+  let relative = "."
+  if (packageAbsolute != rootAbsolute) {
+    relative = Str.sliceFrom(packageAbsolute, Str.length(rootAbsolute))
+    if (Str.startsWith(relative, "/")) {
+      relative = Str.sliceFrom(relative, 1)
+    }
+  }
+  if (relative == "." && workspace.manifest.name != "") {
+    return Some(workspace)
+  }
+  for (const path of Arrays.values(paths.value)) {
+    if (path == relative) {
+      return Some(workspace)
+    }
+  }
+  return None
+}
+
+function formatWorkspace(workspace: Workspace): Result<string, Array<LoadError>> uses io, alloc {
+  const listed = listMembers(workspace)
+  if (listed is Err(errors)) {
+    return Err(errors)
+  }
+  let output = `workspace ${workspace.root}\n`
+  for (const member of Arrays.values(listed.value)) {
+    output = `${output}member ${member.directory} ${member.name}\n`
+  }
+  return Ok(output)
+}
+
+function formatErrors(errors: Array<LoadError>): string uses alloc {
+  let output = ""
+  for (const error of Arrays.values(errors)) {
+    output = `${output}error ${error.code} ${error.file}:${Int.toString(error.line)}:${Int.toString(error.column)}: ${error.message}\n`
+  }
+  return output
+}
+
+export function runWorkspaceCommand(arguments: Array<string>): int uses io, alloc {
+  const directory = arguments[Arrays.length(arguments) - 1]
+  let rootManifest: Option<Manifest> = None
+  const rootText = Fs.readText(Path.join(directory, "narra.toml"))
+  if (rootText is Ok(text)) {
+    const parsed = parseManifest(text)
+    if (parsed is Err(error)) {
+      const _ = Fs.writeText(
+        "/dev/stderr",
+        formatErrors([LoadError { ...error, file: Path.join(directory, "narra.toml") }]),
+      )
+      return 1
+    }
+    rootManifest = Some(parsed.value)
+  }
+  let found = findWorkspace(directory)
+  // A directory whose narra.toml has [workspace] but no [package] is listed as the root.
+  if (found is None) {
+    if (rootManifest is Some(manifest)) {
+      if (manifest.isWorkspace) {
+        found = Some(Workspace { root: normalizeDirectory(directory), manifest })
+      }
+    }
+  }
+  if (found is Some(workspace)) {
+    const printed = formatWorkspace(workspace)
+    if (printed is Err(errors)) {
+      const _ = Fs.writeText("/dev/stderr", formatErrors(errors))
+      return 1
+    }
+    const _ = Fs.writeText("/dev/stdout", printed.value)
+    return 0
+  }
+  const _ = Fs.writeText("/dev/stdout", "none\n")
+  return 0
+}

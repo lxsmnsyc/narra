@@ -2055,3 +2055,18 @@ The maintainer's question (2026-11-14): how would Narra serve JS and TS packages
 - **Rejected: an interpreter or a wasm backend for the REPL.** The D105 evaluator runs an alloc-only subset without `print`, closures or generators, and D10 picked C.
 
 Not built yet.
+
+## D124. A second name for a value that changes in place is an error
+
+Decision (maintainer, 2026-11-16, from the debate `roadmaps/selfhost/debate/value-copy/debate.md`): `const b = a`, `let b = a` and `b = a` are a compile error (E0971) when `a` is a bare name whose type can change in place. One value that can change has one name; `copy(a)` makes a second value. The maintainer's case was `const synonym = prices; Arrays.push(mutable prices, 300)`: E0978 at the push read as if the binding copied, while a TypeScript reader expects `synonym` to name the same array.
+
+- **Rule.** The right side is a bare name (a local, a parameter, a pattern or loop binding, a top-level constant) and its type is one D94 tracks: a struct (all-scalar ones too), `Array`, `Map`, `FixedArray`, `Box`, `StringBuilder`, a generator or a coroutine. The error is at the binding and names the other name. The fix is `copy(a)`.
+- **Allowed.** Renames of numbers, `bool`, `char`, `string`, `bytes`, enums, tuples and function values, which never change in place.
+- **Unchanged.** Reading a field or element into a name (`const items = bag.items`), arguments, results, literals and captures keep the rules of D94 and D104 (E0978, E0976).
+- **Reason.** The binding is where the confusion starts, so the error goes there and says nothing about copying. Go and Rust measured (debate J12): Go slices alias and split on `append`, Rust rejects the case (E0382, E0502).
+- **Rejected:** silent copy-on-write (a hidden copy, while `copy` exists); rewording E0978 only; references for arrays and maps (cycles need a collector, threads would race); an implicit local alias (buildable per proof T1, but it needs the store-into-`mutable` gap closed, E0978 kept for container `mutable` calls, release guards after branches and an inline-struct design, for 1.05M to 1.7M tokens and 900 to 1,900 lines, and it still stops at plain parameters); a Rust move.
+- **Parked:** an explicit `const b = alias a`, if code needs two names for one value.
+- **Amends** D94 (a rename is no longer a sharing start that E0978 checks; it is rejected at the binding) and D104.
+- **Cost.** About 13 typed sites in the compiler (all a default reassigned later), some of 30 untyped std sites, error samples, SPEC section 6 and guide chapters 2, 9 and 13. About 100k to 200k tokens, 50 to 150 lines.
+
+Built (node restrict-renames). The check runs in the shared-write walk (`selfhost/src/check/sharedwrites.nra`), at `const b = a`, `let b = a` and `b = a` when `a` is a bare local, parameter, pattern or loop binding or top-level constant of a tracked type; a type parameter is not checked. It reports E0971 with an `apply-fix` that wraps the name in `copy(...)`, and the rename starts no sharing, so E0978 does not repeat it. A destructuring declaration is not a rename. The compiler and std had 67 sites, all rewritten with `copy(...)`.

@@ -17,12 +17,12 @@ Each heap value counts the references to it, which is called reference counting.
 
 So a loop that changes an array held by one name writes in place every time. Had a second name held the array, the first write would copy it once. `copy(...)` is where you ask for that second name. When you write it, you choose to pay for the copy.
 
-## Writing to a shared value
+## A second name for a value
 
 Now take the second name without `copy`. Say the game keeps a backup of the hero to show on the results screen, and the backup is taken by plain assignment:
 
 ```narra error
-// error: 10:3: backup.hp = ... may change backup, which hero still uses at line 11; take a copy where it is shared, with copy(...)
+// error: 9:16: backup would be a second name for the struct in hero; use hero, or copy(hero) for a struct of its own
 struct Player {
   name: string
   hp: int
@@ -37,9 +37,9 @@ export function run(args: Array<string>): int {
 }
 ```
 
-`backup` and `hero` name one player. The write to `backup.hp` would have to copy that player first, so that `hero` keeps its hp, and the source would not show it. The compiler reports the write instead of copying silently. The error names the write, the place it may change and the later line that uses the other name.
+`backup` and `hero` would name one player, and a write through one name would have to copy the player first, so that the other keeps its hp. The source would not show that copy. So Narra rejects the second name at the line that makes it. Arrays, maps, structs, boxes, string builders and generators are the values that change in place, so a name for one of them cannot be given to another name. Numbers, strings, enums and functions never change in place, so `const total = count` is fine.
 
-The fix is the one the message gives: write `copy(...)` where the sharing starts. Now the two names hold two players, and the copy happens where you can see it:
+The fix is the one the message gives: write `copy(...)`. Now the two names hold two players, and the copy happens where you can see it:
 
 ```narra
 import * as Int from "std/int"
@@ -62,12 +62,37 @@ export function run(args: Array<string>): int {
 100 0
 ```
 
-`narrac apply-fix` writes this change for you. The rule has these details:
+`narrac apply-fix` writes this change for you.
 
-- It looks at both names. Writing through `hero` while `backup` is still used is an error just like the one above.
-- It follows chains. After `const a = hero; const b = a`, a write to any of the three is checked against the other two.
-- It ends when the other name is no longer used. In the sample above, removing the `print(hero.name)` line makes the write legal, because nothing reads `hero` afterwards.
-- It ends when a name gets a whole new value, as in `backup = other`.
+## Writing to a shared value
+
+A name is not the only way to share. Reading a field or an element into a name shares it too, because that name holds the same array as the field:
+
+```narra error
+// error: 13:15: Arrays.push(mutable team.members, ...) may change team.members, which members still uses at line 14; take a copy where it is shared, with copy(...)
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+struct Team {
+  name: string
+  members: Array<string>
+}
+
+export function run(args: Array<string>): int {
+  let team = Team { name: "Red", members: ["Ana"] }
+  const members = team.members
+  Arrays.push(mutable team.members, "Bo")
+  print(Int.toString(Arrays.length(members)))
+  return 0
+}
+```
+
+The write would have to copy `members` first, so the compiler reports the write instead of copying silently. The error names the write, the place it may change and the later line that uses the other name. The fix is again `copy(team.members)` where the sharing starts. The rule has these details:
+
+- It looks at both names. Writing through `members` while `team.members` is still used is an error just like the one above.
+- It follows chains. After `const members = team.members; const both = [members]`, a write to any of the three is checked against the other two.
+- It ends when the other name is no longer used. In the sample above, removing the last `print` line makes the write legal, because nothing reads `members` afterwards.
+- It ends when a place gets a whole new value, as in `team.members = []`.
 - While a `for` loop walks `players`, a write to `players` in the body is an error. Loop over `copy(players)`, or write after the loop.
 - A closure that captures a value shares it, so calling the closure counts as a use of that value.
 - Passing `mutable` writes the argument and everything below it, so `damage(mutable hero, 10)` is checked the same way.

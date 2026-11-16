@@ -20,6 +20,7 @@ export struct Dependency {
   name: string // the key in [dependencies], also the import path prefix
   git: string // a URL or a local path
   version: string // "1.2.0": the minimum version, tag "v1.2.0"
+  workspace: bool // { workspace = true }: a member of this workspace; git and version are empty
   line: int // narra.toml line, for diagnostics
 }
 
@@ -37,6 +38,8 @@ export struct Manifest {
   dependencies: Array<Dependency>
   overrides: Array<Dependency> // [overrides]: read for every manifest, allowed in the root of a build only
   exports: Array<ExportEntry> // [exports]: empty when the package exposes every module
+  isWorkspace: bool // the manifest has a [workspace] table
+  members: Array<string> // [workspace] members: the entries as written, `!` entries included
 }
 
 // An error of the loader. An empty file and line 0 print as a bare message
@@ -53,7 +56,7 @@ export struct LoadError {
 enum Value {
   VStr(text: string)
   VList(items: Array<string>)
-  VTable(keys: Array<string>, values: Array<string>)
+  VTable(keys: Array<string>, values: Array<string>, bare: Array<bool>)
 }
 
 const QUOTE = 34
@@ -74,6 +77,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   let dependencies: Array<Dependency> = []
   let overrides: Array<Dependency> = []
   let exports: Array<ExportEntry> = []
+  let isWorkspace = false
+  let hasPackage = false
+  let hasMembers = false
+  let members: Array<string> = []
   let binaries: Array<Binary> = []
   let search: Array<string> = []
   let table = ""
@@ -111,6 +118,12 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         inBinary = false
       }
       table = Str.trim(substring(line, 1, Str.length(line) - 1))
+      if (table == "workspace") {
+        isWorkspace = true
+      }
+      if (table == "package") {
+        hasPackage = true
+      }
       continue
     }
     const known =
@@ -119,6 +132,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         table == "dependencies" ||
         table == "overrides" ||
         table == "exports" ||
+        table == "workspace" ||
         table == "[[binary]]"
     const equalsIndex = Str.indexOf(line, "=")
     if (equalsIndex is None) {
@@ -153,6 +167,28 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     const value = parsed.value
     const qualifiedKey = `${table}.${key}`
+    if (table == "workspace") {
+      if (key != "members") {
+        return Err(
+          createError(
+            lineNumber,
+            "E0480",
+            `[workspace] has the unknown key ${key}; it takes members`,
+          ),
+        )
+      }
+      if (value is Value.VList(items)) {
+        members = []
+        for (const item of Arrays.values(items)) {
+          Arrays.push(mutable members, item)
+        }
+        hasMembers = true
+        continue
+      }
+      return Err(
+        createError(lineNumber, "E0480", "[workspace] members must be an array of strings"),
+      )
+    }
     if (table == "exports") {
       const entry = readExport(key, value, lineNumber)
       if (entry is Err(error)) {
@@ -162,7 +198,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       continue
     }
     if (table == "dependencies" || table == "overrides") {
-      const dependency = readDependency(key, value, lineNumber)
+      const dependency = readDependency(key, value, lineNumber, table == "dependencies")
       if (dependency is Err(error)) {
         return Err(error)
       }
@@ -226,7 +262,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     }
     if (qualifiedKey == "link.search") {
       if (value is Value.VList(items)) {
-        search = items
+        search = []
+        for (const item of Arrays.values(items)) {
+          Arrays.push(mutable search, item)
+        }
         continue
       }
       return Err(createError(lineNumber, "E0413", `${key} must be an array of strings`))
@@ -241,7 +280,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   if (inBinary) {
     Arrays.push(mutable binaries, Binary { name: binaryName, entry: binaryEntry })
   }
-  if (name == "") {
+  if (isWorkspace && !hasMembers) {
+    return Err(createError(0, "E0480", "[workspace] needs members"))
+  }
+  if (name == "" && (!isWorkspace || hasPackage)) {
     return Err(createError(0, "E0414", "[package] needs a name"))
   }
   let seen: Map<string, bool> = Map {}
@@ -276,6 +318,8 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     dependencies,
     overrides,
     exports,
+    isWorkspace,
+    members,
   })
 }
 
@@ -377,6 +421,7 @@ function readDependency(
   key: string,
   value: Value,
   line: int,
+  allowWorkspace: bool,
 ): Result<Dependency, LoadError> uses alloc {
   if (!isValidPackageName(key)) {
     return Err(
@@ -387,13 +432,40 @@ function readDependency(
       ),
     )
   }
-  if (value is Value.VTable(keys, values)) {
+  if (value is Value.VTable(keys, values, bare)) {
+    for (const index of Ranges.between(0, Arrays.length(keys))) {
+      if (keys[index] == "workspace") {
+        if (!allowWorkspace) {
+          return Err(
+            createError(line, "E0483", `override ${key} takes git and version, not workspace`),
+          )
+        }
+        if (Arrays.length(keys) != 1) {
+          return Err(
+            createError(line, "E0483", `dependency ${key} takes no other key beside workspace`),
+          )
+        }
+        if (!bare[index] || values[index] != "true") {
+          return Err(createError(line, "E0483", `dependency ${key}: workspace must be true`))
+        }
+        return Ok(Dependency { name: key, git: "", version: "", workspace: true, line })
+      }
+    }
     let git = ""
     let version = ""
     let seenGit = false
     let seenVersion = false
     for (const index of Ranges.between(0, Arrays.length(keys))) {
       const field = keys[index]
+      if (bare[index]) {
+        return Err(
+          createError(
+            line,
+            "E0435",
+            `dependency ${key} is not a valid inline table: expected a string`,
+          ),
+        )
+      }
       if (field == "git" && !seenGit) {
         git = values[index]
         seenGit = true
@@ -416,7 +488,7 @@ function readDependency(
     if (!isVersion(version)) {
       return Err(createError(line, "E0431", `version ${quoteGo(version)} is not MAJOR.MINOR.PATCH`))
     }
-    return Ok(Dependency { name: key, git, version, line })
+    return Ok(Dependency { name: key, git, version, workspace: false, line })
   }
   return Err(
     createError(
@@ -627,6 +699,7 @@ export function parseString(text: string): Result<#[string, int], string> uses a
 function parseInlineTable(text: string): Result<Value, string> uses alloc {
   let keys: Array<string> = []
   let values: Array<string> = []
+  let bare: Array<bool> = []
   let rest = Str.trim(Str.sliceFrom(text, 1))
   let afterComma = false
   while (true) {
@@ -637,7 +710,7 @@ function parseInlineTable(text: string): Result<Value, string> uses alloc {
       if (Str.trim(Str.sliceFrom(rest, 1)) != "") {
         return Err("unexpected text after the table")
       }
-      return Ok(Value.VTable(keys, values))
+      return Ok(Value.VTable(keys, values, bare))
     }
     const equalsIndex = Str.indexOf(rest, "=")
     if (equalsIndex is None) {
@@ -647,14 +720,39 @@ function parseInlineTable(text: string): Result<Value, string> uses alloc {
     if (key == "") {
       return Err("expected a key in the table")
     }
-    const parsed = parseString(Str.trim(Str.sliceFrom(rest, equalsIndex.value + 1)))
-    if (parsed is Err(error)) {
-      return Err(error)
+    const valueText = Str.trim(Str.sliceFrom(rest, equalsIndex.value + 1))
+    let item = ""
+    let consumed = 0
+    let isBare = false
+    if (Str.startsWith(valueText, "true") || Str.startsWith(valueText, "false")) {
+      // A bare boolean ends at the comma, the brace or the end of the text.
+      let stop = 0
+      while (
+        stop < Str.length(valueText) &&
+          Str.byteAt(valueText, stop) != COMMA &&
+          Str.byteAt(valueText, stop) != 125
+      ) {
+        stop++
+      }
+      item = Str.trim(substring(valueText, 0, stop))
+      if (item != "true" && item != "false") {
+        return Err("expected a string")
+      }
+      consumed = stop
+      isBare = true
+    } else {
+      const parsed = parseString(valueText)
+      if (parsed is Err(error)) {
+        return Err(error)
+      }
+      const #[parsedItem, parsedConsumed] = parsed.value
+      item = parsedItem
+      consumed = parsedConsumed
     }
-    const #[item, consumed] = parsed.value
     Arrays.push(mutable keys, key)
     Arrays.push(mutable values, item)
-    rest = Str.trim(Str.sliceFrom(Str.trim(Str.sliceFrom(rest, equalsIndex.value + 1)), consumed))
+    Arrays.push(mutable bare, isBare)
+    rest = Str.trim(Str.sliceFrom(valueText, consumed))
     afterComma = false
     if (Str.startsWith(rest, ",")) {
       rest = Str.trim(Str.sliceFrom(rest, 1))

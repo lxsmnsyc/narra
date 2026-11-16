@@ -375,7 +375,7 @@ import * as Ranges from "std/range"
 export function run(args: Array<string>): int {
   let squares: Array<int> = []
   if (Arrays.filled(0, 4) is Some(zeros)) {
-    squares = zeros
+    squares = copy(zeros)
   }
   for (const i of Ranges.upTo(4)) {
     squares[i] = i * i
@@ -478,7 +478,7 @@ export function run(args: Array<string>): int {
 2
 ```
 
-The snapshot keeps two prices. `copy(prices)` gives `snapshot` a value of its own, so a change through one name never shows up through the other. The copy is cheap: the two names share the elements until one of them changes, and only then are the elements copied. `const snapshot = prices` without `copy` would make two names for one array, and the compiler would reject the push that follows, because the push would have to copy the array without showing it ([chapter 9](09-memory-and-mutable.md#writing-to-a-shared-value)).
+The snapshot keeps two prices. `copy(prices)` gives `snapshot` a value of its own, so a change through one name never shows up through the other. The copy is cheap: the two names share the elements until one of them changes, and only then are the elements copied. `const snapshot = prices` without `copy` would make two names for one array, so the compiler rejects it and asks for `copy(prices)` ([chapter 9](09-memory-and-mutable.md#a-second-name-for-a-value)).
 
 `prices` is a `const`, and it still grows. A `const` fixes the name: `prices` names the same array for the whole function, and its elements can change, through `prices[0] = 200` or `Arrays.push(mutable prices, 400)`. A `let` adds one thing, giving the name a new value with `prices = [...]`:
 

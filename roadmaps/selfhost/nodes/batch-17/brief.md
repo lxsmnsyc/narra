@@ -1,7 +1,7 @@
 ---
 id: batch-17
 title: "Batch 17: website, docs and the installer"
-status: active
+status: done
 priority: could
 type: story
 story: 

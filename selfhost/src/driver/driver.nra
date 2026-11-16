@@ -420,6 +420,27 @@ function checkForTarget(package: Package, target: BuildTarget): Result<#[
   return Ok(#[package, checker])
 }
 
+function findTargetDiagnostics(
+  package: Package,
+  target: BuildTarget,
+): Array<Diagnostic> from package uses alloc {
+  const checked = checkForTarget(package, target)
+  if (checked is Err(errors)) {
+    return errors
+  }
+  const #[_, checker] = checked.value
+  return findMissingEntries(package, checker)
+}
+
+function findPathDiagnostics(path: string, targetName: string): Array<Diagnostic> uses io, alloc {
+  const checked = loadAndCheck(path, false, targetName)
+  if (checked is Err(found)) {
+    return found
+  }
+  const #[package, checker] = checked.value
+  return findMissingEntries(package, checker)
+}
+
 function checkEveryTarget(path: string): Array<Diagnostic> uses io, alloc {
   const loaded = Modules.load(path)
   if (loaded is Err(errors)) {
@@ -446,14 +467,7 @@ function checkEveryTarget(path: string): Array<Diagnostic> uses io, alloc {
   let firstNames: Array<string> = []
   let useKeys: Array<string> = []
   for (const target of Arrays.values(targets)) {
-    let found: Array<Diagnostic> = []
-    const checked = checkForTarget(package, target)
-    if (checked is Err(errors)) {
-      found = errors
-    } else {
-      const #[_, checker] = checked.value
-      found = findMissingEntries(package, checker)
-    }
+    const found = findTargetDiagnostics(package, target)
     const targetName = describeTarget(target)
     for (const diagnostic of Arrays.values(found)) {
       let message = diagnostic.message
@@ -557,7 +571,7 @@ function sortDiagnostics(
     if (position == Arrays.length(sorted)) {
       Arrays.push(mutable next, diagnostic)
     }
-    sorted = next
+    sorted = copy(next)
   }
   return sorted
 }
@@ -1071,18 +1085,11 @@ function runCheck(arguments: Array<string>): int uses io, alloc {
     printError(describeUnknownTarget(targetName))
     return 2
   }
-  let diagnostics: Array<Diagnostic> = []
-  if (allTargets) {
-    diagnostics = checkEveryTarget(paths[0])
-  } else {
-    const checked = loadAndCheck(paths[0], false, targetName)
-    if (checked is Err(found)) {
-      diagnostics = found
-    } else {
-      const #[package, checker] = checked.value
-      diagnostics = findMissingEntries(package, checker)
-    }
-  }
+  const diagnostics = (
+    allTargets
+      ? checkEveryTarget(paths[0])
+      : findPathDiagnostics(paths[0], targetName)
+  )
   // Exit 0: no diagnostics. Exit 1: errors or an unreadable path. Exit 2: usage.
   if (Arrays.length(diagnostics) == 0) {
     return 0
@@ -1141,11 +1148,8 @@ function runApplyFix(arguments: Array<string>): int uses io, alloc {
     printError(usageApplyFix())
     return 2
   }
-  let diagnostics: Array<Diagnostic> = []
   const checked = loadAndCheck(paths[0], false, "")
-  if (checked is Err(found)) {
-    diagnostics = found
-  }
+  const diagnostics = (checked is Err(found) ? found : [])
   if (Arrays.length(diagnostics) == 0) {
     printError("no diagnostics")
     return 1

@@ -350,10 +350,10 @@ export function run(args: Array<string>): int {
 100
 ```
 
-A value has no identity apart from its contents, so there is no "same object" test. The TypeScript habit that breaks is `const before = scores` followed by a change to `scores`. In TypeScript the change shows through `before`. Narra neither copies silently nor shares the change, so it rejects the write instead: a write to a value that another name still uses is a compile error that suggests `copy(...)` ([chapter 9](09-memory-and-mutable.md#writing-to-a-shared-value)):
+A value has no identity apart from its contents, so there is no "same object" test. The TypeScript habit that breaks is `const before = scores` followed by a change to `scores`. In TypeScript the change shows through `before`. Narra neither copies silently nor shares the change, so it rejects the second name itself: giving an array, map or struct another name is a compile error that suggests `copy(...)` ([chapter 9](09-memory-and-mutable.md#a-second-name-for-a-value)):
 
 ```narra error
-// error: 8:15: Arrays.push(mutable scores, ...) may change scores, which before still uses at line 9; take a copy where it is shared, with copy(...)
+// error: 7:18: before would be a second name for the array in scores; use scores, or copy(scores) for an array of its own
 import * as Arrays from "std/array"
 import * as Int from "std/int"
 

@@ -4,7 +4,7 @@ title: "This repository becomes a workspace"
 status: todo
 priority: could
 type: feature
-story:
+story: batch-19
 early: false
 outline: false
 milestone: p4-packages

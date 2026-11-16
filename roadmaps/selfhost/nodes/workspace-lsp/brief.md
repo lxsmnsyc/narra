@@ -4,7 +4,7 @@ title: "The language service checks a member and the members that depend on it"
 status: todo
 priority: could
 type: feature
-story:
+story: batch-19
 early: false
 outline: false
 milestone: p4-packages
@@ -25,9 +25,9 @@ owns:
   - roadmaps/selfhost/nodes/workspace-lsp/**
   - testdata/lsp/workspace_*/**
 shared:
-  - selfhost/src/lspserver.nra
-  - selfhost/src/lspcache.nra
-  - selfhost/src/lspnavigation.nra
+  - selfhost/src/tools/lspserver.nra
+  - selfhost/src/tools/lspcache.nra
+  - selfhost/src/tools/lspnavigation.nra
   - selfhost/tests/src/lsp.nra
 reserves: []
 provides: []

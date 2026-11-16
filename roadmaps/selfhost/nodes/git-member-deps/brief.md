@@ -4,7 +4,7 @@ title: "Git dependencies on a member of another repository's workspace"
 status: todo
 priority: could
 type: feature
-story:
+story: batch-19
 early: false
 outline: false
 milestone: p4-packages
@@ -25,10 +25,10 @@ owns:
   - roadmaps/selfhost/nodes/git-member-deps/**
   - testdata/deps/workspace_*/**
 shared:
-  - selfhost/src/depresolve.nra
-  - selfhost/src/depcache.nra
-  - selfhost/src/modules.nra
-  - selfhost/src/diagnostics.nra
+  - selfhost/src/driver/depresolve.nra
+  - selfhost/src/driver/depcache.nra
+  - selfhost/src/driver/modules.nra
+  - selfhost/src/driver/diagnostics.nra
   - selfhost/tests/src/gitfixtures.nra
   - SPEC.md
 reserves: [diag E0486-E0487]
@@ -63,6 +63,7 @@ A git dependency finds its package in the checkout: the root package, or else th
 - [ ] A fixture repository with members `json` and `core` is tagged `json/v1.1.0` and `core/v1.0.0`, and `json` has `core = { workspace = true }`. An app with `json = { git, version = "1.1.0" }` builds with `core` 1.0.0 in its lock.
 - [ ] The same app also requiring `core` 1.2.0 selects 1.2.0.
 - [ ] Errors in E0486-E0487, each with a case. First, no package of that name in the checkout. Second, a sibling with no `version`, or no tag for that version.
+- [ ] The cache check is keyed by the tag `listVersions` chooses. Today a version cached under its plain tag `v1.2.0` is used without git even when the repository also has the member tag `json/v1.2.0`, while a clean machine picks the member tag, so two machines can lock different commits for one manifest (inbox, 2026-11-15, from deps-resolve). A case with both tags fails on the base and passes here.
 - [ ] SPEC section 15 documents member tags.
 
 ## Sizing

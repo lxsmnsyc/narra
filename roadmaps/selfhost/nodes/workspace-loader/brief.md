@@ -4,7 +4,7 @@ title: "Load member dependencies, resolve from every member, one lock at the roo
 status: todo
 priority: could
 type: feature
-story:
+story: batch-19
 early: false
 outline: false
 milestone: p4-packages
@@ -25,8 +25,8 @@ owns:
   - roadmaps/selfhost/nodes/workspace-loader/**
   - testdata/workspaces/load_*/**
 shared:
-  - selfhost/src/modules.nra
-  - selfhost/src/diagnostics.nra
+  - selfhost/src/driver/modules.nra
+  - selfhost/src/driver/diagnostics.nra
   - selfhost/tests/src/packages.nra
   - testdata/deps/**
 reserves: [diag E0484-E0485]

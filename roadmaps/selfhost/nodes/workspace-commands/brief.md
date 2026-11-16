@@ -4,7 +4,7 @@ title: "build, run, test, check, fmt and query at the workspace root"
 status: todo
 priority: could
 type: feature
-story:
+story: batch-19
 early: false
 outline: false
 milestone: p4-packages
@@ -25,12 +25,12 @@ owns:
   - roadmaps/selfhost/nodes/workspace-commands/**
   - testdata/workspaces/commands_*/**
 shared:
-  - selfhost/src/driver.nra
-  - selfhost/src/fmt.nra
-  - selfhost/src/fmtconfig.nra
-  - selfhost/src/query.nra
+  - selfhost/src/driver/driver.nra
+  - selfhost/src/tools/fmt.nra
+  - selfhost/src/tools/fmtconfig.nra
+  - selfhost/src/tools/query.nra
   - selfhost/src/main.nra
-  - selfhost/src/diagnostics.nra
+  - selfhost/src/driver/diagnostics.nra
   - selfhost/tests/src/packages.nra
   - SPEC.md
   - docs/guide/*.md

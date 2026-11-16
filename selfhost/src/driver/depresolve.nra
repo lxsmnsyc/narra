@@ -6,6 +6,7 @@ import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Ranges from "std/range"
 import { Dependency, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import { Member, Workspace, listMembers } from "narrac/driver/workspace"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
 import {
   Fetched,
@@ -19,6 +20,8 @@ struct Requirement {
   name: string
   git: string
   version: string
+  isSibling: bool // from `workspace = true` in a fetched checkout
+  requiredBy: string // the package whose manifest asks, for sibling errors
 }
 
 function createResolveError(code: string, message: string): LoadError {
@@ -28,18 +31,6 @@ function createResolveError(code: string, message: string): LoadError {
 struct FoundTag {
   fetched: Fetched
   tag: string
-}
-
-function readCachedName(path: string): string uses io, alloc {
-  const text = Fs.readText(`${path}/narra.toml`)
-  if (text is Err(_)) {
-    return ""
-  }
-  const parsed = parseManifest(text.value)
-  if (parsed is Err(_)) {
-    return ""
-  }
-  return parsed.value.name
 }
 
 function findCachedTag(
@@ -64,12 +55,19 @@ function findCachedTag(
   if (Fs.isDir(checkoutPath(git, memberTag))) {
     return memberTag
   }
-  // A plain tag of a repository with several packages holds one of them, so its name must match.
+  // A cached plain tag is taken only when the lock shows that this repository tags the package
+  // plainly. Without that entry, only the tag list tells whether a member tag exists, and a clean
+  // machine picks the member tag when the repository has one.
   const plainTag = `v${version}`
-  if (
-    Fs.isDir(checkoutPath(git, plainTag)) && readCachedName(checkoutPath(git, plainTag)) == name
-  ) {
-    return plainTag
+  for (const entry of Arrays.values(locked)) {
+    if (
+      entry.name == name &&
+        entry.git == git &&
+        entry.tag == `v${entry.version}` &&
+        Fs.isDir(checkoutPath(git, plainTag))
+    ) {
+      return plainTag
+    }
   }
   return ""
 }
@@ -133,12 +131,18 @@ function findTag(
   return member
 }
 
-function readPackageManifest(
-  fetched: Fetched,
+export struct CheckoutPackage {
+  directory: string // the folder of the package: the checkout, or a member inside it
+  manifest: Manifest
+  members: Array<Member> // the members of the checkout's workspace; empty without [workspace]
+}
+
+function readCheckoutManifest(
+  directory: string,
   name: string,
   version: string,
 ): Result<Manifest, LoadError> uses io, alloc {
-  const text = Fs.readText(`${fetched.path}/narra.toml`)
+  const text = Fs.readText(`${directory}/narra.toml`)
   if (text is Err(_)) {
     return Err(createResolveError("E0457", `${name} ${version} has no narra.toml`))
   }
@@ -152,15 +156,71 @@ function readPackageManifest(
       message: error.message,
     })
   }
-  if (parsed.value.name != name) {
-    return Err(
-      createResolveError(
-        "E0453",
-        `the manifest of ${name} ${version} names the package "${parsed.value.name}"`,
-      ),
-    )
+  return parsed
+}
+
+export function findCheckoutPackage(
+  checkout: string,
+  name: string,
+  version: string,
+): Result<CheckoutPackage, LoadError> uses io, alloc {
+  // The root package wins; otherwise the member of the root's [workspace] with that name.
+  const root = readCheckoutManifest(checkout, name, version)
+  if (root is Err(error)) {
+    return Err(error)
   }
-  if (Arrays.length(parsed.value.overrides) > 0) {
+  if (!root.value.isWorkspace) {
+    if (root.value.name != name) {
+      return Err(
+        createResolveError(
+          "E0453",
+          `the manifest of ${name} ${version} names the package "${root.value.name}"`,
+        ),
+      )
+    }
+    return Ok(CheckoutPackage { directory: checkout, manifest: copy(root.value), members: [] })
+  }
+
+  // The root is a workspace: list its members, the root package included when it has one.
+  const listed = listMembers(Workspace { root: checkout, manifest: copy(root.value) })
+  if (listed is Err(errors)) {
+    return Err(copy(errors[0]))
+  }
+  if (root.value.name == name) {
+    return Ok(CheckoutPackage {
+      directory: checkout,
+      manifest: copy(root.value),
+      members: copy(listed.value),
+    })
+  }
+  for (const member of Arrays.values(listed.value)) {
+    if (member.name == name) {
+      const manifest = readCheckoutManifest(member.directory, name, version)
+      if (manifest is Err(error)) {
+        return Err(error)
+      }
+      return Ok(CheckoutPackage {
+        directory: member.directory,
+        manifest: copy(manifest.value),
+        members: copy(listed.value),
+      })
+    }
+  }
+  return Err(
+    createResolveError("E0486", `the checkout of ${name} ${version} has no package named ${name}`),
+  )
+}
+
+function readPackage(
+  fetched: Fetched,
+  name: string,
+  version: string,
+): Result<CheckoutPackage, LoadError> uses io, alloc {
+  const found = findCheckoutPackage(fetched.path, name, version)
+  if (found is Err(error)) {
+    return Err(error)
+  }
+  if (Arrays.length(found.value.manifest.overrides) > 0) {
     return Err(
       createResolveError(
         "E0454",
@@ -168,17 +228,81 @@ function readPackageManifest(
       ),
     )
   }
-  return parsed
+  return found
 }
 
 function pushRequirements(mutable queue: Array<Requirement>, manifest: Manifest) uses alloc {
   for (const dependency of Arrays.values(manifest.dependencies)) {
+    // Only `pkg --resolve` reads raw manifests: a member dependency of a workspace is not fetched.
+    if (dependency.workspace) {
+      continue
+    }
     Arrays.push(mutable queue, Requirement {
       name: dependency.name,
       git: dependency.git,
       version: dependency.version,
+      isSibling: false,
+      requiredBy: "",
     })
   }
+}
+
+function pushFetchedRequirements(
+  mutable queue: Array<Requirement>,
+  found: CheckoutPackage,
+  git: string,
+  name: string,
+  version: string,
+): Result<bool, LoadError> uses io, alloc {
+  for (const dependency of Arrays.values(found.manifest.dependencies)) {
+    if (!dependency.workspace) {
+      Arrays.push(mutable queue, Requirement {
+        name: dependency.name,
+        git: dependency.git,
+        version: dependency.version,
+        isSibling: false,
+        requiredBy: "",
+      })
+      continue
+    }
+
+    // A sibling becomes a requirement on the same URL, at the version its manifest has here.
+    let siblingDirectory = ""
+    for (const member of Arrays.values(found.members)) {
+      if (member.name == dependency.name) {
+        siblingDirectory = member.directory
+        break
+      }
+    }
+    if (siblingDirectory == "") {
+      return Err(
+        createResolveError(
+          "E0486",
+          `the checkout of ${name} ${version} has no package named ${dependency.name}`,
+        ),
+      )
+    }
+    const sibling = readCheckoutManifest(siblingDirectory, dependency.name, version)
+    if (sibling is Err(error)) {
+      return Err(error)
+    }
+    if (sibling.value.version == "") {
+      return Err(
+        createResolveError(
+          "E0487",
+          `${name} needs its sibling ${dependency.name}, which has no version`,
+        ),
+      )
+    }
+    Arrays.push(mutable queue, Requirement {
+      name: dependency.name,
+      git,
+      version: sibling.value.version,
+      isSibling: true,
+      requiredBy: name,
+    })
+  }
+  return Ok(true)
 }
 
 export function resolveDependencies(
@@ -232,13 +356,30 @@ export function resolveDependencies(
     visited[key] = true
     const found = findTag(git, requirement.name, version, isOverride, locked)
     if (found is Err(error)) {
+      if (requirement.isSibling && error.code == "E0451") {
+        return Err(
+          createResolveError(
+            "E0487",
+            `${requirement.requiredBy} needs ${requirement.name} ${version}, but the repository ${git} has no tag for it`,
+          ),
+        )
+      }
       return Err(error)
     }
-    const manifest = readPackageManifest(found.value.fetched, requirement.name, version)
-    if (manifest is Err(error)) {
+    const read = readPackage(found.value.fetched, requirement.name, version)
+    if (read is Err(error)) {
       return Err(error)
     }
-    pushRequirements(mutable queue, manifest.value)
+    const pushed = pushFetchedRequirements(
+      mutable queue,
+      read.value,
+      git,
+      requirement.name,
+      version,
+    )
+    if (pushed is Err(error)) {
+      return Err(error)
+    }
     const entry = LockEntry {
       name: requirement.name,
       git,

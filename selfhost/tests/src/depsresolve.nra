@@ -35,6 +35,17 @@ const CASE_NAMES = [
   "resolve-error-override-tag",
 ]
 
+const MEMBER_CASE_NAMES = [
+  "resolve-member-basic",
+  "resolve-member-higher",
+  "resolve-member-cache",
+  "resolve-member-nopackage",
+  "resolve-member-nosibling",
+  "resolve-member-notag",
+  "resolve-member-offline",
+  "resolve-member-sibling",
+]
+
 const NO_GIT_PATH = "PATH=/nonexistent"
 
 // $1 is the folder, $2 the text that replaces @REPOS@.
@@ -53,10 +64,21 @@ export function collectResolveCases(context: Context): Array<TestCase> uses allo
       variant: name,
     })
   }
+  for (const name of Arrays.values(MEMBER_CASE_NAMES)) {
+    Arrays.push(mutable cases, TestCase {
+      suite: "deps",
+      name: name,
+      path: Path.join(context.testdata, "deps"),
+      variant: name,
+    })
+  }
   return cases
 }
 
 function chooseFixture(variant: string): string {
+  if (Str.startsWith(variant, "resolve-member-")) {
+    return `workspace_member_${Str.sliceFrom(variant, Str.length("resolve-member-"))}`
+  }
   if (variant == "resolve-lock-twice" || variant == "resolve-error-lock-mismatch") {
     return "chain"
   }
@@ -330,6 +352,52 @@ function runOverride(
   return expectNotFetched(scratch, "v1.2.0")
 }
 
+function runMemberOffline(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+): Result<bool, string> uses io, alloc {
+  // a 1.0.0 needs b 1.0.0 and the app needs b 1.1.0, so the walk reads a version the lock drops.
+  const first = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  const checked = expectLock(caseFolder, first)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  // The lock and the cache are enough for the second run: no process starts.
+  const second = runResolve(context, scratch, [NO_GIT_PATH], listRootArguments(caseFolder))
+  if (second.code != 0 || second.output != first.output) {
+    return Err(`the second run differs: ${Common.describeRun(second)}`)
+  }
+  return Ok(true)
+}
+
+function runMemberCache(
+  context: Context,
+  scratch: Scratch,
+  caseFolder: string,
+  repositoriesFolder: string,
+): Result<bool, string> uses io, alloc {
+  // The plain tag v1.2.0 is already in the cache, as a lock of an older repository layout left it.
+  const fetched = runResolve(context, scratch, [], [
+    "--fetch",
+    `file://${repositoriesFolder}/pkgs`,
+    "v1.2.0",
+  ])
+  if (fetched.code != 0) {
+    return Err(`fetching the plain tag: ${Common.describeRun(fetched)}`)
+  }
+  // The repository also has json/v1.2.0, which listVersions prefers, so the lock names that tag.
+  const result = runResolve(context, scratch, [], listRootArguments(caseFolder))
+  const checked = expectLock(caseFolder, result)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+  if (!Str.contains(result.output, "tag = \"json/v1.2.0\"")) {
+    return Err(`want the member tag json/v1.2.0 in the lock, got:\n${result.output}`)
+  }
+  return expectCommitAndTree(scratch, result.output, "pkgs", "json/v1.2.0")
+}
+
 export function runResolveCase(
   context: Context,
   testCase: TestCase,
@@ -391,8 +459,14 @@ function runBuilt(
   if (variant == "resolve-error-lock-mismatch") {
     return runLockMismatch(context, scratch, caseFolder)
   }
+  if (variant == "resolve-member-offline") {
+    return runMemberOffline(context, scratch, caseFolder)
+  }
+  if (variant == "resolve-member-cache") {
+    return runMemberCache(context, scratch, caseFolder, repositoriesFolder)
+  }
   const result = runResolve(context, scratch, [], listRootArguments(caseFolder))
-  if (Str.startsWith(variant, "resolve-error-")) {
+  if (Str.startsWith(variant, "resolve-error-") || Fs.exists(Path.join(caseFolder, "error.txt"))) {
     const want = Common.readExpected(Path.join(caseFolder, "error.txt"))
     if (want is Err(message)) {
       return Err(message)

@@ -9,7 +9,11 @@ import * as Str from "std/string"
 import { hasName, substring } from "narrac/driver/textops"
 import { ImportDecl } from "narrac/syntax/ast"
 import { checkTree, checkoutPath, isVersionBefore, readRecorded } from "narrac/driver/depcache"
-import { checkAgainstLock, resolveDependencies } from "narrac/driver/depresolve"
+import {
+  checkAgainstLock,
+  findCheckoutPackage,
+  resolveDependencies,
+} from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
 import { Dependency, ExportEntry, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
 import { Member, Workspace, findWorkspace, listMembers } from "narrac/driver/workspace"
@@ -51,29 +55,13 @@ function listPackages(
         ),
       )
     }
+    // The package is the checkout itself, or a member of the workspace the checkout holds.
+    const found = findCheckoutPackage(folder, entry.name, entry.version)
+    if (found is Err(error)) {
+      return Err(error)
+    }
+    const manifest = found.value.manifest
     let declared: Array<string> = []
-    const text = Fs.readText(`${folder}/narra.toml`)
-    if (text is Err(_)) {
-      return Err(createDependencyError("E0457", `${entry.name} ${entry.version} has no narra.toml`))
-    }
-    const manifest = parseManifest(text.value)
-    if (manifest is Err(error)) {
-      return Err(LoadError {
-        code: error.code,
-        file: `${entry.name} ${entry.version}/narra.toml`,
-        line: error.line,
-        column: error.column,
-        message: error.message,
-      })
-    }
-    if (manifest.value.name != entry.name) {
-      return Err(
-        createDependencyError(
-          "E0453",
-          `the manifest of ${entry.name} ${entry.version} names the package "${manifest.value.name}"`,
-        ),
-      )
-    }
     const recorded = readRecorded(folder)
     if (recorded is Err(error)) {
       return Err(error)
@@ -82,15 +70,15 @@ function listPackages(
     if (matched is Err(error)) {
       return Err(error)
     }
-    for (const dependency of Arrays.values(manifest.value.dependencies)) {
+    for (const dependency of Arrays.values(manifest.dependencies)) {
       Arrays.push(mutable declared, dependency.name)
     }
     Arrays.push(mutable packages, DependencyPackage {
       name: entry.name,
       version: entry.version,
-      directory: folder,
+      directory: found.value.directory,
       declared,
-      exports: manifest.value.exports,
+      exports: manifest.exports,
     })
   }
   return Ok(packages)

@@ -1,7 +1,7 @@
 ---
 id: workspace-commands
 title: "build, run, test, check, fmt and query at the workspace root"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-19

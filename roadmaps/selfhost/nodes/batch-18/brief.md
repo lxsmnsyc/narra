@@ -44,5 +44,5 @@ The branch starts from `main` after PR #122 (batch-17) merged.
 
 ## Acceptance
 
-- [ ] Every child done or out of the batch with a reason.
-- [ ] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes.
+- [x] Every child done or out of the batch with a reason.
+- [x] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes. test.sh: PASS, 10189 cases on the final tree; seed current; website build passes.

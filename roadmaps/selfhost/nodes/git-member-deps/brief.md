@@ -1,7 +1,7 @@
 ---
 id: git-member-deps
 title: "Git dependencies on a member of another repository's workspace"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-19

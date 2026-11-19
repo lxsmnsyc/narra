@@ -2,7 +2,7 @@
 id: wasm-js-glue
 title: "JS wrappers for a wasm library, written by narrac"
 status: todo
-priority: could
+priority: later
 type: feature
 story:
 early: false

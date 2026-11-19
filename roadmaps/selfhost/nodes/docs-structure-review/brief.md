@@ -1,10 +1,10 @@
 ---
 id: docs-structure-review
 title: "Review the structure of the docs"
-status: todo
+status: active
 priority: could
 type: spike
-story: 
+story: batch-20
 early: false
 outline: false
 milestone: p6-docs

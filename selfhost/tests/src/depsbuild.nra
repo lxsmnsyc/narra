@@ -5,6 +5,7 @@
 // cache is a scratch folder.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
+import * as Int from "std/int"
 import * as Path from "std/path"
 import * as Str from "std/string"
 import * as Common from "testrunner/context"
@@ -35,9 +36,13 @@ const CASE_NAMES = [
   "build-error-no-cache",
   "build-error-no-manifest",
   "build-error-undeclared-dependency",
+  "build-definition",
 ]
 
 const NO_GIT_PATH = "PATH=/nonexistent"
+
+// A plain string: template strings decode only \n and \t.
+const CRLF = "\r\n"
 
 // $1 is the lock file; every content hash becomes zeros.
 const BREAK_CONTENT_SCRIPT = "sed 's|^content = .*|content = \"0000000000000000000000000000000000000000\"|' \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\""
@@ -212,6 +217,70 @@ function runMember(
       !Str.contains(lock.value, "tag = \"core/v1.0.0\"")
   ) {
     return Err(`the lock does not name the member tags:\n${lock.value}`)
+  }
+  return Ok(true)
+}
+
+function writeFrame(body: string): string uses alloc {
+  return `Content-Length: ${Int.toString(Str.length(body))}${CRLF}${CRLF}${body}`
+}
+
+function runDefinition(
+  context: Context,
+  scratch: Scratch,
+  appFolder: string,
+): Result<bool, string> uses io, alloc {
+  const built = runNarrac(context, scratch, scratch.work, [], ["build", "-o", "app.bin", appFolder])
+  if (built.code != 0) {
+    return Err(`building: ${Common.describeRun(built)}`)
+  }
+  // The query lists the declarations of the dependency, with the path shown in diagnostics.
+  const queried = runNarrac(
+    context,
+    scratch,
+    scratch.work,
+    [NO_GIT_PATH],
+    ["query", "--package", appFolder, "def", "render"],
+  )
+  if (
+    queried.code != 0 ||
+      !Str.contains(queried.output, "json/text.render function json/src/text.nra:")
+  ) {
+    return Err(`query def render: ${Common.describeRun(queried)}`)
+  }
+  // The language service answers go to definition from the lock and the cache.
+  const mainPath = Path.join(appFolder, "src/main.nra")
+  const mainText = Fs.readText(mainPath)
+  if (mainText is Err(message)) {
+    return Err(message)
+  }
+  const escaped = Str.replace(Str.replace(mainText.value, "\"", "\\\""), "\n", "\\n")
+  const uri = `file://${mainPath}`
+  const session = [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}",
+    `{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","languageId":"narra","version":1,"text":"${escaped}"}}}`,
+    `{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"${uri}"},"position":{"line":4,"character":14}}}`,
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\"}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}",
+  ]
+  let input = ""
+  for (const body of Arrays.values(session)) {
+    input = `${input}${writeFrame(body)}`
+  }
+  const written = Fs.writeText(scratch.stdinPath, input)
+  if (written is Err(message)) {
+    return Err(message)
+  }
+  let command = copy(Shell.newCommand(context.narrac, ["lsp"]))
+  command.directory = scratch.work
+  command.environment = Shell.runtimeCheckEnvironment()
+  Arrays.push(mutable command.environment, `NARRA_CACHE=${scratch.root}/cache`)
+  Arrays.push(mutable command.environment, NO_GIT_PATH)
+  command.stdinPath = scratch.stdinPath
+  const served = Shell.runCommand(command)
+  const wanted = "src/text.nra\",\"range\":{\"start\":{\"line\":6,\"character\":16}"
+  if (served.code != 0 || !Str.contains(served.output, wanted)) {
+    return Err(`definition of render: want a location ${wanted}, got ${Common.describeRun(served)}`)
   }
   return Ok(true)
 }
@@ -517,6 +586,9 @@ function runBuilt(
   }
   if (variant == "build-member") {
     return runMember(context, scratch, appFolder, caseFolder)
+  }
+  if (variant == "build-definition") {
+    return runDefinition(context, scratch, appFolder)
   }
   if (variant == "build-locked") {
     return runLocked(context, scratch, appFolder)

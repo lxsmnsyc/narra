@@ -3,9 +3,8 @@
 // of the document with the open documents' text, as checkDocumentPackage
 // does, and answers from the site index and the checker results of narrac
 // query (query.nra, querysites.nra).
-import { splitString, substring } from "narrac/driver/textops"
+import { splitString } from "narrac/driver/textops"
 import * as Arrays from "std/array"
-import * as Fs from "std/fs"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
@@ -18,9 +17,6 @@ import { describeImplementMember } from "narrac/check/genericimpl"
 import * as Body from "narrac/check/body"
 import * as Effects from "narrac/check/effects"
 import { EffectState } from "narrac/check/effects"
-import { isDependencyPath } from "narrac/driver/depload"
-import { Package } from "narrac/driver/modules"
-import { findWorkspace, listMembers } from "narrac/driver/workspace"
 import { loadPackage } from "narrac/tools/lspcache"
 import { Location } from "narrac/tools/queryjson"
 import { Site, SiteKind, isBefore } from "narrac/tools/querysites"
@@ -153,36 +149,6 @@ export function answerNavigation(
   return Ok(listReferences(navigation, found, includeDeclaration))
 }
 
-function mapMemberFiles(package: Package): Map<string, string> uses io, alloc {
-  // The display file of a member's module (`json/src/parse.nra`) maps to its path in the member
-  // directory. A package outside a workspace maps nothing.
-  let files: Map<string, string> = Map {}
-  const maybeWorkspace = findWorkspace(package.directory)
-  if (maybeWorkspace is None) {
-    return files
-  }
-  const listed = listMembers(maybeWorkspace.value)
-  if (listed is Err(_)) {
-    return files
-  }
-  for (const module of Arrays.values(package.modules)) {
-    const slash = Str.indexOf(module.file, "/")
-    if (slash is None) {
-      continue
-    }
-    if (!isDependencyPath(package.dependencyNames, module.path)) {
-      continue
-    }
-    const name = substring(module.file, 0, slash.value)
-    for (const member of Arrays.values(listed.value)) {
-      if (member.name == name && member.directory != package.directory) {
-        files[module.file] = `${member.directory}/${Str.sliceFrom(module.file, slash.value + 1)}`
-      }
-    }
-  }
-  return files
-}
-
 function loadNavigation(
   mutable server: Server,
   uri: string,
@@ -230,18 +196,7 @@ function loadNavigation(
   if (effectsKnown) {
     effects = Effects.checkEffects(mutable checker)
   }
-  // A member's files are read from the member directory, the open documents first.
-  const memberFiles = mapMemberFiles(package)
-  let viewOverrides = copy(overrides)
-  for (const entry of Maps.entries(memberFiles)) {
-    const #[displayFile, realPath] = entry
-    if (overrides[realPath] is Some(open)) {
-      viewOverrides[`${package.directory}/${displayFile}`] = open
-    } else if (Fs.readText(realPath) is Ok(text)) {
-      viewOverrides[`${package.directory}/${displayFile}`] = text
-    }
-  }
-  const views = buildViews(checker, package, viewOverrides)
+  const views = buildViews(checker, package, overrides)
   if (views is Err(_)) {
     return None
   }
@@ -251,10 +206,7 @@ function loadNavigation(
   let uris: Array<string> = []
   let view = -1
   for (const index of Ranges.between(0, Arrays.length(query.views))) {
-    let filePath = `${package.directory}/${query.views[index].file}`
-    if (memberFiles[query.views[index].file] is Some(realPath)) {
-      filePath = realPath
-    }
+    const filePath = query.views[index].module.source
     Arrays.push(mutable lines, splitString(query.views[index].text, "\n"))
     if (openUris[filePath] is Some(open)) {
       Arrays.push(mutable uris, open)

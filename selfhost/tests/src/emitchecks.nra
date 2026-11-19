@@ -42,6 +42,8 @@
 //   wasi/left-out-plain   the same for a program that does not import std/build, found by
 //                      check --target Wasi-Wasm32
 //   build-targets/cross-list   `narrac targets` prints the eight rows
+//   build-targets/version   `narrac --version` prints dev for a build from the seed;
+//                      `--help` and `-h` print the usage on stdout
 //   audit/basic        `narrac audit` lists the unsafe blocks and @trusted
 //                      functions of testdata/audit/basic
 //   const-generics/distinct-instances   in the C of testdata/const_generics.nra,
@@ -155,6 +157,7 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       "cross-errors",
     ),
     makeCase("build-targets/cross-list", Path.join(buildTargets, "cross_hello.nra"), "cross-list"),
+    makeCase("build-targets/version", Path.join(buildTargets, "cross_hello.nra"), "version"),
     makeCase("audit/basic", Path.join(Path.join(context.testdata, "audit"), "basic"), "audit"),
     makeCase(
       "const-generics/distinct-instances",
@@ -265,6 +268,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "cross-list") {
     return checkCrossList(context)
+  }
+  if (testCase.variant == "version") {
+    return checkVersion(context)
   }
   if (testCase.variant == "audit") {
     return checkAudit(context, testCase.path)
@@ -725,6 +731,24 @@ function checkCrossList(context: Context): Result<bool, string> uses io, alloc {
     "",
   ]
   return Common.compareText("stdout", Str.join(want, "\n"), result.output)
+}
+
+function checkVersion(context: Context): Result<bool, string> uses io, alloc {
+  const version = Common.runNarrac(context, ["--version"])
+  if (version.code != 0 || version.errorOutput != "") {
+    return Err(`--version failed: ${Common.describeRun(version)}`)
+  }
+  const matched = Common.compareText("--version", "dev\n", version.output)
+  if (matched is Err(message)) {
+    return Err(message)
+  }
+  for (const flag of ["--help", "-h"]) {
+    const help = Common.runNarrac(context, [flag])
+    if (help.code != 0 || help.errorOutput != "" || !Str.startsWith(help.output, "usage:\n")) {
+      return Err(`${flag} did not print the usage: ${Common.describeRun(help)}`)
+    }
+  }
+  return Ok(true)
 }
 
 function checkAudit(context: Context, folder: string): Result<bool, string> uses io, alloc {

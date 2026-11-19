@@ -150,4 +150,4 @@ case ":$PATH:" in
   *":$install_dir:"*) ;;
   *) echo "install: $install_dir is not on your PATH. Add: export PATH=\"$install_dir:\$PATH\"" ;;
 esac
-echo "install: open a new terminal, then run: narrac targets"
+echo "install: open a new terminal, then run: narrac --version"

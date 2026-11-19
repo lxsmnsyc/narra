@@ -26,10 +26,10 @@ The command downloads the archive for your system, checks its SHA-256 sum agains
 Open a new terminal, then check that your shell finds `narrac`:
 
 ```sh
-narrac targets
+narrac --version
 ```
 
-This lists the systems `narrac` can build for. If your shell says `narrac` is not found on macOS or Linux, `~/.local/bin` is not on your `PATH` yet. Add this line to your shell's startup file, `~/.zshrc` for zsh (the macOS default) or `~/.bashrc` for bash, then open a new terminal:
+This prints the version, such as `0.1.0`. If your shell says `narrac` is not found on macOS or Linux, `~/.local/bin` is not on your `PATH` yet. Add this line to your shell's startup file, `~/.zshrc` for zsh (the macOS default) or `~/.bashrc` for bash, then open a new terminal:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"

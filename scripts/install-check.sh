@@ -98,11 +98,8 @@ for row in $rows; do
       fail "install.sh failed for $row"
     fi
     cat "$work/install-$row.log"
-    targets=$("$bin/narrac" targets) || fail "narrac targets failed for $row"
-    case "$targets" in
-      *"$row "*) ;;
-      *) fail "narrac targets did not list $row" ;;
-    esac
+    got=$("$bin/narrac" --version) || fail "narrac --version failed for $row"
+    [ "$got" = "$version" ] || fail "narrac --version printed $got for $row, want $version"
     say "ok: $row installed and runs"
 
     # A changed checksum must stop the install and leave the folder empty.
@@ -148,12 +145,12 @@ for row in $rows; do
   # The folder holds the archive; install.sh is mounted beside it.
   docker run --rm --platform "$docker_platform" -v "$dist:/dist:ro" -v "$root/install.sh:/install.sh:ro" \
     -e "NARRA_VERSION=$version" -e NARRA_BASE_URL=file:///dist -e NARRA_INSTALL=/tmp/bin "$image" \
-    sh -c "set -eu; $setup; sh /install.sh; /tmp/bin/narrac targets" > "$work/docker-$row.log" 2>&1 || {
+    sh -c "set -eu; $setup; sh /install.sh; /tmp/bin/narrac --version" > "$work/docker-$row.log" 2>&1 || {
     cat "$work/docker-$row.log" >&2
     fail "install.sh failed for $row in $image"
   }
   grep "install: " "$work/docker-$row.log"
-  grep -q "^$row " "$work/docker-$row.log" || fail "narrac targets did not list $row in $image"
+  grep -qx "$version" "$work/docker-$row.log" || fail "narrac --version did not print $version in $image"
   say "ok: $row installed and runs in $image"
 done
 

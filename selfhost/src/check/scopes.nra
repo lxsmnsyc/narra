@@ -103,11 +103,12 @@ export function importModules(mutable checker: Checker, file: File) uses alloc {
       !isStdPathExposed(importDecl.path) &&
         !Str.startsWith(checker.scopes[checker.current].path, "std/")
     ) {
+      const exposed = moduleList(checker.registry)
       reportError(
         mutable checker,
         importDecl.pos,
         "E0474",
-        `${importDecl.path} is internal to the standard library`,
+        `${importDecl.path} is internal to the standard library; std exposes ${exposed}`,
       )
       continue
     }
@@ -150,7 +151,7 @@ export function importModules(mutable checker: Checker, file: File) uses alloc {
             mutable checker,
             importDecl.pos,
             "E0101",
-            `module ${quoteGo(importDecl.path)} has no export ${quoteGo(name.name)}`,
+            `module ${quoteGo(importDecl.writtenPath)} has no export ${quoteGo(name.name)}`,
           )
         }
       }
@@ -294,7 +295,13 @@ function importPackageModule(
         continue
       }
     }
-    const found = exported(mutable checker, importDecl.pos, scope, name.name)
+    const found = exportedWritten(
+      mutable checker,
+      importDecl.pos,
+      scope,
+      name.name,
+      importDecl.writtenPath,
+    )
     match (found) {
       Some(declaration) => importDeclaration(
         mutable checker,
@@ -406,17 +413,32 @@ export function exported(
   scope: int,
   name: string,
 ): Option<Decl> from checker uses alloc {
+  const path = checker.scopes[scope].path
+  return exportedWritten(mutable checker, pos, scope, name, path)
+}
+
+function exportedWritten(
+  mutable checker: Checker,
+  pos: Pos,
+  scope: int,
+  name: string,
+  writtenPath: string,
+): Option<Decl> from checker uses alloc {
   if (checker.scopes[scope].exports[name] is Some(index)) {
     return Some(checker.scopes[scope].declarations[index])
   }
   const path = checker.scopes[scope].path
+  let note = ""
+  if (writtenPath != path) {
+    note = ` (${quoteGo(writtenPath)} is the module ${path})`
+  }
   for (const declaration of Arrays.values(copy(checker.scopes[scope].declarations))) {
     if (getDeclarationName(declaration) == name) {
       reportError(
         mutable checker,
         pos,
         "E0402",
-        `${quoteGo(name)} is not exported by module ${quoteGo(path)}; add \`export\` to its declaration`,
+        `${quoteGo(name)} is not exported by module ${quoteGo(writtenPath)}; add \`export\` to its declaration${note}`,
       )
       return None
     }
@@ -434,7 +456,7 @@ export function exported(
     mutable checker,
     pos,
     "E0101",
-    `module ${quoteGo(path)} has no export ${quoteGo(name)}`,
+    `module ${quoteGo(writtenPath)} has no export ${quoteGo(name)}${note}`,
   )
   return None
 }
@@ -718,7 +740,7 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
       importDecl.pos,
       "E0421",
       renameFixes,
-      `the import alias ${importDecl.alias} is also a type name; rename it, for example \`import * as ${suggestion} from ${quoteGo(importDecl.path)}\``,
+      `the import alias ${importDecl.alias} is also a type name; rename it, for example \`import * as ${suggestion} from ${quoteGo(importDecl.writtenPath)}\``,
     )
   }
 

@@ -141,7 +141,7 @@ each(numbers, (item) => { total = total + item })
 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
-- `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
+- `for (const item of source) { ... }` loops over an array, a `Range`, a generator, or the result of `Maps.keys`, `Maps.entries` or `Str.chars` (each an array). `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
 - **`for (mutable item of items)` changes the elements in place** (D85). `item` reaches each element of the array, as a `mutable` parameter would, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` also gives the index, and `Arrays.values(items)` may be written for `items`.
   - The source is a local place of type `Array<T>`: a local `const` or `let`, a `mutable` parameter, or a field or element path of one. A call result, a plain parameter, a top-level constant, a map, a range and a generator are compile errors.
   - `T` has contents (section 6, Mutable parameters): `for (mutable n of numbers)` over `Array<int>` is a compile error; write `numbers[index] = ...` in an `Arrays.entries` loop.
@@ -163,7 +163,7 @@ for (mutable player of players) {
 }
 ```
 
-- **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **What a loop reads.** `for ... of` reads an `Array<T>` (each element), a `Range` (each number), or a `Generator<T>` (each value it yields). `Maps.keys`, `Maps.entries` and `Str.chars` return arrays, and a `Range` is its own type, so none of them is a `Generator<T>`: a parameter of type `Generator<int>` does not take an array or a `Range`, and a function that wants one writes a `function*` that yields the items. `Arrays.values` and `Arrays.entries` are allowed only at the head of a loop (E0920), where they stand for the array itself. A generator (section 8) is an iterator you write: a function returns its own by returning a generator, and `for ... of` iterates over its own copy of it, so a generator held in a variable is not advanced.
 - **`for await (const chunk of stream) { ... }`** reads an `AsyncGenerator<T>` in an async body, waiting for each value (section 8, Async generators).
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 gives an empty range. A step that is 0 at compile time (a literal, or a constant that folds to 0) is error E1270, since the range could never have a value. `Ranges.stepped` returns a `Range`, so it never panics. The loop stops before the value would pass the largest or smallest `int`.
 
@@ -408,7 +408,6 @@ Rules:
 - **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
 - **No import side effects.** Top-level declarations must be functions, types, traits or `const` constants. There is no top-level `let`.
 - **Constructors come with their enum and are always qualified.** Importing `Token` makes `Token.Word(x)` usable, in expressions and in patterns (D71). A bare `Word(x)` is a compile error whose fix writes `Token.Word(x)`. `Some`, `None`, `Ok` and `Err` are the exception: they are prelude names and stay bare. Constructors of different enums never clash, whatever their fields, and a user enum may have a constructor named `None` (`Maybe.None`); a bare `None` is always the prelude one. Two constructors with the same name in one enum are an error.
-- **`narrac move old new`** moves a file and rewrites every import of it.
 
 ## 4. Types
 
@@ -832,7 +831,7 @@ const label = match (status) {
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
 - **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. An integer literal (`3`, `-1`) between the brackets is a constant type argument, whatever the name before `<`, as in TypeScript: `both(a < 3, 4 > (c))` is the call `a<3, 4>(c)`, so write the comparison in parentheses, `both((a < 3), 4 > (c))`. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
-- **Constant type parameters.** `const N: int` in the type parameters of a function or a struct stands for an integer, not a type: `function repeat<const N: int>(text: string): string`, `struct Vector<const N: int> { ... }`. Its argument is an integer literal (`repeat<3>("ab")`, `Vector<-1>`) or a constant parameter in scope (`Vector<N>`). A call infers it from the argument types or the expected type like a type parameter (`const plane: Vector<2> = zeros()`); one that only the body uses must be written. A type argument never computes: `Vector<N + 1>` is a compile error, and so are a local, a top-level constant or a type where a constant belongs, and a constant where a type belongs (`value: N`). In the body `N` is an `int` value, known in each instance: `total / N` needs no check, and an instance with `N` equal to 0 is the usual divisor error, which names the instance and its call. A local or parameter named like a constant parameter is a shadowing error. A constant parameter does not satisfy a `requires` condition yet: a call that passes `N` to a function with `requires` is E0985. Each value is its own instance, so `repeat<2>` and `repeat<3>` are two functions and `Vector<2>` and `Vector<3>` two types. The kind is `int` only for now; the sized integer kinds (`const N: u8`) may come later. Enums and type aliases take no constant parameters.
+- **Constant type parameters.** `const N: int` in the type parameters of a function or a struct stands for an integer, not a type: `function repeat<const N: int>(text: string): string`, `struct Vector<const N: int> { ... }`. Its argument is an integer literal (`repeat<3>("ab")`, `Vector<-1>`) or a constant parameter in scope (`Vector<N>`). A call infers it from the argument types or the expected type like a type parameter (`const plane: Vector<2> = zeros()`); one that only the body uses must be written. A struct literal does not work it out from its fields: `Schedule { hours: [1, 2, 3] }` is an error unless an expected type gives it (`const plan: Schedule<3> = Schedule { hours: [1, 2, 3] }`), so write `Schedule<3> { hours: [1, 2, 3] }`. A type argument never computes: `Vector<N + 1>` is a compile error, and so are a local, a top-level constant or a type where a constant belongs, and a constant where a type belongs (`value: N`). In the body `N` is an `int` value, known in each instance: `total / N` needs no check, and an instance with `N` equal to 0 is the usual divisor error, which names the instance and its call. A local or parameter named like a constant parameter is a shadowing error. A constant parameter does not satisfy a `requires` condition yet: a call that passes `N` to a function with `requires` is E0985. Each value is its own instance, so `repeat<2>` and `repeat<3>` are two functions and `Vector<2>` and `Vector<3>` two types. The kind is `int` only for now; the sized integer kinds (`const N: u8`) may come later. Enums and type aliases take no constant parameters.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 <!-- context
@@ -1484,12 +1483,23 @@ Threads run in a scope. Every thread started in a scope finishes before the scop
 
 ```narra
 import * as Thread from "std/thread"
+import * as Ranges from "std/range"
 
-const total = Thread.scope((scope) => {
-  const left = Thread.start(scope, () => sum(firstHalf))
-  const right = Thread.start(scope, () => sum(secondHalf))
-  return Thread.join(left) + Thread.join(right)
-})
+function sumRange(start: int, end: int): int {
+  let total = 0
+  for (const number of Ranges.between(start, end)) {
+    total = total + number
+  }
+  return total
+}
+
+export function sumInTwoThreads(): int uses alloc {
+  return Thread.scope((scope) => {
+    const left = Thread.start(scope, () => sumRange(0, 500))
+    const right = Thread.start(scope, () => sumRange(500, 1000))
+    return Thread.join(left) + Thread.join(right)
+  })
+}
 ```
 
 - **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
@@ -1505,17 +1515,27 @@ const total = Thread.scope((scope) => {
 ### Channels
 
 ```narra
-const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
+import * as Thread from "std/thread"
+import * as Channel from "std/channel"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
 
-Thread.start(scope, () => {
-  for (const i of Ranges.upTo(100)) {
-    Channel.send(sender, i)                            // blocks while the channel is full
-  }
-  Channel.close(sender)
-})
+export function printNumbers(): int uses io, alloc {
+  const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
-for (const value of Channel.values(receiver)) {       // ends when the channel is closed and empty
-  print(Int.toString(value))
+  return Thread.scope((scope) => {
+    Thread.start(scope, () => {
+      for (const i of Ranges.upTo(100)) {
+        Channel.send(sender, i)                            // blocks while the channel is full
+      }
+      Channel.close(sender)
+    })
+
+    for (const value of Channel.values(receiver)) {       // ends when the channel is closed and empty
+      print(Int.toString(value))
+    }
+    return 0
+  })
 }
 ```
 
@@ -1523,7 +1543,7 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 
 - **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`. `T` must be `Sendable` (E1190). A capacity below 1 is taken as 1.
 - **`Channel.send(sender, value)`** blocks while the channel is full and returns `true`. It returns `false` and drops the value once the channel is closed or every copy of the receiver is gone.
-- **`Channel.receive(receiver)`** blocks until a value arrives and returns `Some(value)`, or `None` once the channel is closed and empty. **`Channel.values(receiver)`** is a `Generator<T> uses io` over the same values. Copies of a `Receiver` share the queue, so several threads can take values from one channel; each value goes to one of them.
+- **`Channel.receive(receiver)`** blocks until a value arrives and returns `Some(value)`, or `None` once the channel is closed and empty. **`Channel.values(receiver)`** is a `Generator<T> uses io` over the same values; a `for` loop over it also needs `alloc`, because a generator's frame is allocated, so the caller writes `uses io, alloc`. Copies of a `Receiver` share the queue, so several threads can take values from one channel; each value goes to one of them.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it.
 - Blocking calls have the `io` effect. In async code they block the thread's event loop, as other blocking calls do.
 - `==`, `!=` and map keys on a `Sender` or a `Receiver` are a compile error (E1195).
@@ -1704,7 +1724,7 @@ async function total(connection: Connection): int uses io, alloc {
 
 ## 9. Unsafe code and C interop
 
-- **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression; assign to a `let` declared before it. Code inside `unsafe` may crash; it is the stated exception to D92.
+- **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression (`const x = unsafe { ... }` is a syntax error); assign to a `let` declared before it. A `return` inside the block returns from the enclosing function. Code inside `unsafe` may crash; it is the stated exception to D92.
 - **The `unsafe` effect.** A function that holds an `unsafe` block has the `unsafe` effect: an exported one writes `uses unsafe` (E0800), a private one is inferred, and every caller needs an `unsafe` block of its own. A function value whose type lists `uses unsafe` is called the same way.
 - **Generators and traits.** Running a generator runs its body, so a `for` loop or `yield*` over a generator whose body has the `unsafe` effect needs an `unsafe` block (E0996). A call through a trait has the effects the trait function declares, so an implementation may use `unsafe` only when its trait function declares `uses unsafe` (E0800); otherwise it wraps the unsafe code with `@trusted`, the one attribute allowed on an implement block member.
 - **`@trusted`** on a function states that its `unsafe` blocks were checked by hand. It stops the effect there: the function does not have `unsafe`, so callers need no block and an exported one does not declare it. `@trusted` on a function with no `unsafe` block, or on one that writes `uses unsafe`, is E0997.
@@ -2109,3 +2129,4 @@ These are left out of the first version on purpose.
 - **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.
 - **A bytecode VM.** Possible later for scripting and hot reload. The first target is native code only.
+- **`narrac move old new`.** A command that moves a file and rewrites every import of it. It is not built yet: `narrac move` prints the usage line and exits 2.

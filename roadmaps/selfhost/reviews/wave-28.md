@@ -29,9 +29,10 @@ Dropped: effect-export-gap, not reproduced. The only shape that compiles is the 
 - `sh scripts/test.sh`: PASS, 10496 cases.
 - `sh selfhost/bootstrap.sh`: fixed point, seed current (regenerated in `c8b6685f`).
 - `pnpm --dir website build`: passes.
+- `sh scripts/linux-check.sh`: PASS.
 
 ## Still to do
 
-- [ ] `sh scripts/linux-check.sh`.
+- [x] `sh scripts/linux-check.sh`: PASS in 1059s.
 - [ ] Push `feat/batch-20` and open the batch-20 pull request for the maintainer.
 - [ ] After it merges: first-release. The maintainer decides the first tag (prerelease or full release, and the `install.sh` fallback for prereleases) and pushes it.

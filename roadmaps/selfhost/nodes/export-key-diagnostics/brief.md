@@ -1,7 +1,7 @@
 ---
 id: export-key-diagnostics
 title: "Diagnostics name the export key the importer wrote"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-20

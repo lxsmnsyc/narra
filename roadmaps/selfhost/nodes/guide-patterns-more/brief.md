@@ -1,7 +1,7 @@
 ---
 id: guide-patterns-more
 title: "Chapter 5: array patterns and more"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

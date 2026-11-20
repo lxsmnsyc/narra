@@ -31,6 +31,9 @@ shared:
 reserves: []
 provides: []
 depends_on:
+  - on: std-registry-signatures
+    kind: hard
+    why: the pages need named parameters and no `(...)` signatures
   - on: std-interface-query
     kind: hard
     why: the pages come from its output

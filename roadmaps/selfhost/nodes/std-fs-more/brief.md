@@ -1,7 +1,7 @@
 ---
 id: std-fs-more
 title: "Append, rename, copy, remove a folder tree, current folder"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

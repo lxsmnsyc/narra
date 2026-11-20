@@ -1,7 +1,7 @@
 ---
 id: guide-final-pass
 title: "Guide index, cross-links and a read-through"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

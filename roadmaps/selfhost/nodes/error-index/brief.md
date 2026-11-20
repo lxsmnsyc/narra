@@ -1,7 +1,7 @@
 ---
 id: error-index
 title: "Generated error index"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-21

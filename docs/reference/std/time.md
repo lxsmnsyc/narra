@@ -1,6 +1,6 @@
 # std/time
 
-A monotonic clock for measuring, the wall clock, and sleep.
+A monotonic clock for measuring, the wall clock, and an async sleep.
 
 ```narra fragment
 import * as Time from "std/time"
@@ -69,10 +69,10 @@ Effects: `io`.
 ### sleep
 
 ```narra fragment
-export function sleep(duration: Duration) uses io
+export async function sleep(duration: Duration): Result<Duration, AsyncError> uses io, alloc
 ```
 
-Effects: `io`.
+Effects: `io`, `alloc`.
 
 ### nanoseconds
 

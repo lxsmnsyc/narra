@@ -19,7 +19,7 @@ A test compiles and runs every program in the guide. Each one works with the com
 11. [Files and the system](11-files-and-the-system.md): reading and writing files, paths, folders, standard input and output, the command line and the environment, other programs, bytes, time.
 12. [Generators](12-generators.md): `function*`, `yield`, the effects of a generator, resuming by hand, coroutines.
 13. [The standard library](13-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
-14. [Async](14-async.md): async functions, `await`, waiting for all or the first, cancelling, async files and network, async generators.
+14. [Async](14-async.md): async functions, `await`, waiting for all or the first, cancelling, files and the network in async code, async generators.
 15. [Threads and shared state](15-threads-and-shared-state.md): threads and scopes, `Parallel.map`, channels, `Shared` and `Atomic`, `Sendable`, threads or async tasks.
 16. [Unsafe code and C](16-unsafe-code-and-c.md): calling C, the `unsafe` effect and `@trusted`, C types and strings, pointers, linking, `narrac audit`.
 17. [Proofs and compile-time constants](17-proofs-and-compile-time.md): `requires` between parameters, `ensures`, fixed-size arrays, refinement types, constant type parameters, `@const` functions, tagged templates.

@@ -138,6 +138,8 @@ export function check(value: int): Result<int, string> {
 
 Only `print`, `assert`, `panic` and `copy` are global functions. Everything else is imported from `std/...`, as `import * as Arrays from "std/array"`. Statements end at a line break, with no semicolons. There are no classes, `new` or `this`; use `struct`, `enum` and functions of the module.
 
+Each std function has one form. Files (`std/fs`), processes and standard input are plain, also in async code. `Time.sleep` (`std/time`) and the sockets of `std/net` are async: call them with `await` inside an `async function`.
+
 ## Tests
 
 Tests sit in the same file, in `test "name" { ... }` blocks, with checks from `std/test`. `Test` functions work only inside a `test` block.

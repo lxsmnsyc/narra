@@ -515,7 +515,7 @@ Ok("hi")
 
 ## Measure time
 
-`std/time`, imported as `Time`, has a clock for measuring and a clock for the date. `Time.now()` reads the monotonic clock, which only goes forward and suits measuring: `Time.elapsed(start)` is the time since `start`. Reading a clock has the `io` effect. `Time.sleep(duration)` waits. A duration is built with `Time.milliseconds(count)`, `Time.seconds(count)` or `Time.nanoseconds(count)`, and read back with `Time.asMilliseconds(duration)` or `Time.asNanoseconds(duration)`:
+`std/time`, imported as `Time`, has a clock for measuring and a clock for the date. `Time.now()` reads the monotonic clock, which only goes forward and suits measuring: `Time.elapsed(start)` is the time since `start`. Reading a clock has the `io` effect. A duration is built with `Time.milliseconds(count)`, `Time.seconds(count)` or `Time.nanoseconds(count)`, and read back with `Time.asMilliseconds(duration)` or `Time.asNanoseconds(duration)`:
 
 ```narra
 import * as Int from "std/int"
@@ -530,10 +530,14 @@ function yesNo(value: bool): string {
 
 export function run(args: Array<string>): int uses io, alloc {
   const start = Time.now()
-  Time.sleep(Time.milliseconds(30))
+  let total = 0
+  for (let number = 1; number <= 1000; number++) {
+    total += number
+  }
   const spent = Time.elapsed(start)
 
-  print(`at least 30 ms: ${yesNo(Time.asMilliseconds(spent) >= 30)}`)
+  print(`sum: ${Int.toString(total)}`)
+  print(`time measured: ${yesNo(Time.asNanoseconds(spent) >= 0)}`)
   print(`one second is ${Int.toString(Time.asMilliseconds(Time.seconds(1)))} ms`)
 
   const later = Time.now()
@@ -543,12 +547,15 @@ export function run(args: Array<string>): int uses io, alloc {
 ```
 
 ```text
-at least 30 ms: yes
+sum: 500500
+time measured: yes
 one second is 1000 ms
 between is not negative: yes
 ```
 
 `Time.between(earlier, later)` needs no clock, so it has no `io`. A real program prints the measured time. The sample checks it instead, so that its output stays the same on every run.
+
+`Time.sleep(duration)` waits for a duration. It is an async function, so it needs the async code of [chapter 14](14-async.md).
 
 `Time.unixMillis()` is the other clock: the milliseconds since 1 January 1970 in UTC. It can jump when the system's clock is set, so use it for names and timestamps and use `Time.now()` for measuring. The scratch folders of this chapter's samples use it for their names.
 

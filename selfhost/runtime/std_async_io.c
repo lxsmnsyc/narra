@@ -1,4 +1,4 @@
-// std/internal/asyncio. Sockets for std/async/net (D109 item 8).
+// std/internal/asyncio. Sockets for std/net.
 //
 // A Handle is a counted object that holds one descriptor; the last release
 // closes it. A handle whose call failed holds -1. Every call stores its

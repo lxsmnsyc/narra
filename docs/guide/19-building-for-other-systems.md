@@ -223,7 +223,7 @@ list files with ls
 
 I ran this with `wasmtime`. The flag turns on WebAssembly exceptions, which the runtime's panic handler needs. The run prints `ls` and not `dir`, because `Build.os` is `Os.Wasi` there and the condition tested for Windows only.
 
-A WASI host cannot do everything that an operating system does. Some standard library items have no backing there. Using one is an error on this target, as a `@target` function is where it does not exist. They are `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/async/net`, and `Terminal.columns`. Their signatures stay the same, so the same source checks on every system. A program that uses `Process.run` fails the check for this target only:
+A WASI host cannot do everything that an operating system does. Some standard library items have no backing there. Using one is an error on this target, as a `@target` function is where it does not exist. They are `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/net`, and `Terminal.columns`. Their signatures stay the same, so the same source checks on every system. A program that uses `Process.run` fails the check for this target only:
 
 ```narra fragment
 import * as Process from "std/process"
@@ -245,7 +245,7 @@ narrac check --target Wasi-Wasm32 echo.nra
 echo.nra:4:21: Process.run is not available on Wasi, but this use is compiled for Wasi-Wasm32; use it inside an if on Build.os that drops Os.Wasi
 ```
 
-The fix is the one for a `@target` function: put the call in a branch that drops `Os.Wasi`, such as `if (Build.os != Os.Wasi)`. The timers of `std/async` work, and the loop sleeps until the nearest one, because it cannot wait on descriptors.
+The fix is the one for a `@target` function: put the call in a branch that drops `Os.Wasi`, such as `if (Build.os != Os.Wasi)`. `Time.sleep` works, and the loop sleeps until the nearest one, because it cannot wait on descriptors.
 
 ## Windows
 

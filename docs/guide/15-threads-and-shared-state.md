@@ -448,7 +448,7 @@ The compiler checks `Sendable` at each place a value crosses to another thread. 
 - a `Cell`,
 - an `Async` handle, a generator or an async generator, which belong to the thread that runs them,
 - a `Scope` or a `Thread` handle,
-- a raw pointer ([chapter 16](16-unsafe-code-and-c.md)), or a network connection of `std/async/net`.
+- a raw pointer ([chapter 16](16-unsafe-code-and-c.md)), or a network connection of `std/net`.
 
 `Shared`, `Atomic`, `Sender` and `Receiver` are `Sendable`, since they are made for this. A type cannot be made `Sendable` by hand: `implement Sendable` is a compile error.
 
@@ -512,11 +512,11 @@ So threads share nothing that changes, except through the handle types of this c
 
 Pick by where the program spends its time:
 
-- Async tasks wait. Use them when the program spends its time on files, the network or timers, and the work between the waits is short. Tasks cost little, since they share one thread.
+- Async tasks wait. Use them when the program spends its time on the network or timers, and the work between the waits is short. Tasks cost little, since they share one thread.
 - Threads compute. Use them when the program spends its time on the processor and the work splits into parts. More threads than cores do not make it faster: `Parallel.map` makes one part per core.
 
 The two do not mix freely. Each thread has its own event loop, and an `Async` handle is not `Sendable`, so a handle never moves to another thread. A thread function is a plain function, so it cannot `await`. It may start tasks. When it returns, its thread cancels them, as a program does at its end (chapter 14), and only then does `join` give the result.
 
-`Thread.join`, `Channel.send` and `Channel.receive` block, like the blocking calls of chapter 14. In async code they stop every task of the thread until they return.
+`Thread.join`, `Channel.send` and `Channel.receive` block, like `std/fs` and the other plain calls of chapter 14. In async code they stop every task of the thread until they return.
 
 Next: [16. Unsafe code and C](16-unsafe-code-and-c.md).

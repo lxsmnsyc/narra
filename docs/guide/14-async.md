@@ -1,6 +1,6 @@
 # 14. Async
 
-A program that fetches pages, reads files or talks to other programs spends most of its time waiting. Async functions let it wait on many of those at once, on one thread. This chapter starts several slow jobs together and waits for all of them or for the first. It cancels the ones it no longer needs. Then it does the same with real files and a real network connection.
+A program that fetches pages, reads files or talks to other programs spends most of its time waiting. Async functions let it wait on many of those at once, on one thread. This chapter starts several slow jobs together and waits for all of them or for the first. It cancels the ones it no longer needs. Then it uses files and a real network connection from async code.
 
 The standard library has no web client, so the first examples stand a short sleep in for the time a fetch takes.
 
@@ -9,12 +9,11 @@ The standard library has no web client, so the first examples stand a short slee
 Here are three fetches of different lengths. The program starts all three, then prints each result:
 
 ```narra
-import * as AsyncTime from "std/async/time"
 import * as Int from "std/int"
 import * as Time from "std/time"
 
 async function fetchPage(name: string, milliseconds: int): string uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  const waited = await Time.sleep(Time.milliseconds(milliseconds))
   if (waited is Err(_)) {
     return `${name}: cancelled`
   }
@@ -47,11 +46,11 @@ weather took 20 ms
 What happened:
 
 - `async function` declares an async function. Calling it starts a task and gives back a handle at once. The handle's type is `Async<string>`: a string that is on its way. `Async` needs no import.
-- The body of `fetchPage` runs until it first has to wait, at `await AsyncTime.sleep(...)`. Then the call returns, and `run` starts the next fetch. All three waits overlap, so the program takes about 30 milliseconds, not 60.
+- The body of `fetchPage` runs until it first has to wait, at `await Time.sleep(...)`. Then the call returns, and `run` starts the next fetch. All three waits overlap, so the program takes about 30 milliseconds, not 60.
 - `await home` gives the value of the handle. If the task has not finished, `run` waits for it, and the other tasks keep running in the meantime. That is why "news arrived" prints before "home took 30 ms", although `run` asked for `home` first.
 - `export async function run` makes the entry function async, so it can use `await`. The value it returns is the exit code, as for a plain `run`.
 
-`AsyncTime.sleep` waits without stopping other tasks. It returns a `Result`, as every waiting function of the async modules does. The section on cancelling explains its `Err`.
+`Time.sleep` from `std/time` waits without stopping other tasks. It is an async function, so only async code can call it, with `await` or as a handle. It returns a `Result`, as every function of the standard library that waits does. The section on cancelling explains its `Err`.
 
 `await` works in any expression of an async body, as in `print(await home)` above, and awaiting the same handle twice gives the same value. Outside an async function it is an error:
 
@@ -91,11 +90,10 @@ Unlike a `Result`, `const _ = save("notes")` is an error too. Await the handle, 
 
 ```narra
 import * as Async from "std/async"
-import * as AsyncTime from "std/async/time"
 import * as Time from "std/time"
 
 async function logVisit(page: string) uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.milliseconds(10))
+  const waited = await Time.sleep(Time.milliseconds(10))
   if (waited is Ok(_)) {
     print(`logged a visit to ${page}`)
   }
@@ -124,13 +122,12 @@ Awaiting each handle in turn works, but `std/async` has two functions for a grou
 
 ```narra
 import * as Async from "std/async"
-import * as AsyncTime from "std/async/time"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Time from "std/time"
 
 async function fetchPage(name: string, milliseconds: int): string uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  const waited = await Time.sleep(Time.milliseconds(milliseconds))
   if (waited is Err(_)) {
     return `${name}: cancelled`
   }
@@ -161,21 +158,20 @@ Neither one stops the other tasks. After the race, "mirror a" is still running. 
 
 ## Errors and cancel
 
-The functions that wait in `std/async/time`, `std/async/file` and `std/async/net` all return a `Result` whose error is an `AsyncError`, from `std/async`. It has two variants:
+`Time.sleep` and the functions of `std/net` that wait all return a `Result` whose error is an `AsyncError`, from `std/async`. It has two variants:
 
-- `AsyncError.Failed(message)`: the work failed, with the system's message, such as a file that does not exist.
+- `AsyncError.Failed(message)`: the work failed, with the system's message, such as a connection the other side refused.
 - `AsyncError.Cancelled`: someone cancelled the task.
 
 `Async.cancel(handle)` cancels a task. The task does not stop on the spot. Instead the call it waits in gives `Err(AsyncError.Cancelled)` right away, and so does every later call to a waiting function. The body sees the error like any other and returns a value, so `await` on a cancelled handle still gives a value. This is how a timeout looks:
 
 ```narra
 import * as Async from "std/async"
-import * as AsyncTime from "std/async/time"
 import * as Int from "std/int"
 import * as Time from "std/time"
 
 async function fetchPage(name: string, milliseconds: int): string uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  const waited = await Time.sleep(Time.milliseconds(milliseconds))
   if (waited is Err(_)) {
     return `${name}: cancelled`
   }
@@ -183,7 +179,7 @@ async function fetchPage(name: string, milliseconds: int): string uses io, alloc
 }
 
 async function timeout(milliseconds: int): string uses io, alloc {
-  const _waited = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  const _waited = await Time.sleep(Time.milliseconds(milliseconds))
   return "timed out"
 }
 
@@ -214,11 +210,10 @@ A cancel also reaches the task the cancelled one is waiting on, when no other ta
 
 ```narra
 import * as Async from "std/async"
-import * as AsyncTime from "std/async/time"
 import * as Time from "std/time"
 
 async function fetchPage(name: string, milliseconds: int): string uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  const waited = await Time.sleep(Time.milliseconds(milliseconds))
   if (waited is Err(_)) {
     return `${name}: cancelled`
   }
@@ -260,7 +255,6 @@ An arrow function can be async too. `async (page) => ...` returns a handle each 
 ```narra
 import * as Arrays from "std/array"
 import * as Async from "std/async"
-import * as AsyncTime from "std/async/time"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Time from "std/time"
@@ -271,7 +265,7 @@ struct Page {
 }
 
 async function fetchPage(name: string, milliseconds: int): string uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.milliseconds(milliseconds))
+  const waited = await Time.sleep(Time.milliseconds(milliseconds))
   if (waited is Err(_)) {
     return `${name}: cancelled`
   }
@@ -318,31 +312,35 @@ export async function run(args: Array<string>): int {
 
 Return the new value from the task instead, and add it up after the `await`. The message also names `Cell` from `std/cell` ([chapter 9](09-memory-and-mutable.md#state-that-closures-share-cell)), a slot whose contents tasks can share and change. For the same reason, an async function takes no `mutable` parameter, and a parameter of function type must be `escaping`.
 
-## Read files and talk to the network
+## Files and the network
 
-The waiting work so far was a sleep. `std/async/file` and `std/async/net` do real work in the same way.
+Each function of the standard library has one form, async or plain. It is async when the operating system can wait for it in the background, as it can for a timer or a network connection. It is plain when the system cannot, as for a file, another program or standard input.
 
 ### Files
 
-`std/async/file` has `readText`, `writeText`, `readBytes` and `writeBytes`, with the arguments of the `std/fs` functions of the same names ([chapter 11](11-files-and-the-system.md)). This program writes three notes into a new folder, then reads them all back at once:
+The operating system cannot wait for a plain file in the background. So `std/fs` ([chapter 11](11-files-and-the-system.md)) has only plain functions, and async code calls them like any other function. Each call stops every task of the thread until it returns. Between calls, `await Async.idle()` lets the other tasks run. This program writes two notes while a task reports its progress, then reads three notes back:
 
 ```narra
-import * as Arrays from "std/array"
 import * as Async from "std/async"
-import * as AsyncFile from "std/async/file"
 import * as Env from "std/env"
 import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Options from "std/option"
 import * as Path from "std/path"
 import * as Random from "std/random"
-import { AsyncError } from "std/async"
+import * as Time from "std/time"
 
-async function readNote(path: string): string uses io, alloc {
-  return match (await AsyncFile.readText(path)) {
+async function reportProgress() uses io, alloc {
+  const waited = await Time.sleep(Time.milliseconds(0))
+  if (waited is Ok(_)) {
+    print("progress: the other tasks get a turn")
+  }
+}
+
+function readNote(path: string): string uses io, alloc {
+  return match (Fs.readText(path)) {
     Ok(text) => text
-    Err(AsyncError.Failed(_)) => `${Path.basename(path)} is missing`
-    Err(AsyncError.Cancelled) => "cancelled"
+    Err(_) => `${Path.basename(path)} is missing`
   }
 }
 
@@ -353,16 +351,18 @@ export async function run(args: Array<string>): int {
   const folder = Path.join(temporary, `notes-${Int.toString(Options.withDefault(suffix, 0))}`)
   const _created = Fs.createDir(folder)
 
+  const progress = reportProgress()
   const names = ["monday.txt", "tuesday.txt"]
   for (const name of names) {
-    const _written = await AsyncFile.writeText(Path.join(folder, name), `notes for ${name}`)
+    const written = Fs.writeText(Path.join(folder, name), `notes for ${name}`)
+    if (written is Ok(_)) {
+      print(`wrote ${name}`)
+    }
+    await Async.idle()
   }
-  const reads = Arrays.map(
-    ["monday.txt", "tuesday.txt", "friday.txt"],
-    async (name) => await readNote(Path.join(folder, name)),
-  )
-  for (const text of await Async.all(reads)) {
-    print(text)
+  await progress
+  for (const name of ["monday.txt", "tuesday.txt", "friday.txt"]) {
+    print(readNote(Path.join(folder, name)))
   }
 
   for (const name of names) {
@@ -374,23 +374,26 @@ export async function run(args: Array<string>): int {
 ```
 
 ```text
+wrote monday.txt
+progress: the other tasks get a turn
+wrote tuesday.txt
 notes for monday.txt
 notes for tuesday.txt
 friday.txt is missing
 ```
 
-The operating system cannot wait for a plain file in the background. So each call reads or writes the whole file in one step, then gives the other tasks a turn before it returns.
+The progress task starts its sleep before the first write. It prints only once `run` waits at `Async.idle()`, since `Fs.writeText` gives no other task a turn.
 
-The `std/fs` functions, `Time.sleep` and the other blocking functions of the earlier chapters work in async code too. They stop every task until they return.
+`Process.run`, standard input and the other plain functions of the earlier chapters work in async code in the same way. They stop every task until they return.
 
-### Network connections
+### Network connections: `std/net`
 
-`std/async/net` opens TCP connections. `Net.listen(host, port)` gives a `Listener`, `Net.accept(listener)` waits for the next connection, and `Net.connect(host, port)` opens one. `Net.read(connection, maxBytes)` waits for bytes and gives an empty value at the end of the stream, and `Net.write(connection, data)` sends them. Here a server and a client run in one program. Port 0 asks the system for a free port, and `Net.localPort` tells the client which one it got:
+`std/net` opens TCP connections, and its functions that wait are async. `Net.listen(host, port)` gives a `Listener`, `Net.accept(listener)` waits for the next connection, and `Net.connect(host, port)` opens one. `Net.read(connection, maxBytes)` waits for bytes and gives an empty value at the end of the stream, and `Net.write(connection, data)` sends them. Here a server and a client run in one program. Port 0 asks the system for a free port, and `Net.localPort` tells the client which one it got:
 
 ```narra
 import * as Bytes from "std/bytes"
-import * as Net from "std/async/net"
-import { Listener } from "std/async/net"
+import * as Net from "std/net"
+import { Listener } from "std/net"
 
 async function echoOnce(listener: Listener): int uses io, alloc {
   const accepted = await Net.accept(listener)
@@ -454,11 +457,10 @@ The entry can also be a plain `export function run` that starts tasks and return
 
 ```narra
 import * as Async from "std/async"
-import * as AsyncTime from "std/async/time"
 import * as Time from "std/time"
 
 async function remind(text: string) uses io, alloc {
-  const waited = await AsyncTime.sleep(Time.seconds(3600))
+  const waited = await Time.sleep(Time.seconds(3600))
   if (waited is Err(_)) {
     print(`not reminded: ${text}`)
     return
@@ -489,13 +491,12 @@ When every task waits on another task and nothing else can happen, the program c
 A generator ([chapter 12](12-generators.md)) produces values one at a time. An async generator may also wait between them. Declare it with `async function*` and the result type `AsyncGenerator<T>`, and read it with `for await`:
 
 ```narra
-import * as AsyncTime from "std/async/time"
 import * as Int from "std/int"
 import * as Time from "std/time"
 
 async function* headlines(count: int): AsyncGenerator<string> uses (io, alloc) {
   for (let number = 1; number <= count; number++) {
-    const waited = await AsyncTime.sleep(Time.milliseconds(5))
+    const waited = await Time.sleep(Time.milliseconds(5))
     if (waited is Err(_)) {
       return
     }
@@ -544,6 +545,6 @@ export async function run(args: Array<string>): int {
 }
 ```
 
-To read one value at a time, `Async.next(stream)` gives an `Async<Option<T>>`: `Some(value)` at the next `yield`, and `None` once the body has ended. It is a plain handle, so it can be raced against a timer like any other. Copies of a stream share one position, so two loops over one stream each get some of its values. `Net.chunks(connection, maxBytes)` in `std/async/net` is an async generator of the reads of a connection.
+To read one value at a time, `Async.next(stream)` gives an `Async<Option<T>>`: `Some(value)` at the next `yield`, and `None` once the body has ended. It is a plain handle, so it can be raced against a timer like any other. Copies of a stream share one position, so two loops over one stream each get some of its values. `Net.chunks(connection, maxBytes)` in `std/net` is an async generator of the reads of a connection.
 
 Next: [15. Threads and shared state](15-threads-and-shared-state.md).

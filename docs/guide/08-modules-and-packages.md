@@ -141,7 +141,7 @@ Files, the system and tools:
 - `std/io`: read standard input and write standard output and error.
 - `std/env`: the program's arguments and environment variables.
 - `std/process`: end the program with `Process.exit`, and run another program with `Process.run`.
-- `std/time`: instants, durations and the clock.
+- `std/time`: instants, durations, the clock and an async sleep.
 - `std/args`: a command-line parser.
 - `std/terminal`: whether a stream is a terminal, its width and color.
 - `std/test`: checks for `test` blocks.
@@ -150,7 +150,8 @@ Files, the system and tools:
 Generators, async and threads:
 
 - `std/coroutine`: `resume` and `send` to run a generator or coroutine.
-- `std/async`, `std/async/time`, `std/async/net`, `std/async/file`: async functions, and sleeping, network and file access that do not block.
+- `std/async`: wait for several async tasks, or cancel one.
+- `std/net`: TCP connections for async code.
 - `std/thread`, `std/parallel`: start threads, and run a function over an array on all cores.
 - `std/channel`, `std/shared`, `std/atomic`: send values between threads, share a value with a lock, and use atomic numbers.
 

@@ -1079,6 +1079,18 @@ export function run(args: Array<string>): int {
 
 With `uses alloc` after `: string`, the program compiles. Private functions work out their effects themselves, so only exported functions write the list.
 
+## Async code
+
+`async function`, `await` and handles work much like TypeScript's promises ([chapter 14](14-async.md)). Node.js offers most file functions twice, as `readFile` and `readFileSync`. Each Narra function has one form. It is async when the operating system can wait for it in the background, and plain when it cannot:
+
+| Node.js | Narra |
+| --- | --- |
+| `await fs.promises.readFile(path, "utf8")` or `fs.readFileSync(path, "utf8")` | `Fs.readText(path)`, plain, also in async code |
+| `await new Promise((resolve) => setTimeout(resolve, 10))` | `await Time.sleep(Time.milliseconds(10))`, async only |
+| `net.connect(port, host)` | `await Net.connect(host, port)` from `std/net`, async only |
+
+A plain call in async code stops every task of the thread until it returns, as `readFileSync` stops the Node.js event loop.
+
 ## Tests
 
 Tests live in the same file as the code, in `test` blocks, where TypeScript projects use separate `*.test.ts` files and Jest or Vitest. `narrac test file.nra` runs them ([chapter 10](10-effects-and-testing.md#writing-tests)):

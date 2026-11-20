@@ -1486,6 +1486,7 @@ Amended 2026-11-14 (maintainer approved): exit stops a task that ignores its can
    - **Sleep lives in `std/async/time`:** `sleep(duration: Duration): Result<Duration, AsyncError>`, with `Duration` from `std/time`, the name and argument of `Time.sleep`. Ok holds the time actually slept. This replaces the D17 `Async.sleep(milliseconds)`, so `std/async` keeps only the handle functions and `idle`.
    - **Blocking std calls in async code** (`std/fs`, `Time.sleep`, `Process.run`) are allowed and block the whole loop. They are not errors: a body may need them, and the effect system does not tell blocking `io` from suspending `io`.
    - **Files in the first build** (`std/async/file`): the call does the blocking read or write, then gives the other ready tasks one turn before it returns. kqueue and epoll do not wait on regular files. A worker thread can come later without changing the functions.
+   - **Amended 2026-11-20 (D125):** `std/async/time`, `std/async/file` and `std/async/net` are gone. `Time.sleep` in `std/time` is the async sleep above, files are `std/fs` only, and sockets are `std/net`.
 
 8. **Cancel.** `Async.cancel(handle)` sets the cancelled flag and drops the `then` callbacks; on a finished handle it does nothing. If the task waits on a timer or on I/O, the loop removes the wait and resumes it with `Err(AsyncError.Cancelled)`. If it is ready or running, its next suspending std call returns `Err(AsyncError.Cancelled)` without doing the work. A cancel passes down the await chain (amended 2026-11-13): when the cancelled task waits on another task's handle and is the only task waiting on it, that task is cancelled too, and so on down the chain, so the innermost wait (timer, I/O or `Async.idle`) returns `Err(AsyncError.Cancelled)`. A handle that other tasks also await, that has `then` callbacks, or that an unfinished `Async.all` or `Async.race` was given (they count as observers), is not cancelled. The task of `Async.all` stops the walk, as the winner task of `Async.race` does, so neither cancels the handles it was given. Detached tasks, and tasks the cancelled task started but does not await, keep running. A task cancelled while it runs passes the cancel when it next suspends on an `await`. `await` on a cancelled handle waits for the body to return and gives its `T`; `Async.peek` gives `None` from the cancel on.
    - **Error type.** `std/async` exports `enum AsyncError { Cancelled, Failed(message: string) }`. Every suspending function of `std/async/net`, `std/async/file` and `std/async/time` returns `Result<T, AsyncError>`, so the unchecked-result rule (E0229) makes each body look at a cancel. `Failed` holds the operating system's message, as the `string` errors of `std/fs` do.
@@ -2070,3 +2071,19 @@ Decision (maintainer, 2026-11-16, from the debate `roadmaps/selfhost/debate/valu
 - **Cost.** About 13 typed sites in the compiler (all a default reassigned later), some of 30 untyped std sites, error samples, SPEC section 6 and guide chapters 2, 9 and 13. About 100k to 200k tokens, 50 to 150 lines.
 
 Built (node restrict-renames). The check runs in the shared-write walk (`selfhost/src/check/sharedwrites.nra`), at `const b = a`, `let b = a` and `b = a` when `a` is a bare local, parameter, pattern or loop binding or top-level constant of a tracked type; a type parameter is not checked. It reports E0971 with an `apply-fix` that wraps the name in `copy(...)`, and the rename starts no sharing, so E0978 does not repeat it. A destructuring declaration is not a rename. The compiler and std had 67 sites, all rewritten with `copy(...)`.
+
+## D125. One form per std API: async when the system can wait in the background
+
+Decision (maintainer, 2026-11-20, batch-22): each std function has one form, async or plain, never both. A function is async when the operating system can wait for it in the background (timers, sockets), and plain when it cannot (files, processes, standard input).
+
+1. **Files are plain.** `std/async/file` is removed. Async code calls `std/fs`, which blocks every task of the thread for the length of the call, and may `await Async.idle()` between calls to let the other tasks run.
+2. **Sleep is async.** `std/async/time` is removed, and `Time.sleep(duration): Result<Duration, AsyncError>` in `std/time` is its async sleep, with the same cancel and exit behavior. The blocking sleep and its primitive `Clock.sleepNanos` are removed. A plain function that has to wait spins on `Time.now()`, or becomes async.
+3. **Sockets are async.** `std/async/net` moves to `std/net`, with the same names (`Listener`, `Connection`, `listen`, `localPort`, `accept`, `connect`, `read`, `chunks`, `write`). The guide imports it as `Net`.
+4. **Plain stays plain.** `Process.run`, standard input, `Thread.join` and channels keep their blocking form.
+5. **No migration path.** An import of a removed path is an unknown module, like any other.
+
+- **Reason.** Two forms of one function make a reader pick between them and double the API to document and test. The async file form gave no gain: kqueue and epoll do not wait on regular files, so it did the same blocking call and then yielded once. A blocking sleep in async code stops every task, which the async form never does.
+- **Rejected:** keeping both forms of sleep (a plain program that waits is rare, and a spin or an async entry covers it); a worker thread behind async file calls (more runtime for a gain no program here needs).
+- **Amends** D109 items 7 and 8.
+
+Built (node std-async-fold).

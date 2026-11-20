@@ -30,9 +30,10 @@ Each child landed as one commit or a few after a worker check; compiler, std and
 - `sh scripts/test.sh`: PASS, 10925 cases.
 - `sh selfhost/bootstrap.sh`: fixed point, seed current (regenerated in `348f0a06`).
 - `pnpm --dir website build`: passes; 0 highlighter problems; no unannounced sample diagnostics.
+- `sh scripts/linux-check.sh`: PASS.
 
 ## Still to do
 
-- [ ] `sh scripts/linux-check.sh`.
+- [x] `sh scripts/linux-check.sh`: PASS.
 - [ ] Push `feat/batch-22` and open its pull request, stacked on PR #126.
 - [ ] After both merge: replace the compiler's hand-written sorts, sets, character checks and `sh -c` calls with the new std functions (they need the regenerated seed), run `odin check` and the Odin column, then first-release (`v0.1.0`).

@@ -1,6 +1,6 @@
 # std/string
 
-Text: length, slices, search, split and join, and a builder.
+Text: length, slices, search, trim, pad, split and join, and a builder.
 
 ```narra fragment
 import * as Str from "std/string"
@@ -210,6 +210,46 @@ Effects: `alloc`.
 
 ```narra fragment
 export function find(text: string, needle: string): Option<int> uses alloc
+```
+
+Effects: `alloc`.
+
+### lastIndexOf
+
+```narra fragment
+export function lastIndexOf(text: string, needle: string): Option<int> uses alloc
+```
+
+Effects: `alloc`.
+
+### trimStart
+
+```narra fragment
+export function trimStart(text: string): string uses alloc
+```
+
+Effects: `alloc`.
+
+### trimEnd
+
+```narra fragment
+export function trimEnd(text: string): string uses alloc
+```
+
+Effects: `alloc`.
+
+### padStart
+
+```narra fragment
+export function padStart(text: string, width: int, fill: char): string uses alloc
+```
+
+Effects: `alloc`.
+
+### padEnd
+
+```narra fragment
+export function padEnd(text: string, width: int, fill: char): string uses alloc
 ```
 
 Effects: `alloc`.

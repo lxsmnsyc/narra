@@ -1,6 +1,6 @@
 # std/char
 
-Characters and their code points.
+Characters, their code points and ASCII classes.
 
 ```narra fragment
 import * as Char from "std/char"
@@ -24,6 +24,54 @@ Effects: none.
 
 ```narra fragment
 export function fromCode(code: int): Option<char>
+```
+
+Effects: none.
+
+### isDigit
+
+```narra fragment
+export function isDigit(character: char): bool
+```
+
+Effects: none.
+
+### isUpper
+
+```narra fragment
+export function isUpper(character: char): bool
+```
+
+Effects: none.
+
+### isLower
+
+```narra fragment
+export function isLower(character: char): bool
+```
+
+Effects: none.
+
+### isLetter
+
+```narra fragment
+export function isLetter(character: char): bool
+```
+
+Effects: none.
+
+### isAlphanumeric
+
+```narra fragment
+export function isAlphanumeric(character: char): bool
+```
+
+Effects: none.
+
+### isWhitespace
+
+```narra fragment
+export function isWhitespace(character: char): bool
 ```
 
 Effects: none.

@@ -417,6 +417,68 @@ export function run(args: Array<string>): int {
 
 A single character in single quotes, such as `'é'`, is a `char`, not a `string`. `Str.fromChar` turns a `char` into a one-character string.
 
+Four more functions tidy text. `Str.trimStart` and `Str.trimEnd` remove white space from one end, `Str.padStart` and `Str.padEnd` grow a string to a width by repeating a `char`, and `Str.lastIndexOf` is `Str.indexOf` from the right. The width counts bytes, like `Str.length`, and the fill is added as whole characters, so a fill of two bytes never splits and a string already at the width comes back unchanged:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int {
+  print(`[${Str.trimStart("  42  ")}]`)
+  print(`[${Str.trimEnd("  42  ")}]`)
+  print(Str.padStart("42", 5, '0'))
+  print(`${Str.padEnd("name", 8, '.')}|`)
+  if (Str.lastIndexOf("a/b/c", "/") is Some(index)) {
+    print(Int.toString(index))
+  }
+  return 0
+}
+```
+
+```text
+[42  ]
+[  42]
+00042
+name....|
+3
+```
+
+`std/char` also tells what kind of character you have: `Char.isDigit`, `Char.isLetter`, `Char.isAlphanumeric`, `Char.isUpper`, `Char.isLower` and `Char.isWhitespace`. They cover ASCII only, so `'é'` is in none of them. `std/unicode` has the Unicode tables for case, grapheme clusters and width, but no letter classes.
+
+```narra
+import * as Char from "std/char"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int {
+  const characters = ['7', 'Q', 'q', ' ', 'é']
+  for (const character of characters) {
+    let kinds = ""
+    if (Char.isDigit(character)) {
+      kinds = `${kinds} digit`
+    }
+    if (Char.isLetter(character)) {
+      kinds = `${kinds} letter`
+    }
+    if (Char.isUpper(character)) {
+      kinds = `${kinds} upper`
+    }
+    if (Char.isWhitespace(character)) {
+      kinds = `${kinds} whitespace`
+    }
+    print(`${Str.fromChar(character)}:${kinds}`)
+  }
+  return 0
+}
+```
+
+```text
+7: digit
+Q: letter upper
+q: letter
+ : whitespace
+é:
+```
+
 ## Make a decision
 
 Shops give a discount on large orders. `if` runs a block only when its condition is true, and `else` gives the other case:
@@ -1104,6 +1166,40 @@ inf
 ```
 
 Values from `1e-7` up to below `1e21` print in plain notation. Float division by zero needs no check, as [the division section](#dividing-by-a-name) says: it gives `inf`, `-inf` or `nan`.
+
+### Fixed decimals and reading a float
+
+`Float.toFixed(value, digits)` prints a float with exactly that many digits after the point, from 0 to 20. It rounds the way C's `%.*f` does, on the exact binary value, so `1.005` with two digits gives `1.00` (the stored number is just below `1.005`) and a tie such as `2.5` with no digits goes to the even neighbour, `2`. It returns `None` for a digit count outside 0 to 20. `Float.parse` is the other direction. Like `Int.parse` it returns a `Result`: digits with an optional sign, point and exponent, and nothing else (no spaces, `inf`, `nan` or hex), or an `Err` that says what is wrong.
+
+```narra
+import * as Float from "std/float"
+
+export function run(args: Array<string>): int {
+  const average = Float.fromInt(1000) / Float.fromInt(7)
+  if (Float.toFixed(average, 2) is Some(text)) {
+    print(text)
+  }
+  if (Float.toFixed(1.005, 2) is Some(text)) {
+    print(text)
+  }
+  match (Float.parse("2.5e2")) {
+    Ok(value) => print(Float.toString(value))
+    Err(message) => print(message)
+  }
+  match (Float.parse("2.5x")) {
+    Ok(value) => print(Float.toString(value))
+    Err(message) => print(message)
+  }
+  return 0
+}
+```
+
+```text
+142.86
+1.00
+250.0
+invalid character in the number
+```
 
 ### Bits
 

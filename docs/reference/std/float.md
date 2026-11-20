@@ -1,6 +1,6 @@
 # std/float
 
-64-bit floats: conversion, square root, truncation, text and `PI`.
+64-bit floats: conversion, square root, truncation, text (reading and printing) and `PI`.
 
 ```narra fragment
 import * as Float from "std/float"
@@ -44,6 +44,14 @@ export function sqrt(value: f64): f64
 
 Effects: none.
 
+### toFixed
+
+```narra fragment
+export function toFixed(value: f64, digits: int): Option<string> uses alloc
+```
+
+Effects: `alloc`.
+
 ### toString
 
 ```narra fragment
@@ -59,3 +67,11 @@ export function truncate(value: f64): Option<int>
 ```
 
 Effects: none.
+
+### parse
+
+```narra fragment
+export function parse(text: string): Result<f64, string> uses alloc
+```
+
+Effects: `alloc`.

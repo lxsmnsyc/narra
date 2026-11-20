@@ -1221,6 +1221,19 @@ static bool narra_float_truncate(double v, int64_t* out) {
   return true;
 }
 
+// Fixed digits after the point, rounded as C's "%.*f" rounds; NaN and the infinities print as Float.toString does.
+static bool narra_float_to_fixed(double v, int64_t digits, lstr** out) {
+  if (digits < 0 || digits > 20) return false;
+  if (v != v || v - v != 0.0) {
+    *out = lstr_from_f64(v);
+    return true;
+  }
+  char buf[400];
+  snprintf(buf, sizeof buf, "%.*f", (int)digits, v);
+  *out = lstr_from_cstr(buf);
+  return true;
+}
+
 
 _Noreturn NARRA_COLD static void narra_bounds_fail(int64_t i, int64_t len, const char* where) {
   char msg[96];

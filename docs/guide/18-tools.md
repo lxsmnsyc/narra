@@ -126,7 +126,7 @@ narrac check hello.nra
 hello.nra:3:17: semicolons are not used; end the statement with a line break
 ```
 
-A program that reads which system it is built for, with `std/build`, can differ from one system to another. `narrac check --all-targets` checks it for every supported system, in debug and in release builds, and reports each error once.
+A program that reads which system it is built for can differ from one system to another. `narrac check --all-targets` checks it for every system, as [chapter 19](19-building-for-other-systems.md#functions-that-exist-on-one-system) explains.
 
 ### Errors as JSON
 

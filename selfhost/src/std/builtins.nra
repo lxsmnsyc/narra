@@ -31,8 +31,10 @@ export struct StdFunc {
   callbacks: Array<int> = [] // arguments that are function values the builtin calls
   check: string = ""
   // For display only, a builtin with a check function writes its signature after the name:
-  // `<T>(mutable items: Array<T>, item: T): void`. Effects come from effects.
+  // `<T>(mutable items: Array<T>, item: T)`. Effects come from effects. A type
+  // parameter written `T: i8 | u8` stands for one of the listed types.
   signature: string = ""
+  note: string = "" // for display only, printed as a comment after the signature
 }
 
 // A type that a builtin std module brings into view without Narra source, such as
@@ -41,14 +43,16 @@ export struct StdFunc {
 export struct StdType {
   module: string
   name: string
-  signature: string // `opaque struct StringBuilder`
+  typeParameters: string = "" // `<T>`
   functions: Array<string>
 }
 
-// A std module: its functions by export name (StdFunc indexes).
+// A std module: its functions by export name (StdFunc indexes) and the types it brings
+// into view.
 export struct StdModule {
   path: string
   functions: Map<string, int>
+  types: Array<StdType> = []
 }
 
 export struct Registry {
@@ -84,13 +88,32 @@ export function register(mutable registry: Registry, builtin: StdFunc) uses allo
   if (registry.modules[builtin.module] is Some(module)) {
     let functions = copy(module.functions)
     functions[builtin.key] = index
-    registry.modules[builtin.module] = StdModule { path: builtin.module, functions }
+    registry.modules[builtin.module] = StdModule {
+      path: builtin.module,
+      functions,
+      types: module.types,
+    }
     return
   }
   let functions: Map<string, int> = Map {}
   functions[builtin.key] = index
   registry.modules[builtin.module] = StdModule { path: builtin.module, functions }
   Arrays.push(mutable registry.order, builtin.module)
+}
+
+export function registerType(mutable registry: Registry, builtinType: StdType) uses alloc {
+  // A type belongs to a module that its functions registered.
+  if (registry.modules[builtinType.module] is Some(module)) {
+    let types = copy(module.types)
+    Arrays.push(mutable types, builtinType)
+    registry.modules[builtinType.module] = StdModule {
+      path: module.path,
+      functions: module.functions,
+      types,
+    }
+    return
+  }
+  panic(`builtin type ${builtinType.name} of the unknown module ${builtinType.module}`)
 }
 
 export function moduleOrder(registry: Registry): Array<string> uses alloc {
@@ -206,6 +229,12 @@ function dumpFunc(mutable builder: StringBuilder, builtin: StdFunc) uses alloc {
   }
   if (builtin.check != "") {
     Str.append(mutable builder, `  check ${builtin.check}\n`)
+  }
+  if (builtin.signature != "") {
+    Str.append(mutable builder, `  signature ${builtin.signature}\n`)
+  }
+  if (builtin.note != "") {
+    Str.append(mutable builder, `  note ${builtin.note}\n`)
   }
 }
 

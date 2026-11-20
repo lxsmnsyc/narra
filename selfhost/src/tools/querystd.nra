@@ -1,5 +1,5 @@
 // narrac query interface for a std module: the types a builtin module brings
-// into view (listStdTypes), the builtin functions of the registry with their
+// into view, the builtin functions of the registry with their
 // display names and signatures, then the Narra source of the module and of its
 // std/ext part from the embedded std text.
 import * as Str from "std/string"
@@ -11,7 +11,7 @@ import { lex } from "narrac/syntax/lexer"
 import { parse } from "narrac/syntax/parser"
 import { extensionPath } from "narrac/driver/modules"
 import { Registry, StdFunc } from "narrac/std/builtins"
-import { listStdTypes, stdRegistry } from "narrac/std/stdlib"
+import { stdRegistry } from "narrac/std/stdlib"
 import { stdSourceFor } from "narrac/std/stdtext"
 import { SiteKind, collectSites } from "narrac/tools/querysites"
 import { InterfaceEntry, Location, writeInterface } from "narrac/tools/queryjson"
@@ -42,26 +42,30 @@ function writeBuiltinSignature(builtin: StdFunc): string uses alloc {
       Arrays.push(mutable parameters, `${flag}${name}${builtin.parameters[index]}`)
     }
     text = `${text}(${Str.join(parameters, ", ")})`
-    if (builtin.result != "") {
+    // A function without a result writes none, as in Narra source.
+    if (builtin.result != "" && builtin.result != "void") {
       text = `${text}: ${builtin.result}`
     }
   }
   if (Arrays.length(builtin.effects) > 0) {
     text = `${text} uses ${Str.join(builtin.effects, ", ")}`
   }
+  if (builtin.note != "") {
+    text = `${text} // ${builtin.note}`
+  }
   return text
 }
 
-function listTypeEntries(path: string): Array<InterfaceEntry> uses alloc {
+function listTypeEntries(registry: Registry, path: string): Array<InterfaceEntry> uses alloc {
   let entries: Array<InterfaceEntry> = []
-  for (const builtinType of Arrays.values(listStdTypes())) {
-    if (builtinType.module == path) {
+  if (registry.modules[path] is Some(module)) {
+    for (const builtinType of Arrays.values(module.types)) {
       Arrays.push(mutable entries, InterfaceEntry {
         name: builtinType.name,
         kind: "struct",
-        signature: `export ${builtinType.signature}`,
+        signature: `export opaque struct ${builtinType.name}${builtinType.typeParameters}`,
         location: None,
-        functions: builtinType.functions,
+        functions: copy(builtinType.functions),
       })
     }
   }
@@ -136,7 +140,7 @@ export function queryStdInterface(json: bool, path: string): Result<string, stri
   if (!hasModule && stdSourceFor(path) == "") {
     return Err(`unknown module "${path}"`)
   }
-  let entries = listTypeEntries(path)
+  let entries = listTypeEntries(registry, path)
   for (const entry of Arrays.values(listBuiltinEntries(registry, path))) {
     Arrays.push(mutable entries, entry)
   }

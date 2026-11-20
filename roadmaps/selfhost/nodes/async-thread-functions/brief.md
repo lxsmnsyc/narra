@@ -1,7 +1,7 @@
 ---
 id: async-thread-functions
 title: "A thread function may be async"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

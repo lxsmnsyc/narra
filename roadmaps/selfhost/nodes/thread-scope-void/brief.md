@@ -1,7 +1,7 @@
 ---
 id: thread-scope-void
 title: "Thread.scope with a body that returns nothing"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-21

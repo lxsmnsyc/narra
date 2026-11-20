@@ -69,7 +69,7 @@ Exit codes: the program's own exit code, 1 when the build failed, 2 for a wrong 
 | `-dependents` | on a workspace member, also test the members that depend on it |
 | `-dependencies` | on a workspace member, also test the members it depends on |
 
-Exit codes: 0 when every test passed, 1 when a test failed, no test matches `-filter`, or the build failed, 2 for a wrong command line. `-filter` and `-time` belong to `test` alone, and `-target` to `build` and `check`.
+Exit codes: 0 when every test passed, 1 when a test failed, no test matches `-filter`, or the build failed, 2 for a wrong command line.
 
 ## narrac check
 
@@ -98,7 +98,7 @@ Exit codes: 0 when there are no errors, 1 for errors or an unreadable path, 2 fo
 
 `narrac explain --list --json` prints the whole table of codes. [Errors](errors.md) shows the same table as a page.
 
-Exit codes: 0 when it printed an answer, 1 for an unknown code, 2 for a wrong command line.
+Exit codes: 0 when it printed an answer, 1 for an unknown code, 2 for a wrong command line, which includes `--list` without `--json`.
 
 ## narrac apply-fix
 

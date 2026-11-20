@@ -762,6 +762,8 @@ function checkVersion(context: Context): Result<bool, string> uses io, alloc {
   return Ok(true)
 }
 
+const minimumCommandLines = 10
+
 function checkCommandsPage(context: Context): Result<bool, string> uses io, alloc {
   const help = Common.runNarrac(context, ["--help"])
   if (help.code != 0) {
@@ -770,6 +772,16 @@ function checkCommandsPage(context: Context): Result<bool, string> uses io, allo
   const page = Fs.readText(Path.join(context.repository, "docs/reference/commands.md"))
   if (page is Err(message)) {
     return Err(message)
+  }
+  // Each "## narrac X" heading opens a section; the section ends at the next heading.
+  let sectionNames: Array<string> = []
+  let sectionTexts: Array<string> = []
+  const chunks = splitString(page.value, "\n## narrac ")
+  for (let index = 1; index < Arrays.length(chunks); index++) {
+    const lines = splitString(chunks[index], "\n")
+    const body = splitString(chunks[index], "\n## ")
+    Arrays.push(mutable sectionNames, lines[0])
+    Arrays.push(mutable sectionTexts, body[0])
   }
   let missing: Array<string> = []
   let commandLines = 0
@@ -787,17 +799,28 @@ function checkCommandsPage(context: Context): Result<bool, string> uses io, allo
     }
     // words[0] is narrac and words[1] the command, or a flag such as --version.
     const command = `narrac ${words[1]}`
-    if (!Str.contains(page.value, command)) {
+    let section = ""
+    let found = false
+    for (let index = 0; index < Arrays.length(sectionNames); index++) {
+      if (sectionNames[index] == words[1]) {
+        section = sectionTexts[index]
+        found = true
+      }
+    }
+    if (!found) {
       Arrays.push(mutable missing, command)
+      continue
     }
     for (const word of Arrays.values(words)) {
-      if (Str.startsWith(word, "-") && word != words[1] && !Str.contains(page.value, `\`${word}`)) {
+      if (Str.startsWith(word, "-") && word != words[1] && !Str.contains(section, `\`${word}`)) {
         Arrays.push(mutable missing, `${command} ${word}`)
       }
     }
   }
-  if (commandLines < 10) {
-    return Err(`--help lists ${Int.toString(commandLines)} commands, want at least 10`)
+  if (commandLines < minimumCommandLines) {
+    return Err(
+      `--help lists ${Int.toString(commandLines)} commands, want at least ${Int.toString(minimumCommandLines)}`,
+    )
   }
   if (Arrays.length(missing) > 0) {
     return Err(`docs/reference/commands.md does not mention: ${Str.join(missing, ", ")}`)

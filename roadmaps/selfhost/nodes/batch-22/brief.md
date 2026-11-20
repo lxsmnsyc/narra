@@ -57,5 +57,5 @@ The rule: an API is async when the operating system can wait for it in the backg
 
 ## Acceptance
 
-- [ ] Every child done or out of the batch with a reason.
+- [x] Every child done or out of the batch with a reason.
 - [ ] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes; `sh scripts/linux-check.sh` passes.

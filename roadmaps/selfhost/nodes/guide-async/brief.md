@@ -1,7 +1,7 @@
 ---
 id: guide-async
 title: "Chapter 14: async"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

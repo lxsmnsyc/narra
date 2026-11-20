@@ -56,7 +56,8 @@ export interface ReferencePage {
 function listReferencePages(): ReferencePage[] {
   const pages: ReferencePage[] = [];
   for (const [file, page] of Object.entries(referenceFiles)) {
-    const slug = /docs\/reference\/(.+)\.md$/.exec(file)![1]!;
+    // The README of a folder is its index: `std/README.md` is `std`.
+    const slug = /docs\/reference\/(.+)\.md$/.exec(file)![1]!.replace(/\/README$/, '');
     // The index of the section is `README.md`, which has its own route.
     if (slug !== 'README') {
       pages.push({ slug, title: page.title, page });

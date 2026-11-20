@@ -62,9 +62,11 @@ function rewriteLink(href: string, from: string): string {
   if (guide) {
     return `/guide${guide[1] === 'README' ? '' : `/${guide[1]}`}${rest}`;
   }
+  // The README of a folder is its index: `std/README.md` is `/reference/std`.
   const reference = /^docs\/reference\/(.+)\.md$/.exec(target);
   if (reference) {
-    return `/reference${reference[1] === 'README' ? '' : `/${reference[1]}`}${rest}`;
+    const page = reference[1]!.replace(/(^|\/)README$/, '');
+    return `/reference${page ? `/${page}` : ''}${rest}`;
   }
   if (target === 'docs/install.md') {
     return `/install${rest}`;

@@ -4,6 +4,9 @@
 //   stdtext   selfhost/src/std/stdtext.nra from std/src/*.nra
 //   unicodetables   scripts/unicode/generate.nra on testdata/unicode/mini, run twice
 //   errorindex   docs/reference/errors.md from scripts/errors/generate.nra
+//   stdreference   docs/reference/std from scripts/std/generate.nra: every
+//     page is made in a temporary folder and compared, and a committed page
+//     that no module makes is stale too
 // With --update the files are rewritten:
 //   sh scripts/test.sh --suite generated --update
 // Rewriting a file of selfhost/src needs sh scripts/seed-update.sh afterwards.
@@ -28,6 +31,7 @@ import * as Str from "std/string"
 import { Context, TestCase } from "testrunner/context"
 import * as Common from "testrunner/context"
 import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
 import * as UnicodeTables from "testrunner/unicodetables"
 
 const UPPER_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -60,12 +64,21 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     path: Path.join(context.repository, "docs/reference/errors.md"),
     variant: "errorindex",
   })
+  Arrays.push(mutable cases, TestCase {
+    suite: "generated",
+    name: "stdreference",
+    path: Path.join(context.repository, "docs/reference/std"),
+    variant: "stdreference",
+  })
   return cases
 }
 
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
   if (testCase.variant == "unicodetables") {
     return UnicodeTables.runCase(context, testCase)
+  }
+  if (testCase.variant == "stdreference") {
+    return checkStdReference(context, testCase)
   }
   let made: Result<string, string> = Err("unknown case")
   if (testCase.variant == "stdtext") {
@@ -110,6 +123,100 @@ function staleHint(testCase: TestCase): string {
     return ""
   }
   return ", then sh scripts/seed-update.sh"
+}
+
+function runStdGenerator(context: Context, folder: string): Result<bool, string> uses io, alloc {
+  const script = Path.join(context.repository, "scripts/std/generate.nra")
+  const result = Common.runNarrac(context, [
+    "run",
+    "-release",
+    script,
+    context.narrac,
+    context.repository,
+    folder,
+  ])
+  if (result.code != 0) {
+    return Err(`scripts/std/generate.nra failed: ${Common.describeRun(result)}`)
+  }
+  return Ok(true)
+}
+
+function checkStdReference(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  // With --update the generator writes the committed folder and removes pages no module makes.
+  if (context.update) {
+    return runStdGenerator(context, testCase.path)
+  }
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const outcome = compareStdReference(context, testCase.path, made.value)
+  Shell.removeTree(made.value)
+  return outcome
+}
+
+function compareStdReference(
+  context: Context,
+  committed: string,
+  folder: string,
+): Result<bool, string> uses io, alloc {
+  const generated = runStdGenerator(context, folder)
+  if (generated is Err(message)) {
+    return Err(message)
+  }
+  const hint = "run sh scripts/test.sh --suite generated --update"
+  const wanted = listPages(folder, "")
+  for (const page of Arrays.values(wanted)) {
+    const want = Common.readExpected(Path.join(folder, page))
+    if (want is Err(message)) {
+      return Err(message)
+    }
+    const got = Fs.readText(Path.join(committed, page))
+    if (got is Err(_)) {
+      return Err(`docs/reference/std/${page} is missing; ${hint}`)
+    }
+    const compared = Common.compareText("generated text", want.value, got.value)
+    if (compared is Err(difference)) {
+      return Err(`docs/reference/std/${page} is stale; ${hint}\n${difference}`)
+    }
+  }
+  for (const page of Arrays.values(listPages(committed, ""))) {
+    if (!containsPage(wanted, page)) {
+      return Err(`docs/reference/std/${page} belongs to no std module; ${hint}`)
+    }
+  }
+  return Ok(true)
+}
+
+function containsPage(pages: Array<string>, page: string): bool {
+  for (const other of Arrays.values(pages)) {
+    if (other == page) {
+      return true
+    }
+  }
+  return false
+}
+
+function listPages(root: string, relative: string): Array<string> uses io, alloc {
+  // The Markdown files under root at any depth, as paths relative to root.
+  let pages: Array<string> = []
+  for (const name of Arrays.values(Files.listNames(Path.join(root, relative)))) {
+    let path = name
+    if (relative != "") {
+      path = `${relative}/${name}`
+    }
+    if (Fs.isDir(Path.join(root, path))) {
+      for (const page of Arrays.values(listPages(root, path))) {
+        Arrays.push(mutable pages, page)
+      }
+    } else if (Str.endsWith(name, ".md")) {
+      Arrays.push(mutable pages, path)
+    }
+  }
+  return pages
 }
 
 function makeErrorIndex(context: Context): Result<string, string> uses io, alloc {

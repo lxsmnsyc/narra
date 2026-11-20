@@ -52,7 +52,9 @@ async function listSources(): Promise<Source[]> {
   pages.sort();
   for (const name of pages.map((entry) => entry.split(path.sep).join('/'))) {
     if (name.endsWith('.md') && name !== 'README.md') {
-      sources.push({ file: `docs/reference/${name}`, url: `/reference/${name.slice(0, -3)}` });
+      // The README of a folder is its index: `std/README.md` is `/reference/std`.
+      const page = name.slice(0, -3).replace(/\/README$/, '');
+      sources.push({ file: `docs/reference/${name}`, url: `/reference/${page}` });
     }
   }
   sources.push({ file: 'SPEC.md', url: '/spec' });

@@ -43,7 +43,7 @@ depends_on:
 
 ## Goal
 
-Maintainer, 2026-11-20: some samples show warnings unrelated to the example. After entry-args-unused, collect every warning the samples of `docs/guide/**`, `docs/reference/**`, `docs/install.md`, `README.md`, `SPEC.md` and the home page (`website/src/routes/index.brm`) produce with `narrac check`, classify each (related to what the sample teaches, or noise), and remove the noise by fixing the sample. A sample that teaches a warning keeps it and says so in its fence (find how the guide suite marks expected output; add a form for an expected warning if none exists). Then make the guide suite (and the spec suite, if it runs samples) fail when a sample prints a warning it does not expect, so it stays clean.
+Maintainer, 2026-11-20: some samples show warnings unrelated to the example. After entry-args-unused, collect every warning and error the website shows inline on samples (the twoslash plugin, `website/plugins/twoslash.ts`, runs `narrac query --json hovers` on each sample in a package it writes; the built pages under `website/dist` show the diagnostics) and every warning the samples of `docs/guide/**`, `docs/reference/**`, `docs/install.md`, `README.md`, `SPEC.md` and the home page (`website/src/routes/index.brm`) produce with `narrac check`, classify each (related to what the sample teaches, or noise), and remove the noise by fixing the sample. A sample that teaches a warning keeps it and says so in its fence (find how the guide suite marks expected output; add a form for an expected warning if none exists). Then make the website build (or a check it runs) and the guide suite (and the spec suite, if it runs samples) fail when a sample prints a warning it does not expect, so it stays clean.
 
 ## Acceptance
 

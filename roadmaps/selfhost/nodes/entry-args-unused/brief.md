@@ -1,7 +1,7 @@
 ---
 id: entry-args-unused
 title: "No unused warning for the entry function's parameters"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-22
@@ -41,3 +41,5 @@ depends_on: []
 
 - [ ] A case that warns on the base and is clean on the branch; other unused parameters still warn.
 - [ ] `sh scripts/test.sh` passes.
+
+Resolved 2026-11-20 (orchestrator): the compiler already skips the entry's parameters (`entryParameter` in `check.nra`, since 2026-11-07); the CLI does not reproduce it. The warnings the maintainer saw are on the website: the twoslash plugin wrapped each sample in a package whose `narra.toml` declares no binary, so `run` was not an entry and 63 samples showed `"args" is never read` inline. `website/plugins/twoslash.ts` now declares `[[binary]] entry = "main.run"` for samples that export `run`; the built site has no `args` warning left.

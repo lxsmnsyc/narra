@@ -63,6 +63,16 @@ export interface Sample {
 }
 
 const DEFAULT_MANIFEST = '[package]\nname = "sample"\n';
+const ENTRY_FUNCTION = /^export\s+(async\s+)?function\s+run\s*\(/m;
+
+function writeSampleManifest(content: string): string {
+  // A sample with an entry function is a program: declaring its binary makes `run` the entry, so
+  // its fixed `args` parameter is not reported as unused.
+  if (ENTRY_FUNCTION.test(content)) {
+    return `${DEFAULT_MANIFEST}\n[[binary]]\nname = "sample"\nentry = "main.run"\n`;
+  }
+  return DEFAULT_MANIFEST;
+}
 
 /**
  * Turns the fences of a page into samples, by their place in the token list. A `narra file`
@@ -95,7 +105,10 @@ export function collectSamples(fences: { index: number; info: string; content: s
         samples.set(fence.index, { files: all, target: words[3]! });
       }
     } else if (kind) {
-      samples.set(fence.index, { files: { 'narra.toml': DEFAULT_MANIFEST, 'src/main.nra': fence.content }, target: 'src/main.nra' });
+      samples.set(fence.index, {
+        files: { 'narra.toml': writeSampleManifest(fence.content), 'src/main.nra': fence.content },
+        target: 'src/main.nra',
+      });
     }
   }
   return samples;

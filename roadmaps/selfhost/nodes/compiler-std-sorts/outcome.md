@@ -2,14 +2,16 @@
 
 ## What changed
 
-All 15 hand-written sorts in `selfhost/src` now call `Arrays.sort` or `Arrays.sortBy`:
+All 24 hand-written sorts in `selfhost/src` now call `Arrays.sort` or `Arrays.sortBy`, except `insertUse` (see Kept):
 
 - `Arrays.sort` on `Array<string>`: `sortStrings` in `tools/querygraph.nra` (exported, used by `query.nra` and `querystd.nra`), `driver/modules.nra`, `std/builtins.nra`; `sortNames` in `driver/workspace.nra` and `check/ctors.nra`; `sortEffects` (dedupe stays, sort replaced) in `check/resolve.nra`; `sortEffectNames` in `check/effects.nra`. The four private `sortStrings`/`sortNames` helpers and the exported one are deleted; callers call `Arrays.sort(mutable ...)`.
 - `Arrays.sortBy`: `sortDiagnostics` (`driver/driver.nra`, `compareDiagnostics`), `sortAuditEntries` (`tools/audit.nra`, `compareAuditEntries`), `sortFunctionTypes` (`emit/emitclosures.nra`), the edit order in `applyFix` (`driver/fixes.nra`, descending start offset, ties keep order), the entry order in `formatLock` (`driver/lockfile.nra`), `sortKeys` (`syntax/triviadump.nra`, sorts on the padded key through a `PaddedKey` struct), `sortedByHead` (`check/declsdump.nra`; `mergeRuns` deleted).
+- Second pass, also on `Arrays.sort` or `Arrays.sortBy`: the directory names in `collectFiles` (`tools/fmt.nra`), hovers (`compareHovers` replaces `isHoverBefore`), the view order in `buildViews` and the cycle groups by first name (`tools/query.nra`), versions in `collectVersions` (`driver/depcache.nra`, `compareVersions` built from `isVersionBefore`, which stays exported for its other callers), the unused-locals order (`check/check.nra`, `comparePositions` replaces `isPositionBefore`), and the three recursive `mergeSort` copies in `emit/emit.nra`, `emit/emitdecls.nra`, `emit/emitmaps.nra` (`compareSortItems`, `compareMapItems`). `buildViews` sorts an index array of the modules, because sorting `views` would write `module`, which `package.modules` still holds.
 - Every replaced sort was stable or had no visible ties, and `sortBy` is stable, so no output changed.
 
 ## Kept
 
+- `insertUse` in `tools/query.nra`: it drops a second use at the same place and inserts into the sorted list in one pass, and its three callers read the list as they go. Replacing it needs a separate dedupe and a sort at each caller, with no gain.
 - Lexer `isLetter`, `isDigit`, `isHexDigit`: `isLetter` counts `_`, so it differs from `std/char`; all three take a byte as `int`, and `std/char` takes a `char` and has no hex class. The lexer is hot, so no conversion was added. Not compared on `emit` time because the lexer is unchanged.
 - `trivia.nra` `isSpace`: space, tab and CR only. `Char.isWhitespace` also matches LF, VT and FF, which would change comment and blank-line handling.
 - `manifest.nra` `isLetter(int)`: same set as `Char.isLetter`, but the callers pass `Str.byteAt` ints and there is no int-to-char conversion in `std/char`. Kept to avoid a hand-built conversion.
@@ -25,7 +27,8 @@ The machine was shared and loaded, so the `bench/run.sh` rows are not comparable
 
 ## Acceptance
 
-- [x] No hand-written sort left in `selfhost/src` (grep for `insertion`, `function sort*` finds only wrappers around std sorts).
+- [x] No hand-written sort left in `selfhost/src` except `insertUse` (grep for `insertion`, `function [a-zA-Z]*sort`, `mergeSort` and shifting loops finds only wrappers around std sorts and `insertUse`).
+- [x] `narrac emit selfhost` from the new compiler and from one built at the first-pass commit give identical C, on the new source and on the old.
 - [x] Character checks: `std/char` not usable where definitions match exactly (reasons above); none replaced.
 - [x] `sh scripts/test.sh`: PASS, 10925 cases. A first full run had one failed case in shard 2 (shard log was cut off, not identified); the rerun passed. Possibly load related.
 - [x] `sh selfhost/bootstrap.sh`: stage 1 and stage 2 emit identical C (271012 lines).

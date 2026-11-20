@@ -1502,7 +1502,7 @@ export function sumInTwoThreads(): int uses alloc {
 }
 ```
 
-- **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
+- **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`, or nothing when `f` returns nothing.
 - **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result. A second `join` gives the same value. Each thread has an 8 MiB stack, the size of the main thread's.
 - **Effects.** `Thread.start` has the effects of `f` and `alloc`. `Thread.scope` and `Thread.join` add none: joining gives the same result every run.
 - **A `Scope` cannot escape.** It can be passed to a function, but it cannot be stored in a field, element, tuple or constructor, returned, or captured by an escaping closure, a thread function included (E1191). Only code running inside `Thread.scope` can start threads in it.

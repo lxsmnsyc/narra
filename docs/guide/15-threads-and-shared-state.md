@@ -51,7 +51,7 @@ export function run(args: Array<string>): int {
 
 The `divisor != 0` test in `isPrime` is the check the compiler asks for before `%` on a name ([chapter 6](06-option-and-result.md)). What happened in `run`:
 
-- `Thread.scope(body)` calls `body` with a `Scope` and gives what `body` returns. Before it returns, it waits for every thread started in the scope.
+- `Thread.scope(body)` calls `body` with a `Scope` and gives what `body` returns, or nothing when `body` returns nothing. Before it returns, it waits for every thread started in the scope.
 - `Thread.start(scope, work)` runs `work` on a new thread and gives a `Thread<int>` at once, a handle to the running thread. The two counts run at the same time, on two cores when the machine has them.
 - `Thread.join(thread)` waits until the thread has finished and gives the value `work` returned. A second `join` on the same handle gives the same value without waiting.
 
@@ -65,7 +65,6 @@ import * as Thread from "std/thread"
 export function run(args: Array<string>): int {
   Thread.scope((scope) => {
     Thread.start(scope, () => print("one thread"))
-    return 0
   })
   print("the scope has ended")
   return 0
@@ -209,7 +208,6 @@ export function run(args: Array<string>): int {
     for (const prime of Channel.values(receiver)) {
       print(`found ${Int.toString(prime)}`)
     }
-    return 0
   })
   return 0
 }
@@ -338,7 +336,6 @@ export function run(args: Array<string>): int {
       const part = low
       Thread.start(scope, () => countInto(found, part, part + 25000))
     }
-    return 0
   })
   print(`${Int.toString(Shared.get(found))} primes below 100000`)
 

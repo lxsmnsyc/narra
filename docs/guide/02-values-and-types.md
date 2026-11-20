@@ -913,6 +913,337 @@ coffee: 1
 
 `Maps.entries` gives each key with its value as a pair, in the order the keys were added.
 
+## Numbers of other sizes
+
+An `int` is 64 bits wide, and it is right for most programs. Some data has a fixed width: a byte in a file, a colour channel, a 32-bit field in a network format. For those, Narra has sized integers, and a smaller float.
+
+### Sized integers
+
+The sized integer types are `i8`, `i16`, `i32`, `u8`, `u16`, `u32` and `u64`. The number is the width in bits, and `u` means unsigned, with no negative values. `i64` is another name for `int`. A `u8` holds 0 to 255, and an `Array<u8>` stores one byte per element.
+
+A number written in the code takes the type that its place expects. The place can be an annotation, a parameter, a field, an array element or the other side of an operator. With nothing to go on, it is an `int`. A literal that does not fit the type is an error:
+
+```narra error
+// error: 3:20: integer literal 256 does not fit in u8
+export function run(args: Array<string>): int {
+  const byte: u8 = 256
+  return 0
+}
+```
+
+Arithmetic wraps at the width of the type, as an `int` wraps at 64 bits. A `u8` that adds 200 and 100 gets 44, because 300 is 256 and 44. Each sized type has its own module, named after it: `std/u8`, `std/i32` and so on. It has `toString`, `parse` and the checked arithmetic that `Int` has:
+
+```narra
+import * as Int from "std/int"
+import * as U8 from "std/u8"
+
+export function run(args: Array<string>): int {
+  const level: u8 = 200
+  const boost: u8 = 100
+  print(U8.toString(level + boost))
+  if (U8.addChecked(level, boost) is None) {
+    print("does not fit in a u8")
+  }
+  if (U8.parse("255", 10) is Ok(value)) {
+    print(Int.toString(Int.from(value) + 1))
+  }
+  if (U8.parse("256", 10) is Err(message)) {
+    print(message)
+  }
+  return 0
+}
+```
+
+```text
+44
+does not fit in a u8
+256
+number does not fit in 8 bits (0 to 255)
+```
+
+`parse(text, base)` reads a number from text in the given base, such as 10 or 16, and returns a `Result`. The error text names the range of the type.
+
+#### No mixing, and the conversions
+
+Two sized types never mix, and neither does a sized type with an `int`. Adding an `i32` to an `int` is an error that names the way out:
+
+```narra error
+// error: 7:28: + needs two integers of the same type, found i32 and int; convert one side with I32.from, I32.tryFrom or I32.wrap
+import * as I32 from "std/i32"
+
+export function run(args: Array<string>): int {
+  const total: i32 = 10
+  const count = 3
+  print(I32.toString(total + count))
+  return 0
+}
+```
+
+The conversion is a function in the module of the target type, and you choose how a value that does not fit is handled:
+
+- `X.from(value)` is for values that always fit. `Int.from(small)` turns an `i32` into an `int`, and `I32.from(byte)` turns a `u8` into an `i32`. The compiler rejects a call where some value of the argument type would not fit.
+- `X.tryFrom(value)` returns an `Option`, `None` when the value does not fit.
+- `X.wrap(value)` keeps the low bits, so a value that does not fit wraps around.
+
+```narra
+import * as Int from "std/int"
+import * as I32 from "std/i32"
+import * as U8 from "std/u8"
+
+export function run(args: Array<string>): int {
+  const small: i32 = -5
+  print(Int.toString(Int.from(small) * 1_000_000_000_000))
+  const big = 3_000_000_000
+  if (I32.tryFrom(big) is None) {
+    print("3000000000 does not fit in an i32")
+  }
+  if (I32.tryFrom(7) is Some(seven)) {
+    print(I32.toString(seven))
+  }
+  print(I32.toString(I32.wrap(big)))
+  print(U8.toString(U8.wrap(300)))
+  return 0
+}
+```
+
+```text
+-5000000000000
+3000000000 does not fit in an i32
+7
+-1294967296
+44
+```
+
+`from` takes a number that is already of a sized or `int` type. A literal such as `5` is an `int`, which does not always fit an `i32`, so `I32.from(5)` is an error. Write `const five: i32 = 5` to get a sized literal.
+
+### The f32 float
+
+`f32` is a 32-bit float beside the 64-bit `f64`. It takes half the memory and has fewer digits. Use it when a format or a library asks for it. A decimal literal is an `f32` when its place expects one, and an `f64` otherwise. The two do not mix. `std/f32` converts. `F32.from(value)` takes an `f64` (rounded to the nearest) or any integer. `Float.from(value)` takes an `f32` or any integer. `F32.truncate(value)` is the `f32` twin of `Float.truncate`.
+
+```narra
+import * as Float from "std/float"
+import * as F32 from "std/f32"
+
+export function run(args: Array<string>): int {
+  const ratio: f32 = 0.1
+  print(F32.toString(ratio * 3.0))
+  print(Float.toString(Float.from(ratio)))
+  print(Float.toString(0.1 + 0.2))
+  return 0
+}
+```
+
+```text
+0.3
+0.10000000149011612
+0.30000000000000004
+```
+
+The `f32` value `0.1` is not exactly one tenth, and widening it to an `f64` shows the digits it holds. The `f64` sum `0.1 + 0.2` shows the same effect: decimal fractions are rounded in binary, in every language. Compare floats with a margin, not with `==`.
+
+### How a float prints
+
+`Float.toString`, `F32.toString` and a template hole `${...}` print the shortest digits that read back as the same number. A whole number keeps its `.0`, so a float never looks like an `int`. Values below `1e-7` or from `1e21` up use an exponent. NaN and the infinities have their own text:
+
+```narra
+import * as Float from "std/float"
+
+export function run(args: Array<string>): int {
+  print(Float.toString(20.0))
+  print(Float.toString(1.5e-7))
+  print(Float.toString(1e21))
+  print(Float.toString(Float.sqrt(-1.0)))
+  print(Float.toString(1.0 / 0.0))
+  print(Float.toString(-0.0))
+  return 0
+}
+```
+
+```text
+20.0
+1.5e-7
+1e+21
+nan
+inf
+-0.0
+```
+
+Values from `1e-7` up to below `1e21` print in plain notation. Float division by zero needs no check, as [the division section](#dividing-by-a-name) says: it gives `inf`, `-inf` or `nan`.
+
+### Bits
+
+The operators `&` (and), `|` (or), `^` (xor), `~` (not), `<<` and `>>` work on the bits of an integer of any width. Write the number in binary with `0b` or in hexadecimal with `0x` to see them:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const flags = 0b1010
+  print(Int.toString(flags & 0b0110))
+  print(Int.toString(flags | 0b0001))
+  print(Int.toString(flags ^ 0b1111))
+  print(Int.toString(~flags))
+  print(Int.toString(1 << 4))
+  print(Int.toString(-16 >> 2))
+  return 0
+}
+```
+
+```text
+2
+11
+5
+-11
+16
+-4
+```
+
+`<<` moves the bits left, which doubles the value for each step. `>>` moves them right. On a signed type it keeps the sign, so `-16 >> 2` is `-4`; on an unsigned type it fills with zeros. `~` flips every bit, so `~x` is `-x - 1` for a signed type. Both sides of an operator have the same type, as with `+`.
+
+Like a divisor, a shift count must be proven. The count must be a constant from 0 to one less than the width (63 for an `int`, 7 for a `u8`). It can also be a name checked against both ends first. An unsigned count needs only the upper end:
+
+```narra error
+// error: 3:19: the shift count must be a constant from 0 to 63 or a name checked against both ends first; check the name first, as in `if (n >= 0 && n < 64) { ... }`
+function shiftLeft(value: int, count: int): int {
+  return value << count
+}
+
+export function run(args: Array<string>): int {
+  return shiftLeft(1, 3)
+}
+```
+
+With the check, the function compiles:
+
+```narra
+import * as Int from "std/int"
+
+function shiftLeft(value: int, count: int): int {
+  if (count >= 0 && count < 64) {
+    return value << count
+  }
+  return 0
+}
+
+export function run(args: Array<string>): int {
+  print(Int.toString(shiftLeft(1, 3)))
+  return 0
+}
+```
+
+```text
+8
+```
+
+### The math module
+
+`std/math`, imported as `Math`, has the usual number functions. The `int` ones are `Math.abs`, and `Math.min`, `Math.max` and `Math.clamp`, which take any two values of the same ordered type. `Math.clamp(value, low, high)` returns an `Option`, because `low` above `high` has no answer. The `f64` ones are `Math.absFloat`, `sqrt`, `floor`, `ceil`, `round`, `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, plus the constants `Math.PI` and `Math.E`. `Math.pow` and `Math.powInt` are in [the powers section](#powers).
+
+```narra
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as Math from "std/math"
+
+export function run(args: Array<string>): int {
+  print(Int.toString(Math.abs(-4)))
+  print(Int.toString(Math.min(3, 9)))
+  if (Math.clamp(15, 0, 10) is Some(clamped)) {
+    print(Int.toString(clamped))
+  }
+  print(Float.toString(Math.floor(2.7)))
+  print(Float.toString(Math.round(2.5)))
+  print(Float.toString(Math.sqrt(2.0)))
+  print(Float.toString(Math.PI))
+  return 0
+}
+```
+
+```text
+4
+3
+10
+2.0
+3.0
+1.4142135623730951
+3.141592653589793
+```
+
+### Random numbers
+
+`std/random`, imported as `Random`, makes numbers from a seed. A generator is a value that changes as you draw from it, so pass it as `mutable` ([chapter 9](09-memory-and-mutable.md) explains the word). `Random.seeded(seed)` starts one, and the same seed gives the same numbers on every run and every platform, which makes a test repeatable. `Random.fromSystem()` seeds from the system and needs the `io` effect ([chapter 10](10-effects-and-testing.md)).
+
+- `Random.nextInt(mutable random, low, high)` draws from `low` up to below `high`. It returns `None` when the range is empty.
+- `Random.nextFloat(mutable random)` draws an `f64` from 0 up to below 1.
+- `Random.nextBits(mutable random)` draws a `u64` of random bits.
+- `Random.shuffle(mutable random, mutable items)` reorders an array.
+
+```narra
+import * as Random from "std/random"
+import * as U64 from "std/u64"
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  let first = Random.seeded(7)
+  let second = Random.seeded(7)
+  print(U64.toString(Random.nextBits(mutable first)))
+  print(U64.toString(Random.nextBits(mutable second)))
+  for (const _round of [1, 2, 3]) {
+    if (Random.nextInt(mutable first, 1, 7) is Some(roll)) {
+      print(Int.toString(roll))
+    }
+  }
+  if (Random.nextInt(mutable first, 5, 5) is None) {
+    print("empty range")
+  }
+  let deck = [1, 2, 3, 4, 5]
+  Random.shuffle(mutable first, mutable deck)
+  for (const card of deck) {
+    print(Int.toString(card))
+  }
+  return 0
+}
+```
+
+```text
+7191089600892374487
+7191089600892374487
+1
+1
+4
+empty range
+3
+1
+4
+2
+5
+```
+
+The generator is fast and small, and it is not for secrets: do not use it for keys or tokens.
+
+### Hashing
+
+`std/hash`, imported as `Hash`, turns a value into a number. `Hash.fnv1a(text)` is the FNV-1a hash of a string, as a `u64`. It is the same in every build and on every machine, so it is safe to store. `Hash.of(value)` hashes any value that can be a map key, and its result may change between builds, so use it only inside one run:
+
+```narra
+import * as U64 from "std/u64"
+import * as Hash from "std/hash"
+
+export function run(args: Array<string>): int {
+  print(U64.toString(Hash.fnv1a("tea")))
+  print(U64.toString(Hash.fnv1a("")))
+  print(Hash.of("tea") == Hash.of("tea") ? "same" : "different")
+  return 0
+}
+```
+
+```text
+6261350492309512777
+14695981039346656037
+same
+```
+
+Neither one is meant for security.
+
 ## Group a few values
 
 Sometimes two values belong together, such as an item name and its price. A tuple groups a fixed number of values, which can have different types. It is written `#[...]`, both as a value and as a type:

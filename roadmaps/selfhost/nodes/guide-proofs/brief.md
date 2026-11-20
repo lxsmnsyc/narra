@@ -1,7 +1,7 @@
 ---
 id: guide-proofs
 title: "Chapter 17: checks the compiler proves"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

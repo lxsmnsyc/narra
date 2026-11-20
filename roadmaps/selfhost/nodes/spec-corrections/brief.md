@@ -44,6 +44,8 @@ The guide writers of batch-21 compare SPEC.md with the compiler. Fix what they f
 
 - Section 2 says "An iterator is a `Generator<T>`", but `Maps.keys`, `Maps.entries` and `Str.chars` return arrays, `Arrays.values` and `Arrays.entries` are allowed only at the head of a loop (E0920), and a range has its own type `Range`; chapter 12's table "What a loop can read" teaches what the compiler does (guide-generators).
 
+- A struct literal does not work out a constant type parameter from its fields (`Schedule { hours: [...] }` fails, `Schedule<14> { ... }` works); the spec says only that calls work it out. Say so (guide-proofs).
+
 Before editing, read every batch-21 node `outcome.md` for more "spec against compiler" findings. Compile every sample of the sections you touch with a compiler built from this branch; fix the spec text, not the compiler.
 
 ## Acceptance

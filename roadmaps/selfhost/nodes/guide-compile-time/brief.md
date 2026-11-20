@@ -1,7 +1,7 @@
 ---
 id: guide-compile-time
 title: "Compile-time constants"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

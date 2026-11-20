@@ -46,5 +46,5 @@ The branch `feat/batch-21` starts from `main` after PR #125 (batch-20). Worktree
 
 ## Acceptance
 
-- [ ] The audit approved; every concept it marks crucial is taught in the guide or documented in a reference page.
-- [ ] `pnpm --dir website build` passes; the guide suite passes.
+- [x] The audit approved; every concept it marks crucial is taught in the guide or documented in a reference page.
+- [x] `pnpm --dir website build` passes; the guide suite passes. test.sh: PASS, 10820 cases; bootstrap fixed point, seed current.

@@ -1,5 +1,5 @@
-// Builds `virtual:search-index`: one entry for each section of the guide, the installation guide
-// and the specification, from the Markdown files of the repository. The index of the search
+// Builds `virtual:search-index`: one entry for each section of the guide, the installation guide,
+// the reference pages and the specification, from the Markdown files of the repository. The index of the search
 // library is built in the browser, from these entries, when search opens for the first time.
 import { readdir, readFile } from 'node:fs/promises';
 import MarkdownIt from 'markdown-it';
@@ -45,7 +45,17 @@ async function listSources(): Promise<Source[]> {
       sources.push({ file: `docs/guide/${name}`, url: `/guide/${name.slice(0, -3)}` });
     }
   }
-  sources.push({ file: 'docs/install.md', url: '/install' }, { file: 'SPEC.md', url: '/spec' });
+  sources.push({ file: 'docs/install.md', url: '/install' });
+  sources.push({ file: 'docs/reference/README.md', url: '/reference' });
+  // The reference pages are the other Markdown files of the folder, at any depth.
+  const pages = await readdir(path.join(ROOT, 'docs/reference'), { recursive: true });
+  pages.sort();
+  for (const name of pages.map((entry) => entry.split(path.sep).join('/'))) {
+    if (name.endsWith('.md') && name !== 'README.md') {
+      sources.push({ file: `docs/reference/${name}`, url: `/reference/${name.slice(0, -3)}` });
+    }
+  }
+  sources.push({ file: 'SPEC.md', url: '/spec' });
   return sources;
 }
 

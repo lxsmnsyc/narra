@@ -62,6 +62,10 @@ function rewriteLink(href: string, from: string): string {
   if (guide) {
     return `/guide${guide[1] === 'README' ? '' : `/${guide[1]}`}${rest}`;
   }
+  const reference = /^docs\/reference\/(.+)\.md$/.exec(target);
+  if (reference) {
+    return `/reference${reference[1] === 'README' ? '' : `/${reference[1]}`}${rest}`;
+  }
   if (target === 'docs/install.md') {
     return `/install${rest}`;
   }

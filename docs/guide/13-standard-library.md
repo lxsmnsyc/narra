@@ -1,4 +1,4 @@
-# 11. The standard library
+# 13. The standard library
 
 The earlier chapters used a few standard modules along the way: `std/int`, `std/string`, `std/array`, `std/option`. This chapter goes through the modules that larger programs, such as command-line tools, are built on. Each section stands on its own.
 
@@ -469,4 +469,4 @@ NFC composes: a letter and its accents become one code point where Unicode has o
 
 `isNormalized` tells whether `normalize` would change the text. Both look up each code point first and stop early, so text already in the form, ASCII text among it, costs one pass and no allocation: `normalize` gives back the same string. Hangul syllables are composed and decomposed by arithmetic, as Unicode defines them, not from the tables.
 
-Next: [12. Tools](12-tools.md).
+Next: [14. Async](14-async.md).

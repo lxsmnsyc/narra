@@ -1,4 +1,4 @@
-# 12. Tools
+# 18. Tools
 
 The earlier chapters used `narrac run`, `narrac build`, `narrac check` and `narrac test`. `narrac` has more commands for the work around writing code. They read and fix errors, keep the layout tidy, answer questions about a package, and talk to an editor. This chapter goes through each one with a small package.
 
@@ -393,4 +393,4 @@ Two options help when the server seems wrong. By default it checks again only th
 | `narrac test [-filter TEXT] [-time] PATH` | run the test blocks |
 | `narrac lsp [--full] [--trace]` | start the language server for an editor |
 
-Next: [13. Narra for TypeScript programmers](13-narra-for-typescript-programmers.md), optional reading for TypeScript programmers.
+Next: [19. Building for other systems](19-building-for-other-systems.md).

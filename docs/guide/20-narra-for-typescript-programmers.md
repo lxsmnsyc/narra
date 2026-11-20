@@ -1,4 +1,4 @@
-# 13. Narra for TypeScript programmers
+# 20. Narra for TypeScript programmers
 
 This chapter is optional. It is for readers who already write TypeScript and want to know which habits carry over to Narra and which ones the compiler stops. Each topic shows the Narra form, with the error the TypeScript habit produces, and links to the chapter that teaches it.
 
@@ -1075,7 +1075,7 @@ test "double doubles" {
 
 ## Tools
 
-The compiler carries the tools a TypeScript project installs as separate packages ([chapter 12](12-tools.md)):
+The compiler carries the tools a TypeScript project installs as separate packages ([chapter 18](18-tools.md)):
 
 | TypeScript | Narra |
 | --- | --- |

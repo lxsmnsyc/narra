@@ -16,9 +16,16 @@ A test compiles and runs every program in the guide. Each one works with the com
 8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
 9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, writes to shared values, `mutable` parameters and their rules.
 10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narrac test`.
-11. [The standard library](11-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
-12. [Tools](12-tools.md): `narrac check` and its JSON output, `narrac explain`, `narrac apply-fix`, `narrac fmt` and its options, `narrac query`, `narrac test`, and `narrac lsp` for editors.
-13. [Narra for TypeScript programmers](13-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
+11. [Files and the system](11-files-and-the-system.md): reading and writing files, folders, the command line and the environment, other programs.
+12. [Generators](12-generators.md): `function*`, `yield` and pulling values one at a time.
+13. [The standard library](13-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
+14. [Async](14-async.md): asynchronous functions and waiting for results.
+15. [Threads and shared state](15-threads-and-shared-state.md): running work on several threads and sharing values safely.
+16. [Unsafe code and C](16-unsafe-code-and-c.md): `unsafe` code and calling C.
+17. [Proofs and compile-time constants](17-proofs-and-compile-time.md): what the compiler proves from your code and the values it computes at compile time.
+18. [Tools](18-tools.md): `narrac check` and its JSON output, `narrac explain`, `narrac apply-fix`, `narrac fmt` and its options, `narrac query`, `narrac test`, and `narrac lsp` for editors.
+19. [Building for other systems](19-building-for-other-systems.md): targets, `std/build` conditions and `--all-targets`.
+20. [Narra for TypeScript programmers](20-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 
 ## Reading the samples
 

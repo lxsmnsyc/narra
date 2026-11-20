@@ -142,6 +142,6 @@ From inside the `shop` folder, `narrac run .` builds and runs the package and pr
 | `narrac check file.nra` | report errors without building |
 | `narrac test file.nra` | run the tests in the file (chapter 10) |
 
-For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`. Chapter 12 covers the other commands: formatting, explaining and fixing errors, questions about a package, and editor support.
+For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`. Chapter 18 covers the other commands: formatting, explaining and fixing errors, questions about a package, and editor support.
 
 Next: [2. Values and types](02-values-and-types.md).

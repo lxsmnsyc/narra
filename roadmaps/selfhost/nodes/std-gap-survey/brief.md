@@ -1,7 +1,7 @@
 ---
 id: std-gap-survey
 title: "Which std modules a first user will miss"
-status: active
+status: done
 priority: could
 type: spike
 story: batch-22

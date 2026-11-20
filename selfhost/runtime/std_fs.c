@@ -82,6 +82,10 @@ static bool narra_io_no_nul(lstr* s, lstr** err) {
 
 #include <dirent.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#endif
 
 typedef struct narra_fs_names {
   lstr** items;
@@ -244,6 +248,206 @@ static bool narra_fs_rmdir(lstr* path, lstr** err) {
     *err = narra_io_fail(path->data, path->len, strerror(errno));
     return false;
   }
+  return true;
+}
+
+// Adds text to the end of a file and creates the file when it is missing.
+static bool narra_fs_append(lstr* path, lstr* text, int64_t* written, lstr** err) {
+  if (!narra_io_no_nul(path, err)) return false;
+  FILE* f = fopen(path->data, "ab");
+  if (!f) {
+    *err = narra_io_fail(path->data, path->len, strerror(errno));
+    return false;
+  }
+  errno = 0;
+  size_t put = fwrite(text->data, 1, (size_t)text->len, f);
+  bool ok = put == (size_t)text->len;
+  if (fclose(f) != 0) ok = false;
+  if (!ok) {
+    *err = narra_io_fail(path->data, path->len, strerror(errno ? errno : EIO));
+    return false;
+  }
+  *written = text->len;
+  return true;
+}
+
+#ifdef _WIN32
+// The system's message for a Windows error code, without the line end.
+static lstr* narra_fs_windows_fail(lstr* path, DWORD code) {
+  char message[256];
+  DWORD length = FormatMessageA(
+      FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, message,
+      (DWORD)sizeof(message) - 1, NULL);
+  while (length > 0 && (message[length - 1] == '\n' || message[length - 1] == '\r' || message[length - 1] == ' ' || message[length - 1] == '.')) length--;
+  message[length] = 0;
+  if (length == 0) snprintf(message, sizeof(message), "Windows error %lu", (unsigned long)code);
+  return narra_io_fail(path->data, path->len, message);
+}
+#endif
+
+// Moves a file or folder. On POSIX systems rename replaces an existing file
+// (a folder only when the target is an empty folder); Windows replaces an
+// existing file and refuses an existing folder.
+static bool narra_fs_rename(lstr* from, lstr* to, lstr** err) {
+  if (!narra_io_no_nul(from, err) || !narra_io_no_nul(to, err)) return false;
+#ifdef _WIN32
+  if (!MoveFileExA(from->data, to->data, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    *err = narra_fs_windows_fail(from, GetLastError());
+    return false;
+  }
+#else
+  if (rename(from->data, to->data) != 0) {
+    *err = narra_io_fail(from->data, from->len, strerror(errno));
+    return false;
+  }
+#endif
+  return true;
+}
+
+// Copies the bytes of a file to the target, which is created or emptied first.
+// A copy keeps the permission bits of the source where the system has them.
+static bool narra_fs_copy(lstr* from, lstr* to, int64_t* copied, lstr** err) {
+  if (!narra_io_no_nul(from, err) || !narra_io_no_nul(to, err)) return false;
+  struct stat source_info;
+  if (stat(from->data, &source_info) != 0) {
+    *err = narra_io_fail(from->data, from->len, strerror(errno));
+    return false;
+  }
+  if (S_ISDIR(source_info.st_mode)) {
+    *err = narra_io_fail(from->data, from->len, "Is a directory");
+    return false;
+  }
+#ifdef _WIN32
+  if (!CopyFileA(from->data, to->data, FALSE)) {
+    *err = narra_fs_windows_fail(to, GetLastError());
+    return false;
+  }
+  *copied = (int64_t)source_info.st_size;
+  return true;
+#else
+  struct stat target_info;
+  if (stat(to->data, &target_info) == 0 && target_info.st_dev == source_info.st_dev && target_info.st_ino == source_info.st_ino) {
+    *err = narra_io_fail(to->data, to->len, "source and target are the same file");
+    return false;
+  }
+  FILE* input = fopen(from->data, "rb");
+  if (!input) {
+    *err = narra_io_fail(from->data, from->len, strerror(errno));
+    return false;
+  }
+  FILE* output = fopen(to->data, "wb");
+  if (!output) {
+    int open_reason = errno;
+    fclose(input);
+    *err = narra_io_fail(to->data, to->len, strerror(open_reason));
+    return false;
+  }
+  char buffer[65536];
+  int64_t total = 0;
+  int reason = 0;
+  for (;;) {
+    size_t got = fread(buffer, 1, sizeof(buffer), input);
+    if (got > 0) {
+      errno = 0;
+      if (fwrite(buffer, 1, got, output) != got) { reason = errno ? errno : EIO; break; }
+      total += (int64_t)got;
+    }
+    if (got < sizeof(buffer)) {
+      if (ferror(input)) reason = errno ? errno : EIO;
+      break;
+    }
+  }
+  fclose(input);
+  errno = 0;
+  if (fflush(output) != 0 && reason == 0) reason = errno ? errno : EIO;
+#ifndef __wasi__
+  if (reason == 0) (void)fchmod(fileno(output), source_info.st_mode & 07777);
+#endif
+  if (fclose(output) != 0 && reason == 0) reason = errno ? errno : EIO;
+  if (reason != 0) {
+    *err = narra_io_fail(to->data, to->len, strerror(reason));
+    return false;
+  }
+  *copied = total;
+  return true;
+#endif
+}
+
+// 0 when the path does not exist, 1 for a folder, 2 for anything else. A
+// symbolic link (a junction on Windows) is never a folder here, so the
+// removal below never walks through one.
+static int narra_fs_entry_kind(const char* path) {
+#ifdef _WIN32
+  DWORD attributes = GetFileAttributesA(path);
+  if (attributes == INVALID_FILE_ATTRIBUTES) return 0;
+  if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return 2;
+  return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ? 1 : 2;
+#else
+  struct stat info;
+  if (lstat(path, &info) != 0) return 0;
+  return S_ISDIR(info.st_mode) ? 1 : 2;
+#endif
+}
+
+static bool narra_fs_remove_tree(const char* path, int* reason) {
+  DIR* directory = opendir(path);
+  if (!directory) {
+    *reason = errno;
+    return false;
+  }
+  size_t base_length = strlen(path);
+  struct dirent* entry;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+    size_t name_length = strlen(entry->d_name);
+    char* child = malloc(base_length + name_length + 2);
+    if (!child) {
+      *reason = ENOMEM;
+      closedir(directory);
+      return false;
+    }
+    memcpy(child, path, base_length);
+    child[base_length] = '/';
+    memcpy(child + base_length + 1, entry->d_name, name_length + 1);
+    bool removed;
+    if (narra_fs_entry_kind(child) == 1) {
+      removed = narra_fs_remove_tree(child, reason);
+    } else {
+      removed = unlink(child) == 0;
+      if (!removed) *reason = errno;
+    }
+    free(child);
+    if (!removed) {
+      closedir(directory);
+      return false;
+    }
+  }
+  closedir(directory);
+  if (rmdir(path) != 0) {
+    *reason = errno;
+    return false;
+  }
+  return true;
+}
+
+// Removes a folder with everything in it. *removed is false when the path was
+// not there. A symbolic link inside the tree is removed as a link and never
+// followed; a path that names a file or a link fails.
+static bool narra_fs_remove_all(lstr* path, bool* removed, lstr** err) {
+  *removed = false;
+  if (!narra_io_no_nul(path, err)) return false;
+  int kind = narra_fs_entry_kind(path->data);
+  if (kind == 0) return true;
+  if (kind != 1) {
+    *err = narra_io_fail(path->data, path->len, "Not a directory");
+    return false;
+  }
+  int reason = 0;
+  if (!narra_fs_remove_tree(path->data, &reason)) {
+    *err = narra_io_fail(path->data, path->len, strerror(reason));
+    return false;
+  }
+  *removed = true;
   return true;
 }
 

@@ -1,0 +1,113 @@
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Env from "std/env"
+import * as Process from "std/process"
+import * as Str from "std/string"
+
+function tempDir(): string {
+  const temporary = Env.get("TMPDIR")
+  if (temporary is Some(dir)) {
+    return dir
+  }
+  return "/tmp"
+}
+
+function yesNo(value: bool): string {
+  if (value) {
+    return "true"
+  }
+  return "false"
+}
+
+function reportBool(label: string, result: Result<bool, string>, base: string) {
+  if (result is Ok(changed)) {
+    print(`${label}: Ok(${yesNo(changed)})`)
+  } else if (result is Err(message)) {
+    print(`${label}: Err ${Str.replace(message, base, "<base>")}`)
+  }
+}
+
+function reportCount(label: string, result: Result<int, string>, base: string) {
+  if (result is Ok(count)) {
+    print(`${label}: Ok(${Int.toString(count)})`)
+  } else if (result is Err(message)) {
+    print(`${label}: Err ${Str.replace(message, base, "<base>")}`)
+  }
+}
+
+function showText(label: string, path: string) {
+  const read = Fs.readText(path)
+  if (read is Ok(text)) {
+    print(`${label}: ${Str.replace(text, "\n", "|")}`)
+  } else if (read is Err(_)) {
+    print(`${label}: unreadable`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const base = `${tempDir()}/narra_io_fs_more_test`
+  const _ = Fs.removeDirAll(base)
+  const _created = Fs.createDirAll(`${base}/tree/inner`)
+
+  const log = `${base}/log.txt`
+  reportCount("append creates", Fs.appendText(log, "one\n"), base)
+  reportCount("append adds", Fs.appendText(log, "two\n"), base)
+  reportCount("append nothing", Fs.appendText(log, ""), base)
+  showText("log", log)
+  reportCount("append into missing folder", Fs.appendText(`${base}/no/log.txt`, "x"), base)
+  reportCount("append to folder", Fs.appendText(`${base}/tree`, "x"), base)
+
+  const copy = `${base}/copy.txt`
+  reportCount("copy new", Fs.copyFile(log, copy), base)
+  showText("copy", copy)
+  const _shorter = Fs.writeText(log, "short")
+  reportCount("copy over longer", Fs.copyFile(log, copy), base)
+  showText("copy", copy)
+  reportCount("copy missing", Fs.copyFile(`${base}/missing.txt`, copy), base)
+  reportCount("copy folder", Fs.copyFile(`${base}/tree`, `${base}/other`), base)
+  reportCount("copy onto itself", Fs.copyFile(log, log), base)
+  showText("log after self copy", log)
+  reportCount("copy into missing folder", Fs.copyFile(log, `${base}/no/copy.txt`), base)
+
+  const moved = `${base}/moved.txt`
+  reportBool("rename", Fs.rename(copy, moved), base)
+  print(`copy exists: ${yesNo(Fs.exists(copy))}, moved exists: ${yesNo(Fs.exists(moved))}`)
+  const _again = Fs.writeText(copy, "replacement")
+  reportBool("rename over a file", Fs.rename(copy, moved), base)
+  showText("moved", moved)
+  reportBool("rename missing", Fs.rename(copy, moved), base)
+  reportBool("rename folder", Fs.rename(`${base}/tree/inner`, `${base}/tree/renamed`), base)
+  print(`isDir renamed: ${yesNo(Fs.isDir(`${base}/tree/renamed`))}`)
+  reportBool("rename into missing folder", Fs.rename(moved, `${base}/no/moved.txt`), base)
+
+  const outside = `${base}/outside`
+  const _outside = Fs.createDirAll(outside)
+  const _kept = Fs.writeText(`${outside}/kept.txt`, "kept")
+  const _deep = Fs.createDirAll(`${base}/tree/a/b`)
+  const _file = Fs.writeText(`${base}/tree/a/b/file.txt`, "x")
+  const link = Process.run("ln", ["-s", outside, `${base}/tree/a/link`])
+  if (link is Err(message)) {
+    print(`ln failed: ${message}`)
+  }
+  const fileLink = Process.run("ln", ["-s", moved, `${base}/fileLink`])
+  if (fileLink is Err(message)) {
+    print(`ln failed: ${message}`)
+  }
+  reportBool("removeDirAll on a link", Fs.removeDirAll(`${base}/fileLink`), base)
+  reportBool("removeDirAll on a file", Fs.removeDirAll(moved), base)
+  reportBool("removeDirAll tree", Fs.removeDirAll(`${base}/tree`), base)
+  print(`tree exists: ${yesNo(Fs.exists(`${base}/tree`))}`)
+  print(`outside survives: ${yesNo(Fs.exists(`${outside}/kept.txt`))}`)
+  reportBool("removeDirAll missing", Fs.removeDirAll(`${base}/tree`), base)
+  reportBool("removeDirAll base", Fs.removeDirAll(base), base)
+  print(`base exists: ${yesNo(Fs.exists(base))}`)
+
+  const folder = Process.cwd()
+  if (folder is Ok(path)) {
+    print(`cwd absolute: ${yesNo(Str.startsWith(path, "/"))}`)
+    print(`cwd is a folder: ${yesNo(Fs.isDir(path))}`)
+  } else if (folder is Err(message)) {
+    print(`cwd failed: ${message}`)
+  }
+  return 0
+}

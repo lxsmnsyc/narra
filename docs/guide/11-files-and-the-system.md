@@ -74,7 +74,7 @@ cannot read: <folder>/missing.txt: No such file or directory
 
 The rest of the sample is setup, and later samples repeat it. `scratchFolder` builds a folder name inside the system's temporary folder, which `Env.get("TMPDIR")` reads (see "The command line and the environment" below). The name ends with the time in milliseconds, so two runs never share a folder. `Fs.createDirAll` makes it, and the last two lines remove what the sample made. A sample that leaves files behind would not give the same output twice.
 
-`Fs.writeText` replaces the whole file. There is no function that appends: read the text, join the new text to it and write it back. The read and write functions treat the text as UTF-8; "Bytes" below reads files that are not.
+`Fs.writeText` replaces the whole file. To add to the end of a file, use `Fs.appendText`, shown under "Folders" below. The read and write functions treat the text as UTF-8; "Bytes" below reads files that are not.
 
 ## Build paths
 
@@ -196,6 +196,61 @@ What each function does:
 - `Fs.createDirAll(path)` makes the folder and every missing parent. Its result is `Ok(true)` when it made something and `Ok(false)` when the folder was already there, so it is safe to call twice.
 - `Fs.listDir(path)` returns the names inside a folder, without the folder's own path. The order is the one the system gives, so the sample sorts the names with `Arrays.sort` (chapter 2); `.` and `..` are not in the list.
 - `Fs.removeFile(path)` and `Fs.removeDir(path)` remove a file and an empty folder. A folder with anything inside is an error, as the `removeDir` line shows.
+
+- `Fs.appendText(path, text)` adds text to the end of a file and creates the file when it is missing. It returns the number of bytes it added.
+- `Fs.copyFile(from, to)` copies a file and returns the number of bytes copied. An existing target is overwritten. A folder as the source, or the same file as both paths, is an error.
+- `Fs.rename(from, to)` moves a file or a folder. An existing file at the target is replaced. A folder target must not exist, except an empty one on Linux and macOS.
+- `Fs.removeDirAll(path)` removes a folder and everything in it. It returns `Ok(true)` when it removed the folder and `Ok(false)` when the folder was not there. A symbolic link inside the tree is removed as a link, and the folder it points to is left alone. A path that names a file or a link is an error.
+
+The next sample uses these four. `Process.cwd()` returns the absolute path of the working folder, as a `Result`:
+
+```narra
+import * as Env from "std/env"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Options from "std/option"
+import * as Path from "std/path"
+import * as Process from "std/process"
+import * as Time from "std/time"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const temporary = Options.withDefault(Env.get("TMPDIR"), "/tmp")
+  const folder = Path.join(temporary, `narra-guide-append-${Int.toString(Time.unixMillis())}`)
+  const _created = Fs.createDirAll(Path.join(folder, "old"))
+
+  const log = Path.join(folder, "run.log")
+  const _first = Fs.appendText(log, "started\n")
+  const _second = Fs.appendText(log, "finished\n")
+  if (Fs.readText(log) is Ok(text)) {
+    print(text)
+  }
+
+  const backup = Path.join(folder, "old/run.log")
+  if (Fs.copyFile(log, backup) is Ok(size)) {
+    print(`copied ${Int.toString(size)} bytes`)
+  }
+  const _moved = Fs.rename(log, Path.join(folder, "latest.log"))
+  print(`run.log exists: ${Show.show(Fs.exists(log))}`)
+
+  if (Fs.removeDirAll(folder) is Ok(removed)) {
+    print(`removed: ${Show.show(removed)}`)
+  }
+  if (Process.cwd() is Ok(here)) {
+    print(`working folder found: ${Show.show(Fs.isDir(here))}`)
+  }
+  return 0
+}
+```
+
+```text
+started
+finished
+
+copied 17 bytes
+run.log exists: false
+removed: true
+working folder found: true
+```
 
 Every function that can fail returns a `Result`, and ignoring one is a compile error (chapter 6). The sample gives the results it does not need to names that start with `_`, which discards them on purpose.
 

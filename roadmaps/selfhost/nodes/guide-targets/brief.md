@@ -1,7 +1,7 @@
 ---
 id: guide-targets
 title: "Chapter 19: building for other systems"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

@@ -1,7 +1,7 @@
 ---
 id: cli-reference
 title: "Commands reference and complete usage text"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-21

@@ -1,7 +1,7 @@
 ---
 id: guide-tools-gaps
 title: "Tools: golden tests, move, missing commands"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

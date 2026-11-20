@@ -615,7 +615,7 @@ function makeCounter() {
 ```
 
 ```narra error
-// error: 5:5: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping
+// error: 5:5: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
 function makeCounter(): () => int {
   let count = 0
   return () => {
@@ -630,7 +630,35 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Keep the count in a variable of the caller. A function returns the new value, or changes a counter held in a struct through a `mutable` parameter:
+The idiomatic answer is a `Cell` from `std/cell`: one slot that every copy of the handle shares. The closure captures the `Cell` like any constant, and the count inside it changes ([chapter 9](09-memory-and-mutable.md#state-that-closures-share-cell)):
+
+```narra
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+import * as Int from "std/int"
+
+function makeCounter(): () => int {
+  const count: Cell<int> = Cells.create(0)
+  return () => {
+    Cells.update(count, (value) => value + 1)
+    return Cells.get(count)
+  }
+}
+
+export function run(args: Array<string>): int {
+  const next = makeCounter()
+  print(Int.toString(next()))
+  print(Int.toString(next()))
+  return 0
+}
+```
+
+```text
+1
+2
+```
+
+When no closure has to keep the count, keep it in a variable of the caller. A function returns the new value, or changes a counter held in a struct through a `mutable` parameter:
 
 ```narra
 import * as Int from "std/int"

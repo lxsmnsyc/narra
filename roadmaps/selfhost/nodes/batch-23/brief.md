@@ -46,5 +46,5 @@ Outside the batch, already merged or open: C in the benchmarks (PR #129, Odin re
 
 ## Acceptance
 
-- [ ] Every child done or out of the batch with a reason.
-- [ ] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes; `sh scripts/linux-check.sh` passes.
+- [x] Every child done or out of the batch with a reason.
+- [x] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes; `sh scripts/linux-check.sh` passes. test.sh: PASS, 10925 cases.

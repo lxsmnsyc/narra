@@ -1,7 +1,7 @@
 ---
 id: regex-step-limits
 title: "Regex timing cases without wall-clock limits"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-20

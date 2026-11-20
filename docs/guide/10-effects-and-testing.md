@@ -268,6 +268,77 @@ A filter that matches no test prints `no tests match "..."` and exits with code 
 
 `narrac build` and `narrac run` leave the test blocks out, so tests add nothing to the program you ship. The file can import `std/test` and still build as a program.
 
+### Comparing text with a file
+
+A function that builds a long text is awkward to test with `Test.eq`. The expected text goes into the test, and a change to one line means editing a long string. `Test.golden(name, actual)` keeps the expected text in a file instead. Add a function that builds a table of readings, and a test for it:
+
+```narra fragment
+import * as Int from "std/int"
+import * as Test from "std/test"
+
+export function toFahrenheit(celsius: int): int {
+  return celsius * 9 / 5 + 32
+}
+
+export function describe(celsius: int): string uses alloc {
+  return `${Int.toString(celsius)} C is ${Int.toString(toFahrenheit(celsius))} F`
+}
+
+export function table(): string uses alloc {
+  let text = ""
+  for (const celsius of [0, 21, 100]) {
+    text = `${text}${describe(celsius)}\n`
+  }
+  return text
+}
+
+test "table matches the golden file" {
+  Test.golden("table", table())
+}
+```
+
+The test compares `table()` with the file `table.golden`. For a single `.nra` file, that file sits in the same folder as the source. In a package, it sits in the package's `testdata` folder. A name with a `/` in it, such as `"reports/all"`, picks a file in a folder below that (`testdata/reports/all.golden`). A name that is empty or has a `..` part is an error.
+
+The file does not exist yet, so the first run fails and says how to make it:
+
+```sh
+narrac test temperature.nra
+```
+
+```text
+FAIL - table matches the golden file: golden file table.golden does not exist; run with NARRA_UPDATE_GOLDEN=1 to create it (temperature.nra:21:14)
+0 passed, 1 failed
+```
+
+With `NARRA_UPDATE_GOLDEN=1` set, `Test.golden` writes the file from the value instead of comparing, and the test passes:
+
+```sh
+NARRA_UPDATE_GOLDEN=1 narrac test temperature.nra
+```
+
+```text
+ok - table matches the golden file
+1 passed, 0 failed
+```
+
+`table.golden` now holds the text:
+
+```text
+0 C is 32 F
+21 C is 69 F
+100 C is 212 F
+```
+
+Read the file before you keep it, because the test only checks that the code still gives what the file holds. Later runs, without the variable, compare. If someone changes the table so that the second line reads `21 C is 70 F`, the test fails on the first line that differs, and shows both:
+
+```text
+FAIL - table matches the golden file: golden table differs at line 2: expected "21 C is 69 F", got "21 C is 70 F" (temperature.nra:21:14)
+```
+
+`expected` is the line in the file and `got` is the line in the text the code built. When the change is wanted, run once more with `NARRA_UPDATE_GOLDEN=1`. Then look at what changed in the file before you commit it.
+
+`Test.golden` reads and writes a file, so it has the `io` effect. A test block needs no `uses` list, so this costs the test nothing. Like the other checks, it works only in a test block.
+
 ### Values a test can compare
 
 `Test.eq` prints both values when it fails, so their type needs `Show` as well as `==` (chapter 7). A struct without `Show` stops at the check:

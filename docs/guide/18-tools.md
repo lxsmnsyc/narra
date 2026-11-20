@@ -67,6 +67,37 @@ export function run(args: Array<string>): int {
 
 Every command below runs from inside the `weather` folder, and `.` names the package. A command that takes a path also takes a single `.nra` file, except `narrac query`, which needs a package.
 
+## Building, running and looking at the C
+
+Chapter 1 introduced `narrac build` and `narrac run`. A few options matter once a package has more than one binary or you want to see what the compiler wrote. `-bin NAME` picks one `[[binary]]`: without it, `build` makes every binary of the package, and `run` needs the package to have exactly one. `-o PATH` names the executable `build` writes. Words after the path go to the program as its arguments, so `narrac run -bin weather . celsius` starts the `weather` binary with `args[1]` set to `celsius`.
+
+`narrac emit` prints the C code of a debug build on the standard output and builds nothing:
+
+```sh
+narrac emit . > weather.c
+```
+
+The file starts with the runtime that every program shares, followed by the code of the package. `narrac emit --tests .` adds the test blocks, which `build` leaves out, and `--bin NAME` picks one binary. For the C of an optimized build, build with `-emit-c`: `narrac build -release -emit-c weather.c .` writes the file and the executable. To read the C of one function, search the file for its name: `toFahrenheit` is `f_` followed by a hash of its module, then `_toFahrenheit`.
+
+`narrac targets` lists the systems that `-target` and `check --target` accept, each as a name and the triple of the C compiler that builds for it:
+
+```sh
+narrac targets
+```
+
+```text
+MacOS-Arm64 aarch64-macos
+MacOS-X86_64 x86_64-macos
+Linux-X86_64 x86_64-linux-gnu
+Linux-Arm64 aarch64-linux-gnu
+Linux-X86_64-musl x86_64-linux-musl
+Linux-Arm64-musl aarch64-linux-musl
+Windows-X86_64 x86_64-windows-gnu
+Wasi-Wasm32 wasm32-wasi
+```
+
+Chapter 19 builds for them. `narrac audit PATH` lists the `unsafe` blocks and `@trusted` functions of a package, as chapter 16 shows. The `weather` package has none, so it prints nothing.
+
 ## Checking without building
 
 `narrac check` loads and checks a program and builds nothing, so it is the fastest way to find mistakes:
@@ -333,6 +364,8 @@ ok - hottest picks the largest reading (1 ms)
 1 passed, 0 failed
 ```
 
+A test that calls `Test.golden` (chapter 10) reads its expected text from the `testdata` folder of the package. `narrac test` finds the folder itself, and `NARRA_UPDATE_GOLDEN=1 narrac test .` rewrites the files.
+
 `narrac test`, `run` and `build` also take `-release` for an optimized build. `-sanitize` builds with AddressSanitizer, which stops the program at the first bad memory access. `run` and `test` take `-stdin FILE` to give the program that file as its standard input. Without it, the standard input is closed.
 
 ## Using an editor
@@ -384,13 +417,18 @@ Two options help when the server seems wrong. By default it checks again only th
 
 | Command | What it does |
 | --- | --- |
-| `narrac check [--json] [--all-targets] PATH` | report errors without building |
+| `narrac build [-release] [-sanitize] [-target NAME] [-bin NAME] [-o PATH] [-emit-c FILE] PATH` | build the executables of a package or file |
+| `narrac run [-release] [-sanitize] [-bin NAME] [-stdin FILE] PATH [ARGS...]` | build and run, with the arguments for the program |
+| `narrac emit [--tests] [--bin NAME] PATH` | print the C of a debug build |
+| `narrac check [--json] [--all-targets] [--target NAME] PATH` | report errors without building |
 | `narrac explain CODE` | explain an error code |
 | `narrac apply-fix [--diagnostic N] [--fix M] PATH` | print a file with a fix applied |
 | `narrac fmt [--check] [PATH...]` | format files in place, or list the ones that are not formatted |
 | `narrac fmt --stdin` | format the standard input to the standard output |
 | `narrac query [--package DIR] [--json] QUESTION` | answer a question about a package |
-| `narrac test [-filter TEXT] [-time] PATH` | run the test blocks |
+| `narrac test [-filter TEXT] [-time] [-release] [-sanitize] [-stdin FILE] PATH` | run the test blocks |
+| `narrac audit [PATH]` | list the `unsafe` blocks and `@trusted` functions |
+| `narrac targets` | list the systems `-target` accepts |
 | `narrac lsp [--full] [--trace]` | start the language server for an editor |
 
 Next: [19. Building for other systems](19-building-for-other-systems.md).

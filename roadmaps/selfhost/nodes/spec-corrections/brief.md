@@ -42,6 +42,8 @@ The guide writers of batch-21 compare SPEC.md with the compiler. Fix what they f
 - `Channel.values` is listed as `uses io` only; looping over it also needs `alloc` (guide-threads).
 - Section 9: `return` inside an `unsafe` block works but the spec does not say so (guide-c-interop).
 
+- Section 2 says "An iterator is a `Generator<T>`", but `Maps.keys`, `Maps.entries` and `Str.chars` return arrays, `Arrays.values` and `Arrays.entries` are allowed only at the head of a loop (E0920), and a range has its own type `Range`; chapter 12's table "What a loop can read" teaches what the compiler does (guide-generators).
+
 Before editing, read every batch-21 node `outcome.md` for more "spec against compiler" findings. Compile every sample of the sections you touch with a compiler built from this branch; fix the spec text, not the compiler.
 
 ## Acceptance

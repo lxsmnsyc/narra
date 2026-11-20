@@ -1,7 +1,7 @@
 ---
 id: guide-generators
 title: "Chapter 12: generators"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

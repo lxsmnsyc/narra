@@ -1,7 +1,7 @@
 ---
 id: guide-numbers
 title: "Numbers: sized integers, floats, bits"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

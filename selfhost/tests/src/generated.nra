@@ -3,9 +3,10 @@
 //   one case per file of selfhost/runtime: selfhost/src/runtime/<name>.nra
 //   stdtext   selfhost/src/std/stdtext.nra from std/src/*.nra
 //   unicodetables   scripts/unicode/generate.nra on testdata/unicode/mini, run twice
+//   errorindex   docs/reference/errors.md from scripts/error-index.sh
 // With --update the files are rewritten:
 //   sh scripts/test.sh --suite generated --update
-// Rewriting changes selfhost/src, so run sh scripts/seed-update.sh afterwards.
+// Rewriting a file of selfhost/src needs sh scripts/seed-update.sh afterwards.
 //
 // selfhost/runtime holds the C that the compiler puts in every program. Each
 // source has a generated file of its own, so a change to one runtime file
@@ -27,6 +28,7 @@ import * as Str from "std/string"
 import { Context, TestCase } from "testrunner/context"
 import * as Common from "testrunner/context"
 import * as Files from "testrunner/files"
+import * as Shell from "testrunner/shell"
 import * as UnicodeTables from "testrunner/unicodetables"
 
 const UPPER_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -53,6 +55,12 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     variant: "stdtext",
   })
   Arrays.push(mutable cases, UnicodeTables.makeCase(context))
+  Arrays.push(mutable cases, TestCase {
+    suite: "generated",
+    name: "errorindex",
+    path: Path.join(context.repository, "docs/reference/errors.md"),
+    variant: "errorindex",
+  })
   return cases
 }
 
@@ -63,6 +71,8 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   let made: Result<string, string> = Err("unknown case")
   if (testCase.variant == "stdtext") {
     made = makeStdText(context)
+  } else if (testCase.variant == "errorindex") {
+    made = makeErrorIndex(context)
   } else {
     made = makeRuntimeFile(context, testCase.variant)
   }
@@ -90,10 +100,30 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   const compared = Common.compareText("generated text", want, got.value)
   if (compared is Err(difference)) {
     return Err(
-      `${testCase.path} is stale; run sh scripts/test.sh --suite generated --update, then sh scripts/seed-update.sh\n${difference}`,
+      `${testCase.path} is stale; run sh scripts/test.sh --suite generated --update${staleHint(testCase)}\n${difference}`,
     )
   }
   return Ok(true)
+}
+
+function staleHint(testCase: TestCase): string {
+  if (testCase.variant == "errorindex") {
+    return ""
+  }
+  return ", then sh scripts/seed-update.sh"
+}
+
+function makeErrorIndex(context: Context): Result<string, string> uses io, alloc {
+  let command = copy(
+    Shell.newCommand("sh", [Path.join(context.repository, "scripts/error-index.sh")]),
+  )
+  command.directory = context.repository
+  command.environment = [`NARRAC=${context.narrac}`]
+  const result = Shell.runCommand(command)
+  if (result.code != 0) {
+    return Err(`scripts/error-index.sh failed: ${Common.describeRun(result)}`)
+  }
+  return Ok(result.output)
 }
 
 function runtimeTarget(name: string): Array<string> uses alloc {

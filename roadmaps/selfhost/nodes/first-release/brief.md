@@ -31,6 +31,9 @@ depends_on:
   - on: curl-installer
     kind: hard
     why: the release must carry the installers
+  - on: batch-21
+    kind: hard
+    why: the docs must teach the crucial concepts before the release (maintainer, 2026-11-20)
   - on: batch-20
     kind: hard
     why: pre-release fixes and the docs review land before the tag (maintainer, 2026-11-19)
@@ -45,5 +48,5 @@ Note: `releases/latest` skips prereleases, so with only a prerelease the one-lin
 
 ## Acceptance
 
-- [ ] The maintainer's decision recorded here.
+- [x] The maintainer's decision recorded here: the first tag is `v0.1.0`, a full release, so `releases/latest` finds it. Not before the docs review (batch-21) lands (maintainer, 2026-11-20).
 - [ ] After the tag: the one-liner installs narrac on macOS and Linux.

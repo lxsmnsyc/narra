@@ -55,6 +55,14 @@ check_archive() {
       exit 1
     fi
   fi
+  # A macOS binary must run on macOS 13 and later, like Go's and Zig's.
+  if command -v otool >/dev/null 2>&1 && otool -l "$check_binary" >/dev/null 2>&1; then
+    minimum=$(otool -l "$check_binary" | awk '/minos/ { print $2; exit }')
+    if [ "$minimum" != "13.0" ]; then
+      echo "release-build: narrac needs macOS $minimum, want 13.0" >&2
+      exit 1
+    fi
+  fi
   # The archive holds the compiler alone: the std library is built into it.
   check_content=$(ls "$check_dir"/unpack/*)
   if [ "$check_content" != narrac ]; then
@@ -110,7 +118,12 @@ esac
 
 # Name this machine's row the way `narrac targets` does.
 case "$(uname -s)" in
-  Darwin) host_os=MacOS ;;
+  Darwin)
+    host_os=MacOS
+    # The release binary runs on macOS 13 and later, whatever macOS builds it.
+    MACOSX_DEPLOYMENT_TARGET=13.0
+    export MACOSX_DEPLOYMENT_TARGET
+    ;;
   Linux) host_os=Linux ;;
   *)
     echo "release-build: unsupported system: $(uname -s)" >&2
@@ -173,8 +186,10 @@ sh "$root/selfhost/bootstrap.sh" "$work/compiler"
 # The glibc Linux rows are built with zig against glibc 2.28, never with the native cc,
 # so a binary from a new runner does not need a new glibc.
 zig_row=no
+glibc_triple=
 case "$target" in
-  Linux-X86_64 | Linux-Arm64) zig_row=yes ;;
+  Linux-X86_64) zig_row=yes glibc_triple=x86_64-linux-gnu ;;
+  Linux-Arm64) zig_row=yes glibc_triple=aarch64-linux-gnu ;;
 esac
 
 # A copy of selfhost/ with the version stamped in, so the release binary reports it.
@@ -206,7 +221,8 @@ if [ "$target" != "$host_row" ] || [ "$zig_row" = yes ]; then
   # A cross build: the compiler of this machine builds selfhost for the row with zig cc.
   # CC names one program, so a wrapper holds the words. The wrapper adds -s (no symbols or
   # debug info: zig cc keeps them otherwise, which made Linux binaries seven times larger
-  # than the Windows one) and, for a glibc target, the glibc floor 2.28.
+  # than the Windows one) and, for a glibc target, the glibc floor 2.28. narrac passes no
+  # -target when the row is this machine, so the wrapper then names the glibc target itself.
   echo "release-build: build for $target with zig cc"
   if command -v zig >/dev/null 2>&1; then
     zig_command="zig cc"
@@ -218,13 +234,19 @@ if [ "$target" != "$host_row" ] || [ "$zig_row" = yes ]; then
   fi
   cat > "$work/zigcc" <<WRAPPER
 #!/bin/sh
+named=no
 for argument; do
   case "\$argument" in
+    -target) named=yes ;;
     x86_64-linux-gnu | aarch64-linux-gnu) argument=\$argument.2.28 ;;
+    x86_64-macos | aarch64-macos) argument=\$argument.13.0 ;;
   esac
   set -- "\$@" "\$argument"
   shift
 done
+if [ "\$named" = no ] && [ -n "$glibc_triple" ]; then
+  set -- -target "$glibc_triple.2.28" "\$@"
+fi
 exec $zig_command -s "\$@"
 WRAPPER
   chmod +x "$work/zigcc"

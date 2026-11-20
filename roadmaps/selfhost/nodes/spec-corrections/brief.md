@@ -1,7 +1,7 @@
 ---
 id: spec-corrections
 title: "SPEC.md matches the compiler"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

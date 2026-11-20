@@ -6,13 +6,25 @@
   - `Fs.appendText(path: string, text: string): Result<int, string>`: opens for append, creates the file when missing, returns the bytes added.
   - `Fs.copyFile(from: string, to: string): Result<int, string>`: returns the bytes copied. An existing target is overwritten. A folder as source and the same file as both paths are errors. POSIX keeps the permission bits of the source.
   - `Fs.rename(from: string, to: string): Result<bool, string>`: POSIX `rename`, so an existing file target is replaced and a folder target must be empty. Windows uses `MoveFileExA` with replace-existing: a file target is replaced and a folder target is refused.
-  - `Fs.removeDirAll(path: string): Result<bool, string>`: `Ok(true)` when it removed a tree, `Ok(false)` when the path was missing. It walks with `lstat` (attribute `REPARSE_POINT` on Windows), so a symbolic link or junction inside the tree is unlinked and never followed. A file or link as `path` is an error (`Not a directory`).
+  - `Fs.removeDirAll(path: string): Result<bool, string>`: `Ok(true)` when it removed a tree, `Ok(false)` only when the path was missing (ENOENT; Windows `ERROR_FILE_NOT_FOUND` or `ERROR_PATH_NOT_FOUND`); any other failure is an `Err`. A symbolic link or junction inside the tree is removed as a link and never followed. A file or link as `path` is an error (`Not a directory`). It refuses, before removing anything, an empty path, a root (`/`, `//`, `\`, a drive root such as `C:\` or `C:`) and a path whose last component, after trailing separators, is `.` or `..` (`C:..` included).
   - `Process.cwd(): Result<string, string>`: `getcwd`, the physical absolute path.
 - Runtime: `selfhost/runtime/std_fs.c` and `std_process.c`; the generated copies `selfhost/src/runtime/runtimestdfs.nra` and `runtimestdprocess.nra`, and the std reference pages `docs/reference/std/fs.md` and `process.md`, were regenerated.
 - WASI: all five are available. Built with `zig cc` for `Wasi-Wasm32` and run under `wasmtime`: append, copy, rename, read, `removeDirAll` and `cwd` (`/`) gave the expected results. The WASI tables in `buildconditions.nra` are unchanged. `fchmod` is skipped there.
 - Windows: written against the Win32 calls and built with `zig cc` for `Windows-X86_64` (compiles and links). Not run: no wine or Windows host on this machine.
-- Tests: `testdata/io_fs_more.nra` and `.out` (33 lines: append to a new, existing and missing-folder path, to a folder; copy new, longer target, missing, folder, itself, missing target folder; rename file, over a file, missing, folder, into a missing folder; `removeDirAll` on a link, a file, a tree holding a symlink to a folder outside it (the outside file survives), a missing path; `cwd`). It runs in the `programs` suite in debug and release with the sanitizers.
+- Tests: `testdata/io_fs_more.nra` and `.out` (41 lines after the review: append to a new, existing and missing-folder path, to a folder; copy new, longer target, missing, folder, itself, missing target folder; rename file, over a file, missing, folder, into a missing folder; `removeDirAll` on a link, a file, a tree holding a symlink to a folder outside it (the outside file survives), a missing path; `cwd`). It runs in the `programs` suite in debug and release with the sanitizers.
 - Guide: chapter 11 drops "There is no function that appends", points to the new section and lists the four functions with a runnable sample that also calls `Process.cwd`. `compiler/README.md` records the signatures and platform behavior.
+
+## Review fixes
+
+- POSIX walk: `openat(O_DIRECTORY | O_NOFOLLOW)` plus a device and inode check (macOS hides `O_NOFOLLOW` under `_POSIX_C_SOURCE`), `fdopendir` on a fresh `openat(".")`, `fstatat(AT_SYMLINK_NOFOLLOW)` and `unlinkat` relative to the parent. Iterative: a folder's names are read before going deeper, the parent descriptor is closed and opened again through `..` (checked by device and inode), so it holds at most three descriptors and builds no full path. WASI keeps one descriptor per level, because WASI refuses `..` through a descriptor.
+- Windows: `FindFirstFileA` lists a folder (one handle open at a time); a folder link or junction is removed with `RemoveDirectoryA`, a file link or file with `DeleteFileA`, after clearing `FILE_ATTRIBUTE_READONLY`.
+- Messages: a rename error is `<from> -> <to>: reason` on both systems; a copy error names the path that failed (source on stat, open and read; target on open and write) and both paths for the same-file case and Windows `CopyFileA`.
+- `copyFile` keeps `mode & 0777`; a failed copy leaves a partial target (documented).
+- Checked outside the suite with a C harness under ASan in a scratch folder: a 700-level tree (deeper than PATH_MAX) holding a link to an outside folder, under `ulimit -n 32`, is removed and the outside file survives; a locked parent gives `Permission denied`, a file in the path `Not a directory`, a folder without write permission an `Err`. The guard rule was checked on strings for POSIX and for the Windows rule (`C:\`, `C:`, `C:/`, `C:..`, `\`).
+- WASI after the fixes: built with `zig cc` for `Wasi-Wasm32` and run under `wasmtime --dir`: a 40-level tree, the `..` guard, a missing path (`Ok(false)`) and a file in the path (`Err`) behave as on POSIX.
+- Windows after the fixes: compiles and links with `zig cc -target x86_64-windows-gnu` (`narrac build --target Windows-X86_64`, and the runtime alone with `-Wall`); not run.
+- New cases in `testdata/io_fs_more.nra`: a read-only file inside a tree, the empty path and `x/..`, `x/../`, `x/.` guards (the folder survives), a folder inside a locked parent (an `Err`, not `Ok(false)`; as root, where the permission is not enforced, the removal succeeds), a 300-level tree (above the macOS default of 256 descriptors). Error lines for rename and copy changed to the new rule.
+- Emitters: `emitTwoPaths(hasCount)` split into `emitCopyFile` and `emitRename`; `emitWriteTextCall` renamed `emitWriteWith`.
 
 ## Deviations
 
@@ -40,7 +52,7 @@
 ## Verification
 
 - `sh scripts/test.sh --suite guide --suite programs --suite fmt-doc --suite sources --suite query --suite generated` (filters as noted): PASS.
-- Full `sh scripts/test.sh`: `PASS, 10827 cases in 448s`.
+- Full `sh scripts/test.sh`: `PASS, 10827 cases in 448s`; after the review fixes `PASS, 10870 cases in 292s`.
 - `pnpm --dir website build`: passes.
 
 ## Size

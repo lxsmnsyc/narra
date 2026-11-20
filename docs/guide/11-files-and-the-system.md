@@ -198,9 +198,10 @@ What each function does:
 - `Fs.removeFile(path)` and `Fs.removeDir(path)` remove a file and an empty folder. A folder with anything inside is an error, as the `removeDir` line shows.
 
 - `Fs.appendText(path, text)` adds text to the end of a file and creates the file when it is missing. It returns the number of bytes it added.
-- `Fs.copyFile(from, to)` copies a file and returns the number of bytes copied. An existing target is overwritten. A folder as the source, or the same file as both paths, is an error.
+- `Fs.copyFile(from, to)` copies a file and returns the number of bytes copied. An existing target is overwritten. A folder as the source, or the same file as both paths, is an error. The copy keeps the read, write and run permissions of the source. A copy that fails part way, for example on a full disk, leaves a partial target behind.
 - `Fs.rename(from, to)` moves a file or a folder. An existing file at the target is replaced. A folder target must not exist, except an empty one on Linux and macOS.
-- `Fs.removeDirAll(path)` removes a folder and everything in it. It returns `Ok(true)` when it removed the folder and `Ok(false)` when the folder was not there. A symbolic link inside the tree is removed as a link, and the folder it points to is left alone. A path that names a file or a link is an error.
+- `Fs.removeDirAll(path)` removes a folder and everything in it. It returns `Ok(true)` when it removed the folder and `Ok(false)` when the folder was not there, unlike `Fs.removeDir`, which fails on a missing folder. Any other failure, such as a parent folder you may not read, is an error. A symbolic link inside the tree is removed as a link, and the folder it points to is left alone. A read-only file inside the tree is removed too. A path that names a file or a link is an error.
+- `Fs.removeDirAll` refuses, before it removes anything, an empty path, the root folder (`/`, or a drive root such as `C:\` on Windows) and a path whose last part is `.` or `..`. Such a path names more than it seems to: `a/b/..` is the folder `a`, and `.` is the working folder. The error says why.
 
 The next sample uses these four. `Process.cwd()` returns the absolute path of the working folder, as a `Result`:
 

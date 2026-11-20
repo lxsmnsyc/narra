@@ -212,7 +212,7 @@ function emitReadFile<W: EmitWalker>(
   return ioResult(mutable emitter, resultType, success, output, bad)
 }
 
-function emitWriteTextCall<W: EmitWalker>(
+function emitWriteWith<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   call: string,
@@ -261,28 +261,40 @@ function emitListDir<W: EmitWalker>(
   return ioResult(mutable emitter, resultType, success, array, bad)
 }
 
-function emitTwoPaths<W: EmitWalker>(
+function emitCopyFile<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
-  call: string,
   nodeId: int,
   arguments: Array<Arg>,
-  hasCount: bool,
 ): Code uses alloc {
   const resultType = copy(readNodeType(emitter, nodeId))
-  const first = argumentText(walker, mutable emitter, arguments, 0)
-  const second = argumentText(walker, mutable emitter, arguments, 1)
+  const source = argumentText(walker, mutable emitter, arguments, 0)
+  const target = argumentText(walker, mutable emitter, arguments, 1)
+  const copied = temp(mutable emitter, Type.TInt, "0")
   const bad = stringOut(mutable emitter)
-  if (hasCount) {
-    const count = temp(mutable emitter, Type.TInt, "0")
-    const success = temp(
-      mutable emitter,
-      Type.TBool,
-      `${call}(${first}, ${second}, &${count}, &${bad})`,
-    )
-    return ioResult(mutable emitter, resultType, success, count, bad)
-  }
-  const success = temp(mutable emitter, Type.TBool, `${call}(${first}, ${second}, &${bad})`)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_copy(${source}, ${target}, &${copied}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, copied, bad)
+}
+
+function emitRename<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = copy(readNodeType(emitter, nodeId))
+  const source = argumentText(walker, mutable emitter, arguments, 0)
+  const target = argumentText(walker, mutable emitter, arguments, 1)
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_rename(${source}, ${target}, &${bad})`,
+  )
   return ioResult(mutable emitter, resultType, success, "true", bad)
 }
 
@@ -356,19 +368,19 @@ export function emitFsCall<W: EmitWalker>(
     return emitReadFile(walker, mutable emitter, "narra_fs_read_bytes", nodeId, arguments)
   }
   if (name == "Fs.appendText") {
-    return emitWriteTextCall(walker, mutable emitter, "narra_fs_append", nodeId, arguments)
+    return emitWriteWith(walker, mutable emitter, "narra_fs_append", nodeId, arguments)
   }
   if (name == "Fs.copyFile") {
-    return emitTwoPaths(walker, mutable emitter, "narra_fs_copy", nodeId, arguments, true)
+    return emitCopyFile(walker, mutable emitter, nodeId, arguments)
   }
   if (name == "Fs.rename") {
-    return emitTwoPaths(walker, mutable emitter, "narra_fs_rename", nodeId, arguments, false)
+    return emitRename(walker, mutable emitter, nodeId, arguments)
   }
   if (name == "Fs.removeDirAll") {
     return emitRemoveAll(walker, mutable emitter, nodeId, arguments)
   }
   if (name == "Fs.writeText" || name == "Fs.writeBytes") {
-    return emitWriteTextCall(walker, mutable emitter, "narra_fs_write", nodeId, arguments)
+    return emitWriteWith(walker, mutable emitter, "narra_fs_write", nodeId, arguments)
   }
   if (name == "Fs.listDir") {
     return emitListDir(walker, mutable emitter, nodeId, arguments)

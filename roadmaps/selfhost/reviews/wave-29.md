@@ -27,9 +27,10 @@ Batch-20 (PR #125) merged and is set `done`. The maintainer picked `v0.1.0` as t
 - `sh scripts/test.sh`: PASS, 10820 cases.
 - `sh selfhost/bootstrap.sh`: fixed point, seed current (regenerated in `d9295d57`).
 - `pnpm --dir website build`: passes; 0 highlighter problems over 782 fences.
+- `sh scripts/linux-check.sh`: PASS.
 
 ## Still to do
 
-- [ ] `sh scripts/linux-check.sh`.
+- [x] `sh scripts/linux-check.sh`: PASS in 548s.
 - [ ] Push `feat/batch-21` and open the batch-21 pull request for the maintainer.
 - [ ] After it merges: first-release (`v0.1.0`), which the maintainer pushes; the prerelease paragraph in `docs/install.md` becomes one line for a full release.

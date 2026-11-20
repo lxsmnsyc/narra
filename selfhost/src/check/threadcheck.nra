@@ -16,7 +16,6 @@ import {
   Ref,
   getExpressionId,
   getExpressionPos,
-  findLocal,
 } from "narrac/check/check"
 import * as Arrays from "std/array"
 
@@ -80,7 +79,7 @@ struct ThreadFunction {
 
 const THREAD_FUNCTIONS: Array<ThreadFunction> = [
   ThreadFunction { module: "std/thread", name: "start", work: 1 },
-  ThreadFunction { module: "std/thread", name: "startTask", work: 1 },
+  ThreadFunction { module: "std/thread", name: "startAsync", work: 1 },
   ThreadFunction { module: "std/parallel", name: "map", work: 1 },
 ]
 
@@ -325,7 +324,14 @@ export function checkThreadCall(
   if (work < 0 || work >= Arrays.length(arguments)) {
     return
   }
-  checkThreadFunction(mutable checker, arguments[work].value, info.name == "startTask")
+  if (info.module == "std/thread" && info.name == "start") {
+    // Thread.start runs a plain function; an async one goes to Thread.startAsync.
+    if (isAsyncWork(checker, arguments[work].value)) {
+      reportAsyncThread(mutable checker, getExpressionPos(arguments[work].value))
+      return
+    }
+  }
+  checkThreadFunction(mutable checker, arguments[work].value, info.name == "startAsync")
   if (info.module == "std/parallel" && Arrays.length(arguments) > 0) {
     const items = arguments[0].value
     const itemsType = copy(getNodeType(checker, getExpressionId(items)))
@@ -477,44 +483,14 @@ export function checkAtomicType(
   }
 }
 
-export function findTaskStart(checker: Checker, funcIndex: int, arguments: Array<Arg>): int {
-  // Thread.start with an async arrow or the name of an async function runs
-  // startTask of std/thread, whose thread runs the task on its own loop.
-  const info = checker.functions[funcIndex]
-  if (info.module != "std/thread" || info.name != "start" || Arrays.length(arguments) != 2) {
-    return -1
-  }
-  if (!isAsyncWork(checker, arguments[1].value)) {
-    return -1
-  }
-  if (checker.scopeIndex["std/thread"] is Some(threadScope)) {
-    if (checker.scopes[threadScope].functions["startTask"] is Some(taskIndex)) {
-      return taskIndex
-    }
-  }
-  return -1
-}
-
 function isAsyncWork(checker: Checker, work: Expr): bool {
   match (work) {
     Expr.AsyncExpr(_, _, Expr.ArrowExpr(_, _, _, _, _, _)) => {
       return true
     }
-    Expr.Ident(_, _, name) => {
-      if (findLocal(checker, name) >= 0) {
-        return false
-      }
-      return isAsyncFunction(checker, checker.scopes[checker.current].functions[name])
-    }
-    Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name) => {
-      if (findLocal(checker, alias) >= 0) {
-        return false
-      }
-      // The name of a function of an imported module.
-      if (checker.scopes[checker.current].modules[alias] is Some(path)) {
-        if (checker.scopeIndex[path] is Some(moduleScope)) {
-          return isAsyncFunction(checker, checker.scopes[moduleScope].functions[name])
-        }
+    Expr.Ident(nodeId, _, _) | Expr.FieldExpr(nodeId, _, _, _) => {
+      if (getRef(checker, nodeId) is Ref.Function(funcIndex)) {
+        return checker.functions[funcIndex].declaration.isAsync
       }
       return false
     }
@@ -524,11 +500,13 @@ function isAsyncWork(checker: Checker, work: Expr): bool {
   }
 }
 
-function isAsyncFunction(checker: Checker, found: Option<int>): bool {
-  if (found is Some(funcIndex)) {
-    return checker.functions[funcIndex].declaration.isAsync
-  }
-  return false
+function reportAsyncThread(mutable checker: Checker, pos: Pos) uses alloc {
+  reportError(
+    mutable checker,
+    pos,
+    "E1192",
+    "Thread.start takes a plain function; use Thread.startAsync to run an async function on a thread",
+  )
 }
 
 function checkThreadFunction(mutable checker: Checker, work: Expr, runsTask: bool) uses alloc {

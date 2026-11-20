@@ -65,7 +65,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-All the tasks run on one thread, taking turns. A task only gives up its turn where it waits on another task, a timer or the network. So two tasks never change the same value at the same moment, and a long calculation in one task holds up all the others. [Chapter 15](15-threads-and-shared-state.md) shows how to run work in parallel on several cores. Each thread has an event loop of its own, and an `async` function can run as a thread's work.
+All the tasks run on one thread, taking turns. A task only gives up its turn where it waits on another task, a timer or the network. So two tasks never change the same value at the same moment, and a long calculation in one task holds up all the others. [Chapter 15](15-threads-and-shared-state.md) shows how to run work in parallel on several cores. Each thread has an event loop of its own, and `Thread.startAsync` runs an `async` function on a new thread.
 
 A call of an async function has the effects of the function, plus `alloc` for the task it starts. `await` itself has none ([chapter 10](10-effects-and-testing.md)).
 

@@ -3123,6 +3123,16 @@ A Scope joins its threads when its Thread.scope returns, so it must not outlive 
 
 Fix: pass the Scope as a parameter to the function that starts threads, or open a new Thread.scope where it is needed.
 
+#### E1192
+
+```text
+Thread.start takes a plain function; use Thread.startAsync to run an async function on a thread
+```
+
+Thread.start calls its function and keeps what it returns. An async function returns an Async handle, which belongs to the event loop of the thread that made it. Thread.startAsync runs the task on the new thread's own event loop and keeps the value the task gives.
+
+Fix: write `Thread.startAsync(scope, async () => work())`, or pass a plain function to Thread.start.
+
 #### E1193
 
 ```text

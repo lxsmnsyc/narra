@@ -102,7 +102,7 @@ export function run(args: Array<string>): int {
 Copy the value into a `const` first, as chapter 3 shows. A thread function has a few more rules:
 
 - It is an arrow function written in the call, or the name of a top-level function. A function kept in a variable is an error, because the compiler has to see what the function captures.
-- It may be `async`, as the last section shows. `Parallel.map` takes only a plain function.
+- `Thread.start` and `Parallel.map` take a plain function. `Thread.startAsync` takes an `async` one, as the last section shows.
 - It cannot capture the `Scope`. A `Scope` can be passed to a function, but not stored, returned or captured by a closure that outlives the call. So only the code inside `Thread.scope` starts threads in it.
 - Each value it captures, and the value it returns, must be `Sendable`.
 
@@ -517,7 +517,7 @@ Pick by where the program spends its time:
 
 The two do not mix freely. Each thread has its own event loop, and an `Async` handle is not `Sendable`, so a handle never moves to another thread. A plain thread function may start tasks. When it returns, its thread cancels them, as a program does at its end (chapter 14), and only then does `join` give the result.
 
-A thread function may also be `async`: an `async` arrow written in the call, or the name of a top-level `async` function. The thread runs its task on its own event loop until the task finishes, and `join` gives the value the task returns. This is how code on a thread waits on a timer or the network:
+`Thread.startAsync` runs an `async` function on a new thread: an `async` arrow written in the call, or the name of a top-level `async` function. The thread runs its task on its own event loop until the task finishes, and `join` gives the value the task returns. This is how code on a thread waits on a timer or the network:
 
 ```narra
 import * as Int from "std/int"
@@ -526,7 +526,7 @@ import * as Time from "std/time"
 
 export function run(args: Array<string>): int {
   const ticks = Thread.scope((scope) => {
-    const ticker = Thread.start(scope, async () => {
+    const ticker = Thread.startAsync(scope, async () => {
       let count = 0
       for (let i = 0; i < 3; i++) {
         const slept = await Time.sleep(Time.milliseconds(10))
@@ -548,7 +548,7 @@ export function run(args: Array<string>): int {
 3 ticks on another thread
 ```
 
-The rules of a thread function stay the same: the captures and the value the task returns must be `Sendable`. Once the task has finished, the thread cancels the tasks it started that are still running, as for a plain thread function.
+The rules of a thread function stay the same: the captures and the value the task returns must be `Sendable`. An `async` function passed to `Thread.start` is an error that names `Thread.startAsync`. Once the task has finished, the thread cancels the tasks it started that are still running, as for a plain thread function.
 
 `Parallel.map` takes only a plain function. It splits work that computes into one part per core. Work that waits gains nothing from one part per core: run it as tasks on one thread with `Async.all` (chapter 14).
 

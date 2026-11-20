@@ -51,6 +51,7 @@ The rule: an API is async when the operating system can wait for it in the backg
 - `Time.sleep`: async only. `std/async/time` goes; `Time.sleep` in `std/time` becomes the async sleep.
 - Sockets: async only, as `std/net` (the old `std/async/net`, names unchanged).
 - Processes, stdin, `Thread.join` and channels stay sync.
+- A thread function may be `async`, so code on a thread can sleep and use `std/net` (found while folding: thread functions could not await, so the async-only sleep left threads with no way to wait).
 - The entry function's parameters are never reported as unused: `run`'s signature is fixed, so the warning cannot be acted on.
 
 ## Acceptance

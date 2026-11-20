@@ -32,6 +32,9 @@ shared:
 reserves: []
 provides: []
 depends_on:
+  - on: async-thread-functions
+    kind: hard
+    why: rewrites thread and async samples
   - on: entry-args-unused
     kind: hard
     why: most warnings are the args warning

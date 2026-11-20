@@ -1,7 +1,7 @@
 ---
 id: std-set
 title: "A Set type"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

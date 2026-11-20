@@ -1,7 +1,7 @@
 ---
 id: std-set
 title: "A Set type"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-22
@@ -45,6 +45,8 @@ depends_on:
 ## Goal
 
 Survey item 2: a new `std/set` with `Set<T>` over `Map<T, bool>` (create, add, remove, has, size, values for loops, union, intersection, difference), keys constrained like map keys (`Hashable`). Add it to the guide (chapter 13, standard library) and to chapter 8's std module list.
+
+Also, from the std-array-more review: rename the helper `smaller` in `std/src/ext__array.nra` to a name that says its action (for example `pickSmaller`), and add `testdata/errors/array_contains_not_equatable.nra` (a function-typed element, rejected by `contains`).
 
 ## Rules for every std addition
 

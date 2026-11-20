@@ -1,7 +1,7 @@
 ---
 id: std-array-more
 title: "Array sorting and the missing array functions"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

@@ -1,7 +1,7 @@
 ---
 id: guide-basics-gaps
 title: "Chapter 2: divisions, maps, strings and loops"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

@@ -1,7 +1,7 @@
 ---
 id: guide-corrections
 title: "Fix the guide's wrong statements and the std list"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

@@ -46,6 +46,8 @@ The guide writers of batch-21 compare SPEC.md with the compiler. Fix what they f
 
 - A struct literal does not work out a constant type parameter from its fields (`Schedule { hours: [...] }` fails, `Schedule<14> { ... }` works); the spec says only that calls work it out. Say so (guide-proofs).
 
+- Section 3 lists `narrac move old new` (move a file and rewrite its imports), but the compiler has no such command. Move the line to section 16 (Deferred) as not built yet (guide-tools-gaps).
+
 Before editing, read every batch-21 node `outcome.md` for more "spec against compiler" findings. Compile every sample of the sections you touch with a compiler built from this branch; fix the spec text, not the compiler.
 
 ## Acceptance

@@ -63,7 +63,7 @@ export function run(args: Array<string>): int {
 
 `while` runs its block again and again while the condition in parentheses is true. Each pass assigns new values to the two `let` names with `=`.
 
-You add to a value with `+=`, as in TypeScript. `-=`, `*=`, `/=` and the other compound forms work the same way, and `weeks++` and `weeks--` add and subtract one. They are statements: they have no value, so `const copy = weeks++` is an error, and so is the prefix form `++weeks`.
+You add to a value with `+=`. `-=`, `*=`, `/=` and the other compound forms work the same way, and `weeks++` and `weeks--` add and subtract one. They are statements: they have no value, so `const copy = weeks++` is an error, and so is the prefix form `++weeks`.
 
 ```narra
 import * as Int from "std/int"

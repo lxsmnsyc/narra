@@ -126,17 +126,9 @@ ok: stage 1 and stage 2 emit identical C (246458 lines)
 seed is current
 ```
 
-The sizes in your output can differ. The new compiler is now in `out/narrac`.
+The sizes in your output can differ. The new compiler is now in `out/narrac`. If the build fails, the line above the error names the step.
 
-The script builds the compiler in steps:
-
-- **Stage 0.** The C compiler builds `seed/narrac.c`, a C copy of the compiler that is kept in the repository.
-- **Stage 1.** That compiler turns the Narra source of the compiler, in `selfhost/`, into C, and the C compiler builds it.
-- **Stage 2.** The new compiler turns the same source into C again.
-
-The line that starts with `ok:` is the check that the build is correct. Two compilers, built in different ways, turned the same source into the same C. So the new compiler compiles itself the way the old one did. If the two outputs differ, the script runs one more stage and compares again. It fails only if that comparison also differs.
-
-`seed is current` means `seed/narrac.c` matches the source. When the source is newer, the script prints a note instead. The note is not an error, and the build still works.
+The line that starts with `ok:` shows that the build is correct. `seed is current` means the checked-in seed matches the source. The seed and the stages are explained in [seed/README.md](https://github.com/lxsmnsyc/narra/blob/main/seed/README.md).
 
 #### Choose a C compiler
 
@@ -147,15 +139,6 @@ CC=clang sh selfhost/bootstrap.sh out
 ```
 
 `narrac` reads `CC` in the same way when it builds your programs.
-
-#### Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| 0 | The build finished and the check passed. |
-| 1 | The check failed: the two compilers turned the source into different C. |
-| 2 | Wrong usage, such as more than one folder name. |
-| other | A step failed, for example `127` when the C compiler is not found. The line above the error names the step. |
 
 ### Install the build
 
@@ -175,5 +158,3 @@ git pull
 sh selfhost/bootstrap.sh out
 cp out/narrac ~/.local/bin/
 ```
-
-The repository's tests run on Linux in a container with `sh scripts/linux-check.sh`, which needs Docker.

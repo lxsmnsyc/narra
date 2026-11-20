@@ -1,7 +1,7 @@
 ---
 id: std-header-comments
 title: "std headers without SPEC and decision citations"
-status: todo
+status: done
 priority: should
 type: chore
 story: batch-23

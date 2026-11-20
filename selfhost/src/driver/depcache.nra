@@ -30,11 +30,6 @@ struct ProgramRun {
 // password on the terminal, and a missing git ends with exit code 127.
 const GIT_SCRIPT = "GIT_TERMINAL_PROMPT=0 exec git \"$@\""
 
-// $1 is the hash file, $2 the checkout in the temporary folder and $3 the final folder.
-const INSTALL_SCRIPT = "[ ! -e \"$3\" ] && mv -f -- \"$1\" \"$3.hash\" && mv -- \"$2\" \"$3\" && { chmod -R a-w \"$3\"; true; }"
-
-const REMOVE_SCRIPT = "chmod -R u+w \"$1\" 2>/dev/null; rm -rf -- \"$1\""
-
 function createFetchError(code: string, message: string): LoadError {
   return LoadError { code, file: "", line: 0, column: 1, message }
 }
@@ -44,10 +39,10 @@ function makeAbsolute(path: string): string uses io, alloc {
     return path
   }
   // A relative folder is read against the working directory now, so a later chdir cannot move it.
-  const ran = runProgram("pwd", [])
-  if (ran is Ok(result)) {
-    if (result.code == 0 && Str.trim(result.output) != "") {
-      return `${Str.trim(result.output)}/${path}`
+  const working = Process.cwd()
+  if (working is Ok(directory)) {
+    if (directory != "") {
+      return `${directory}/${path}`
     }
   }
   return path
@@ -190,6 +185,16 @@ export function isVersionBefore(left: string, right: string): bool uses alloc {
   return false
 }
 
+function compareVersions(left: string, right: string): Ordering uses alloc {
+  if (isVersionBefore(left, right)) {
+    return Ordering.Less
+  }
+  if (isVersionBefore(right, left)) {
+    return Ordering.Greater
+  }
+  return Ordering.Equal
+}
+
 function collectVersions(tags: Array<string>, prefix: string): Array<string> uses alloc {
   let versions: Array<string> = []
   for (const tag of Arrays.values(tags)) {
@@ -201,15 +206,7 @@ function collectVersions(tags: Array<string>, prefix: string): Array<string> use
       Arrays.push(mutable versions, version)
     }
   }
-  for (const position of Ranges.between(1, Arrays.length(versions))) {
-    const version = versions[position]
-    let slot = position
-    while (slot > 0 && isVersionBefore(version, versions[slot - 1])) {
-      versions[slot] = versions[slot - 1]
-      slot--
-    }
-    versions[slot] = version
-  }
+  Arrays.sortBy(mutable versions, compareVersions)
   return versions
 }
 
@@ -330,22 +327,33 @@ function buildCheckout(
     return Err(createFetchError("E0445", `cannot create the cache folder: ${message}`))
   }
   // The history stays out of the cache: a dependency is its files, and .git would hold a second copy.
-  const stripped = runProgram("rm", ["-rf", "--", `${work}/.git`])
+  const stripped = Fs.removeDirAll(`${work}/.git`)
   if (stripped is Err(message)) {
     return Err(createFetchError("E0445", `cannot remove the history of the checkout: ${message}`))
   }
-  const installed = runProgram("sh", ["-c", INSTALL_SCRIPT, "sh", hashFile, work, path])
-  if (installed is Err(message)) {
-    return Err(createFetchError("E0445", `cannot move the checkout into the cache: ${message}`))
+  // Another fetch of the same version may have won the race.
+  if (Fs.exists(path)) {
+    return readRecorded(path)
   }
-  if (installed.value.code != 0) {
-    // Another fetch of the same version may have won the race.
-    if (Fs.isDir(path)) {
-      return readRecorded(path)
-    }
-    return Err(createFetchError("E0445", `cannot move the checkout into ${path}`))
+  const hashMoved = Fs.rename(hashFile, `${path}.hash`)
+  if (hashMoved is Err(message)) {
+    return failInstall(path, `cannot move the checkout into the cache: ${message}`)
   }
+  const checkoutMoved = Fs.rename(work, path)
+  if (checkoutMoved is Err(message)) {
+    return failInstall(path, `cannot move the checkout into the cache: ${message}`)
+  }
+  // The cache is read-only so a build cannot edit a dependency; a failed chmod leaves it writable.
+  const _sealed = runProgram("chmod", ["-R", "a-w", path])
   return Ok(Fetched { path, commit: commit.value, tree: tree.value })
+}
+
+function failInstall(path: string, message: string): Result<Fetched, LoadError> uses io, alloc {
+  // Another fetch of the same version may have won the race.
+  if (Fs.isDir(path)) {
+    return readRecorded(path)
+  }
+  return Err(createFetchError("E0445", message))
 }
 
 function downloadVersion(
@@ -368,7 +376,7 @@ function downloadVersion(
   }
   const temporary = Str.trim(made.value.output)
   const built = buildCheckout(temporary, path, git, tag)
-  const _ = runProgram("sh", ["-c", REMOVE_SCRIPT, "sh", temporary])
+  const _ = Fs.removeDirAll(temporary)
   return built
 }
 

@@ -22,6 +22,7 @@ import * as Parser from "narrac/syntax/parser"
 import * as AstDump from "narrac/syntax/astdump"
 import { Token, escapeText } from "narrac/syntax/lexer"
 import { Trivia, CommentKind, Placement, checkAttached } from "narrac/syntax/trivia"
+import * as Sets from "std/set"
 
 function getKindName(kind: CommentKind): string {
   return match (kind) {
@@ -69,30 +70,23 @@ function padNumbers(key: string): string uses alloc {
   return Str.build(builder)
 }
 
+struct PaddedKey {
+  key: string
+  padded: string
+}
+
 function sortKeys(keys: Array<string>): Array<string> uses alloc {
-  let sorted: Array<string> = []
-  let padded: Array<string> = []
+  let items: Array<PaddedKey> = []
   for (const key of Arrays.values(keys)) {
-    const sortKey = padNumbers(key)
-    // find where it goes
-    let place = Arrays.length(sorted)
-    while (place > 0 && padded[place - 1] > sortKey) {
-      place--
-    }
-    let newSorted: Array<string> = []
-    let newPadded: Array<string> = []
-    for (const index of Ranges.upTo(Arrays.length(sorted) + 1)) {
-      if (index == place) {
-        Arrays.push(mutable newSorted, key)
-        Arrays.push(mutable newPadded, sortKey)
-      }
-      if (index < Arrays.length(sorted)) {
-        Arrays.push(mutable newSorted, sorted[index])
-        Arrays.push(mutable newPadded, padded[index])
-      }
-    }
-    sorted = copy(newSorted)
-    padded = copy(newPadded)
+    Arrays.push(mutable items, PaddedKey { key, padded: padNumbers(key) })
+  }
+  Arrays.sortBy(mutable items, (left: PaddedKey, right: PaddedKey) => Ordered.compare(
+    left.padded,
+    right.padded,
+  ))
+  let sorted: Array<string> = []
+  for (const item of Arrays.values(items)) {
+    Arrays.push(mutable sorted, item.key)
   }
   return sorted
 }
@@ -120,11 +114,11 @@ export function dump(trivia: Trivia): string uses alloc {
       }
     }
   }
-  for (const key of Arrays.values(sortKeys(Maps.keys(trivia.blankBefore)))) {
+  for (const key of Arrays.values(sortKeys(Sets.values(trivia.blankBefore)))) {
     Str.append(mutable builder, `blank ${key}\n`)
   }
   let parenKeys: Array<string> = []
-  for (const id of Arrays.values(Maps.keys(trivia.parenthesized))) {
+  for (const id of Arrays.values(Sets.values(trivia.parenthesized))) {
     Arrays.push(mutable parenKeys, `e${Int.toString(id)}`)
   }
   for (const key of Arrays.values(sortKeys(parenKeys))) {

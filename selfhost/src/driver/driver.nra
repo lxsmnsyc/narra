@@ -80,6 +80,8 @@ import { explainCode, writeCodeListJson, writeDiagnosticJson } from "narrac/driv
 import { Fix, applyFix } from "narrac/driver/fixes"
 import { emitProgram } from "narrac/emit/emit"
 import { findEntry, exitWithoutRelease } from "narrac/emit/emitter"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // A problem found while loading or checking: file is empty and line is 0 for
 // a problem that is not a diagnostic (an unreadable file).
@@ -523,7 +525,7 @@ function checkEveryTarget(path: string): Array<Diagnostic> uses io, alloc {
   // A diagnostic found on several targets is reported once. An E0991 names the
   // target, so its key leaves the name out and the message gets every target it fails on.
   let diagnostics: Array<Diagnostic> = []
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   let runs: Map<string, Array<TargetRun>> = Map {}
   let firstNames: Array<string> = []
   let useKeys: Array<string> = []
@@ -536,8 +538,7 @@ function checkEveryTarget(path: string): Array<Diagnostic> uses io, alloc {
         message = Str.replace(message, `compiled for ${targetName};`, "compiled for ;")
       }
       const key = `${diagnostic.file}:${Int.toString(diagnostic.line)}:${Int.toString(diagnostic.column)}:${diagnostic.code}:${message}`
-      if (seen[key] is None) {
-        seen[key] = true
+      if (Sets.add(mutable seen, key)) {
         Arrays.push(mutable diagnostics, diagnostic)
         Arrays.push(mutable firstNames, targetName)
         Arrays.push(mutable useKeys, key)
@@ -615,36 +616,19 @@ function describeTargetRuns(targetRuns: Array<TargetRun>): string uses alloc {
 function sortDiagnostics(
   diagnostics: Array<Diagnostic>,
 ): Array<Diagnostic> from diagnostics uses alloc {
-  // An insertion sort by file, line and column keeps equal positions in report order.
-  let sorted: Array<Diagnostic> = []
-  for (const diagnostic of Arrays.values(diagnostics)) {
-    let position = Arrays.length(sorted)
-    while (position > 0 && isDiagnosticBefore(diagnostic, sorted[position - 1])) {
-      position--
-    }
-    let next: Array<Diagnostic> = []
-    for (const index of Ranges.between(0, Arrays.length(sorted))) {
-      if (index == position) {
-        Arrays.push(mutable next, diagnostic)
-      }
-      Arrays.push(mutable next, sorted[index])
-    }
-    if (position == Arrays.length(sorted)) {
-      Arrays.push(mutable next, diagnostic)
-    }
-    sorted = copy(next)
-  }
+  let sorted = copy(diagnostics)
+  Arrays.sortBy(mutable sorted, compareDiagnostics)
   return sorted
 }
 
-function isDiagnosticBefore(left: Diagnostic, right: Diagnostic): bool {
+function compareDiagnostics(left: Diagnostic, right: Diagnostic): Ordering {
   if (left.file != right.file) {
-    return left.file < right.file
+    return Ordered.compare(left.file, right.file)
   }
   if (left.line != right.line) {
-    return left.line < right.line
+    return Int.compare(left.line, right.line)
   }
-  return left.column < right.column
+  return Int.compare(left.column, right.column)
 }
 
 // The C text of a program, the libraries its reached extern blocks name, and the

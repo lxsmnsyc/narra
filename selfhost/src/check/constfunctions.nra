@@ -30,6 +30,8 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // The std modules whose functions an `@const` body may call.
 export const CONST_STD_MODULES = [
@@ -166,7 +168,7 @@ function checkSignature(
   }
   for (const parameter of Arrays.values(declaration.parameters)) {
     const parameterType = copy(checker.paramTypes[parameter.id])
-    let seen: Map<string, bool> = Map {}
+    let seen: Set<string> = Sets.create()
     const forbidden = findForbiddenType(checker, parameterType, mutable seen)
     if (forbidden != "") {
       const problem = `takes parameter ${parameter.name} of type ${describeForbidden(checker, parameterType, forbidden)}`
@@ -175,7 +177,7 @@ function checkSignature(
     }
   }
   const result = copy(checker.functions[funcIndex].result)
-  let seenResult: Map<string, bool> = Map {}
+  let seenResult: Set<string> = Sets.create()
   const forbiddenResult = findForbiddenType(checker, result, mutable seenResult)
   if (forbiddenResult != "") {
     let pos = declaration.pos
@@ -200,7 +202,7 @@ function describeForbidden(checker: Checker, type: Type, forbidden: string): str
 function findForbiddenType(
   checker: Checker,
   type: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   // The text of the first part of the type the evaluator cannot build, or "".
   return match (type) {
@@ -235,7 +237,7 @@ function findForbiddenPair(
   checker: Checker,
   first: Type,
   second: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   const forbidden = findForbiddenType(checker, first, mutable seen)
   if (forbidden != "") {
@@ -247,7 +249,7 @@ function findForbiddenPair(
 function findForbiddenBase(
   checker: Checker,
   index: int,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   if (checker.distincts[index].base is Some(base)) {
     return findForbiddenType(checker, base, mutable seen)
@@ -258,13 +260,12 @@ function findForbiddenBase(
 function findForbiddenStruct(
   checker: Checker,
   index: int,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   const key = `s${Int.toString(index)}`
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return ""
   }
-  seen[key] = true
   // Cell and Shared are structs of std modules the evaluator does not run.
   const module = checker.structs[index].module
   if (module != "" && Str.startsWith(module, "std/") && !isConstStdModule(module)) {
@@ -282,13 +283,12 @@ function findForbiddenStruct(
 function findForbiddenEnum(
   checker: Checker,
   index: int,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   const key = `e${Int.toString(index)}`
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return ""
   }
-  seen[key] = true
   const module = checker.enums[index].module
   if (module != "" && Str.startsWith(module, "std/") && !isConstStdModule(module)) {
     return typeString(checker, Type.TEnum(index))
@@ -505,7 +505,7 @@ function scanExpression(
   }
   const nodeType = copy(readType(checker, scan.body, getExpressionId(expression)))
   if (nodeType is Type.TMap(key, _)) {
-    let seen: Map<string, bool> = Map {}
+    let seen: Set<string> = Sets.create()
     const implementation = findUserImplementation(checker, key, "Hashable", mutable seen)
     if (implementation != "") {
       reportBody(
@@ -554,7 +554,7 @@ function scanExpression(
     Expr.BinaryExpr(_, pos, operator, left, right) => {
       if (operator == "==" || operator == "!=") {
         const operandType = copy(readType(checker, scan.body, getExpressionId(left)))
-        let seen: Map<string, bool> = Map {}
+        let seen: Set<string> = Sets.create()
         const implementation = findUserImplementation(
           checker,
           operandType,
@@ -760,7 +760,7 @@ function findUserImplementation(
   checker: Checker,
   type: Type,
   traitName: string,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   // The type whose user implement block of the trait a comparison or a map key would run, or "".
   if (type is Type.TArray(element)) {
@@ -774,10 +774,9 @@ function findUserImplementation(
     return ""
   }
   const key = typeKey(type)
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return ""
   }
-  seen[key] = true
   if (hasImplementation(checker, key, traitName)) {
     return typeString(checker, type)
   }

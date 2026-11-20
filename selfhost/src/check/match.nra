@@ -57,6 +57,8 @@ import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 function startsUpper(name: string): bool {
   if (Str.length(name) == 0) {
@@ -96,7 +98,7 @@ function createPatternLocal(
     used: false,
     number: checker.localCount,
     namePos: pos,
-    shorthand: checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_),
+    shorthand: Sets.has(checker.scopes[checker.current].facts.shorthandIds, nodeId),
   }
   Arrays.push(mutable checker.bodies[body].locals, local)
   const index = Arrays.length(checker.bodies[body].locals) - 1
@@ -113,7 +115,7 @@ export function resolvePattern<W: Walker>(
   valueType: Type,
 ) uses alloc {
   // The caller puts the locals in scope (collectPatternLocals, bindPatternLocals).
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   resolveNode(mutable checker, walker, pattern, valueType, mutable seen)
 }
 
@@ -122,7 +124,7 @@ function resolveNode<W: Walker>(
   walker: W,
   pattern: Pattern,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   setNodeType(mutable checker, getPatternId(pattern), valueType)
   match (pattern) {
@@ -210,7 +212,7 @@ function resolveAlternatives<W: Walker>(
   walker: W,
   alternatives: Array<Pattern>,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   // The first alternative declares the locals. Each later one resolves on its own, then its names are checked against the first and its nodes point at the first one's locals.
   resolveNode(mutable checker, walker, alternatives[0], valueType, mutable seen)
@@ -219,7 +221,7 @@ function resolveAlternatives<W: Walker>(
   for (const index of Ranges.between(1, Arrays.length(alternatives))) {
     const alternative = alternatives[index]
     const errorCount = Arrays.length(checker.errors)
-    let alternativeSeen: Map<string, bool> = Map {}
+    let alternativeSeen: Set<string> = Sets.create()
     resolveNode(mutable checker, walker, alternative, valueType, mutable alternativeSeen)
     if (Arrays.length(checker.errors) > errorCount) {
       continue
@@ -343,7 +345,7 @@ function resolveName(
   pos: Pos,
   name: string,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   // A name is a constructor without fields when the value is an enum with a variant of that name, otherwise it binds.
   if (valueType is Type.TEnum(enumIndex)) {
@@ -363,11 +365,11 @@ function resolveName(
     reportError(mutable checker, pos, "E0700", message)
     return
   }
-  if (seen[name] is Some(_)) {
+  if (Sets.has(seen, name)) {
     reportError(mutable checker, pos, "E0701", `${quoteGo(name)} is bound twice in this pattern`)
     return
   }
-  seen[name] = true
+  Sets.add(mutable seen, name)
   if (isNameTaken(checker, name)) {
     reportError(
       mutable checker,
@@ -390,7 +392,7 @@ function resolveConstructor<W: Walker>(
   arguments: Array<Pattern>,
   bare: bool,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   if (readEnumIndex(valueType) < 0) {
     const message = `constructor pattern ${name} needs an enum value, found ${typeString(checker, valueType)}`
@@ -455,7 +457,7 @@ function resolveStruct<W: Walker>(
   pos: Pos,
   fields: Array<FieldPattern>,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   let structIndex = -1
   if (valueType is Type.TStruct(index)) {
@@ -477,7 +479,7 @@ function resolveStruct<W: Walker>(
     const message = `cannot match the fields of ${text}: it is an opaque struct of module ${quoteGo(checker.structs[structIndex].module)}`
     reportError(mutable checker, pos, "E0720", message)
   }
-  let given: Map<string, bool> = Map {}
+  let given: Set<string> = Sets.create()
   const structFields = copy(checker.structs[structIndex].fields)
   for (const fieldPattern of Arrays.values(fields)) {
     const fieldIndex = findField(structFields, fieldPattern.name)
@@ -491,7 +493,7 @@ function resolveStruct<W: Walker>(
       bindRest(mutable checker, fieldPattern.pattern, mutable seen)
       continue
     }
-    if (given[fieldPattern.name] is Some(_)) {
+    if (Sets.has(given, fieldPattern.name)) {
       reportError(
         mutable checker,
         fieldPattern.pos,
@@ -501,7 +503,7 @@ function resolveStruct<W: Walker>(
       bindRest(mutable checker, fieldPattern.pattern, mutable seen)
       continue
     }
-    given[fieldPattern.name] = true
+    Sets.add(mutable given, fieldPattern.name)
     resolveNode(
       mutable checker,
       walker,
@@ -519,7 +521,7 @@ function resolveTuple<W: Walker>(
   pos: Pos,
   arguments: Array<Pattern>,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   let structIndex = -1
   if (valueType is Type.TStruct(index)) {
@@ -561,7 +563,7 @@ function resolveArray<W: Walker>(
   elements: Array<Pattern>,
   rest: Option<Pattern>,
   valueType: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   const shape = resolveArrayShape(mutable checker, pos, Arrays.length(elements), rest, valueType)
   if (shape is Some(elementType)) {
@@ -604,7 +606,7 @@ function resolveLiteral<W: Walker>(
 function bindRest(
   mutable checker: Checker,
   pattern: Pattern,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ) uses alloc {
   // The names get type void, so their uses do not also report "unknown name".
   match (pattern) {
@@ -616,9 +618,9 @@ function bindRest(
         getRef(checker, nodeId) is Ref.Unresolved &&
           !isDeclared &&
           !startsUpper(name) &&
-          seen[name] is None
+          !Sets.has(seen, name)
       ) {
-        seen[name] = true
+        Sets.add(mutable seen, name)
         createPatternLocal(mutable checker, nodeId, pos, name, Type.TVoid)
       }
     }

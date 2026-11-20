@@ -67,6 +67,8 @@ import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import * as ThreadCheck from "narrac/check/threadcheck"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 function isDerivable(name: string): bool {
   return name == "Equatable" || name == "Hashable" || name == "Ordered" || name == "Show"
@@ -123,14 +125,14 @@ export function findTypeTraits(mutable checker: Checker, type: Type): int uses a
   if (type is Type.TStruct(structIndex)) {
     // Tuples derive Show and Ordered, and get Equatable and Hashable like any struct. Go records that when the first tuple is made, here it is made on first use.
     if (checker.structs[structIndex].tuple) {
-      let derived: Map<int, bool> = Map {}
+      let derived: Set<int> = Sets.create()
       const ordered = stdTrait(checker, "Ordered")
       const show = stdTrait(checker, "Show")
       if (ordered >= 0) {
-        derived[ordered] = true
+        Sets.add(mutable derived, ordered)
       }
       if (show >= 0) {
-        derived[show] = true
+        Sets.add(mutable derived, show)
       }
       const info = TypeTraits {
         name: "Tuple",
@@ -139,7 +141,7 @@ export function findTypeTraits(mutable checker: Checker, type: Type): int uses a
         generic: true,
         implementationExpressions: [],
         derivedExpressions: [],
-        listed: Map {},
+        listed: Sets.create(),
         derived,
         blocks: Map {},
       }
@@ -185,8 +187,8 @@ export function declareTraits(mutable checker: Checker, file: File) uses alloc {
           generic: Arrays.length(structDecl.typeParameters) > 0,
           implementationExpressions: structDecl.implementations,
           derivedExpressions: structDecl.derived,
-          listed: Map {},
-          derived: Map {},
+          listed: Sets.create(),
+          derived: Sets.create(),
           blocks: Map {},
         }
         const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${structDecl.name}`, info)
@@ -199,8 +201,8 @@ export function declareTraits(mutable checker: Checker, file: File) uses alloc {
           generic: Arrays.length(enumDecl.typeParameters) > 0,
           implementationExpressions: enumDecl.implementations,
           derivedExpressions: enumDecl.derived,
-          listed: Map {},
-          derived: Map {},
+          listed: Sets.create(),
+          derived: Sets.create(),
           blocks: Map {},
         }
         const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${enumDecl.name}`, info)
@@ -213,8 +215,8 @@ export function declareTraits(mutable checker: Checker, file: File) uses alloc {
           generic: false,
           implementationExpressions: distinctDecl.implementations,
           derivedExpressions: distinctDecl.derived,
-          listed: Map {},
-          derived: Map {},
+          listed: Sets.create(),
+          derived: Sets.create(),
           blocks: Map {},
         }
         const _ = addTypeTraitsEntry(mutable checker, `${modulePath}|${distinctDecl.name}`, info)
@@ -271,8 +273,8 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
   if (entryIndex < 0) {
     return
   }
-  checker.typeTraits[entryIndex].listed = Map {}
-  checker.typeTraits[entryIndex].derived = Map {}
+  checker.typeTraits[entryIndex].listed = Sets.create()
+  checker.typeTraits[entryIndex].derived = Sets.create()
   checker.typeTraits[entryIndex].blocks = Map {}
   const info = copy(checker.typeTraits[entryIndex])
   for (const typeExpr of Arrays.values(info.implementationExpressions)) {
@@ -284,11 +286,11 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
       ThreadCheck.reportSendableWritten(mutable checker, typeExpr.pos, "implements")
       continue
     }
-    if (checker.typeTraits[entryIndex].listed[traitIndex] is Some(_)) {
+    if (Sets.has(checker.typeTraits[entryIndex].listed, traitIndex)) {
       const message = `${checker.traits[traitIndex].name} is listed twice in \`implements\``
       reportError(mutable checker, typeExpr.pos, "E0501", message)
     }
-    checker.typeTraits[entryIndex].listed[traitIndex] = true
+    Sets.add(mutable checker.typeTraits[entryIndex].listed, traitIndex)
   }
   for (const typeExpr of Arrays.values(info.derivedExpressions)) {
     let traitIndex = derivedTrait(checker, typeExpr)
@@ -307,11 +309,11 @@ function declareListed(mutable checker: Checker, key: string) uses alloc {
       reportError(mutable checker, typeExpr.pos, "E0503", message)
       continue
     }
-    if (checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
+    if (Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)) {
       const message = `${checker.traits[traitIndex].name} is listed twice in \`derives\``
       reportError(mutable checker, typeExpr.pos, "E0504", message)
     }
-    checker.typeTraits[entryIndex].derived[traitIndex] = true
+    Sets.add(mutable checker.typeTraits[entryIndex].derived, traitIndex)
   }
 }
 
@@ -333,18 +335,18 @@ export function funcBounds(
     if (i >= Arrays.length(typeParameters)) {
       continue
     }
-    let seen: Map<int, bool> = Map {}
+    let seen: Set<int> = Sets.create()
     for (const typeExpr of Arrays.values(funcDecl.bounds[i])) {
       const traitIndex = traitNamed(mutable checker, typeExpr)
       if (traitIndex < 0) {
         continue
       }
-      if (seen[traitIndex] is Some(_)) {
+      if (Sets.has(seen, traitIndex)) {
         const message = `${checker.traits[traitIndex].name} is listed twice in the constraint of ${funcDecl.typeParameters[i]}`
         reportError(mutable checker, typeExpr.pos, "E0506", message)
         continue
       }
-      seen[traitIndex] = true
+      Sets.add(mutable seen, traitIndex)
       let current: Array<int> = []
       if (checker.bounds[typeParameters[i]] is Some(bounds)) {
         current = copy(bounds)
@@ -428,7 +430,7 @@ function checkListed(
     if (traitIndex >= 0 && !ThreadCheck.isSendableTrait(checker, traitIndex)) {
       if (
         checker.typeTraits[entryIndex].blocks[traitIndex] is None &&
-          checker.typeTraits[entryIndex].derived[traitIndex] is None
+          !Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)
       ) {
         const traitName = checker.traits[traitIndex].name
         let message = `${info.name} implements ${traitName} but has no \`implement ${traitName} for ${info.name}\` block`
@@ -445,7 +447,7 @@ function checkListed(
     if (traitIndex < 0) {
       continue
     }
-    if (checker.typeTraits[entryIndex].derived[traitIndex] is None) {
+    if (!Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)) {
       continue
     }
     if (checker.typeTraits[entryIndex].blocks[traitIndex] is Some(_)) {
@@ -521,7 +523,7 @@ function shapeDerivedIndex(checker: Checker, name: string): int {
   if (entryIndex < 0 || shape < 0) {
     return -1
   }
-  if (checker.typeTraits[entryIndex].derived[shape] is None) {
+  if (!Sets.has(checker.typeTraits[entryIndex].derived, shape)) {
     return -1
   }
   return shape
@@ -611,7 +613,7 @@ function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc 
   const name = checker.traits[traitIndex].name
   const selfParameter = checker.traits[traitIndex].selfParameter
   checker.environment = Map { "Self": Type.TParam(selfParameter) }
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   for (const funcDecl of Arrays.values(traitDecl.functions)) {
     if (Arrays.length(funcDecl.typeParameters) > 0) {
       reportError(
@@ -621,7 +623,7 @@ function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc 
         "trait functions cannot have type parameters in this compiler yet",
       )
     }
-    if (seen[funcDecl.name] is Some(_)) {
+    if (Sets.has(seen, funcDecl.name)) {
       reportError(
         mutable checker,
         funcDecl.pos,
@@ -629,7 +631,7 @@ function resolveTraitDecl(mutable checker: Checker, traitIndex: int) uses alloc 
         `${name} declares function ${quoteGo(funcDecl.name)} twice`,
       )
     }
-    seen[funcDecl.name] = true
+    Sets.add(mutable seen, funcDecl.name)
     let parameters: Array<Type> = []
     let mentionsSelf = false
     for (const param of Arrays.values(funcDecl.parameters)) {
@@ -755,7 +757,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
       return
     }
   }
-  if (info.listed[traitIndex] is None) {
+  if (!Sets.has(info.listed, traitIndex)) {
     reportError(
       mutable checker,
       implDecl.pos,
@@ -787,7 +789,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   selfMap[checker.traits[traitIndex].selfParameter] = type
   checker.environment = createImplementEnvironment(checker, parameters, type)
   checkMutableSelf(mutable checker, implDecl.pos, traitIndex, type, info.name)
-  let got: Map<string, bool> = Map {}
+  let got: Set<string> = Sets.create()
   for (const funcDecl of Arrays.values(implDecl.functions)) {
     if (Arrays.length(funcDecl.typeParameters) > 0) {
       reportError(
@@ -812,7 +814,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
       )
       continue
     }
-    if (got[funcDecl.name] is Some(_)) {
+    if (Sets.has(got, funcDecl.name)) {
       reportError(
         mutable checker,
         funcDecl.pos,
@@ -821,7 +823,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
       )
       continue
     }
-    got[funcDecl.name] = true
+    Sets.add(mutable got, funcDecl.name)
     if (!sameSignature(mutable checker, funcDecl, result, traitIndex, funcIndex, selfMap)) {
       const text = signatureText(mutable checker, traitIndex, funcIndex, selfMap)
       reportError(
@@ -848,7 +850,7 @@ function resolveImpl(mutable checker: Checker, implDecl: ImplDecl) uses alloc {
   }
   checker.environment = Map {}
   for (const traitFunc of Arrays.values(copy(checker.traits[traitIndex].functions))) {
-    if (got[traitFunc.name] is None) {
+    if (!Sets.has(got, traitFunc.name)) {
       reportError(
         mutable checker,
         implDecl.pos,
@@ -1167,7 +1169,7 @@ function nominalShapeProblem(
 ): string uses alloc {
   const text = typeString(checker, type)
   const entryIndex = findTypeTraits(mutable checker, type)
-  if (entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
+  if (entryIndex >= 0 && Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)) {
     for (const field of Arrays.values(copy(listFields(checker, type)))) {
       const problem = shapeProblem(mutable checker, field.fieldType, traitIndex)
       if (problem != "") {
@@ -1208,7 +1210,7 @@ function distinctImplements(
   }
   const name = checker.traits[traitIndex].name
   const auto = checker.traits[traitIndex].std && (name == "Equatable" || name == "Hashable")
-  const derived = entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)
+  const derived = entryIndex >= 0 && Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)
   if (!auto && !derived) {
     return false
   }
@@ -1234,7 +1236,7 @@ function nominalImplements(mutable checker: Checker, type: Type, traitIndex: int
   }
   const name = checker.traits[traitIndex].name
   const auto = checker.traits[traitIndex].std && (name == "Equatable" || name == "Hashable")
-  if (!auto && checker.typeTraits[entryIndex].derived[traitIndex] is None) {
+  if (!auto && !Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)) {
     return false
   }
   for (const field of Arrays.values(copy(listFields(checker, type)))) {
@@ -1317,7 +1319,7 @@ function findOpaqueShape(mutable checker: Checker, type: Type, traitIndex: int):
     Type.TStruct(index) => {
       if (checker.structs[index].opaque && checker.structs[index].module != modPath(checker)) {
         const entryIndex = findTypeTraits(mutable checker, type)
-        if (entryIndex >= 0 && checker.typeTraits[entryIndex].derived[traitIndex] is Some(_)) {
+        if (entryIndex >= 0 && Sets.has(checker.typeTraits[entryIndex].derived, traitIndex)) {
           return typeString(checker, type)
         }
       }
@@ -1342,7 +1344,7 @@ export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) u
   if (type == Type.TVoid || typeImplements(mutable checker, type, equatable)) {
     return
   }
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   const text = typeString(checker, type)
   if (type is Type.TAsync(_)) {
     reportError(
@@ -1391,13 +1393,12 @@ export function checkEquatable(mutable checker: Checker, pos: Pos, type: Type) u
 export function containsFunc(
   checker: Checker,
   type: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): bool uses alloc {
   const key = typeKey(type)
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return false
   }
-  seen[key] = true
   match (type) {
     Type.TFunc(_, _, _, _, _) => {
       return true
@@ -1420,7 +1421,7 @@ export function containsFunc(
   }
 }
 
-function anyFunc(checker: Checker, type: Type, mutable seen: Map<string, bool>): bool uses alloc {
+function anyFunc(checker: Checker, type: Type, mutable seen: Set<string>): bool uses alloc {
   for (const field of Arrays.values(listFields(checker, type))) {
     if (containsFunc(checker, field.fieldType, mutable seen)) {
       return true
@@ -1432,14 +1433,13 @@ function anyFunc(checker: Checker, type: Type, mutable seen: Map<string, bool>):
 export function mapKeyProblem(
   mutable checker: Checker,
   type: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   // A key needs Equatable and Hashable. A user Equatable without a user Hashable keeps the field-based hash, so equal keys could hash differently: both or neither must be written.
   const key = typeKey(type)
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return ""
   }
-  seen[key] = true
   match (type) {
     Type.TF64 | Type.TF32 => {
       return "float keys are not allowed"
@@ -1495,7 +1495,7 @@ export function mapKeyProblem(
 function nominalKeyProblem(
   mutable checker: Checker,
   type: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): string uses alloc {
   if (isCellType(checker, type)) {
     return "a Cell is shared by identity, not hashable"
@@ -1528,7 +1528,7 @@ export function flushMapKeys(mutable checker: Checker) uses alloc {
   const keys = checker.mapKeys
   checker.mapKeys = []
   for (const check of Arrays.values(keys)) {
-    let seen: Map<string, bool> = Map {}
+    let seen: Set<string> = Sets.create()
     const problem = mapKeyProblem(mutable checker, check.key, mutable seen)
     if (problem != "") {
       const message = `${typeString(checker, check.key)} cannot be a map key: ${problem}`

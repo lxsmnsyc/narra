@@ -36,6 +36,8 @@ import * as Int from "std/int"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // A local or a constant and the parts after it. root is the BodyInfo.locals
 // index, or -2 - index for a constant; id is the place's PlaceTable id and
@@ -113,7 +115,7 @@ struct PendingWrite {
 struct FlowState {
   pairs: Array<SharePair>
   // The pairs by the ids of their places (makePairKey).
-  pairKeys: Map<int, bool>
+  pairKeys: Set<int>
   pending: Array<PendingWrite>
   reachable: bool
 }
@@ -160,7 +162,7 @@ struct WriteWalk {
   sites: Array<WriteSite>
   // The site of each write, by its position, place text and kind.
   siteIndex: Map<int, int>
-  reported: Map<int, bool>
+  reported: Set<int>
   found: Array<FoundWrite>
   // The states that leave the innermost loop or `continue` it.
   breakState: FlowState
@@ -188,7 +190,7 @@ struct WriteWalk {
   heldWrites: Array<FoundWrite>
   // Renames of a tracked value, reported after the walk, once for each position.
   renames: Array<FoundRename>
-  renamePositions: Map<int, bool>
+  renamePositions: Set<int>
 }
 
 struct FoundRename {
@@ -336,11 +338,11 @@ function findPlaceEnd(expression: Expr): Pos {
 }
 
 function createDeadState(): FlowState uses alloc {
-  return FlowState { pairs: [], pairKeys: Map {}, pending: [], reachable: false }
+  return FlowState { pairs: [], pairKeys: Sets.create(), pending: [], reachable: false }
 }
 
 function createLiveState(): FlowState uses alloc {
-  return FlowState { pairs: [], pairKeys: Map {}, pending: [], reachable: true }
+  return FlowState { pairs: [], pairKeys: Sets.create(), pending: [], reachable: true }
 }
 
 function createWalk(): WriteWalk uses alloc {
@@ -370,7 +372,7 @@ function createWalk(): WriteWalk uses alloc {
     state: createLiveState(),
     sites: [],
     siteIndex: Map {},
-    reported: Map {},
+    reported: Sets.create(),
     found: [],
     breakState: createDeadState(),
     continueState: createDeadState(),
@@ -385,7 +387,7 @@ function createWalk(): WriteWalk uses alloc {
     scopeEnds: [],
     heldWrites: [],
     renames: [],
-    renamePositions: Map {},
+    renamePositions: Sets.create(),
   }
 }
 
@@ -424,8 +426,8 @@ function startBody(checker: Checker, mutable walk: WriteWalk) uses alloc {
     walk.sites = []
     walk.siteIndex = Map {}
   }
-  if (Maps.size(walk.reported) > 0) {
-    walk.reported = Map {}
+  if (Sets.size(walk.reported) > 0) {
+    walk.reported = Sets.create()
   }
   if (Arrays.length(walk.found) > 0) {
     walk.found = []
@@ -435,7 +437,7 @@ function startBody(checker: Checker, mutable walk: WriteWalk) uses alloc {
   }
   if (Arrays.length(walk.renames) > 0) {
     walk.renames = []
-    walk.renamePositions = Map {}
+    walk.renamePositions = Sets.create()
   }
   if (!isEmptyDeadState(walk.breakState)) {
     walk.breakState = createDeadState()
@@ -467,7 +469,7 @@ function isEmptyDeadState(state: FlowState): bool {
   return !state.reachable &&
     Arrays.length(state.pairs) == 0 &&
     Arrays.length(state.pending) == 0 &&
-    Maps.size(state.pairKeys) == 0
+    Sets.size(state.pairKeys) == 0
 }
 
 // ---- Places
@@ -833,9 +835,8 @@ function mergeInto(mutable into: FlowState, other: FlowState) uses alloc {
   }
   for (const pair of Arrays.values(other.pairs)) {
     const key = makePairKey(pair.first.id, pair.second.id)
-    if (into.pairKeys[key] is None) {
+    if (Sets.add(mutable into.pairKeys, key)) {
       Arrays.push(mutable into.pairs, pair)
-      into.pairKeys[key] = true
     }
   }
   for (const write of Arrays.values(other.pending)) {
@@ -868,10 +869,9 @@ function pushPair(
     return
   }
   const key = makePairKey(first.id, second.id)
-  if (walk.state.pairKeys[key] is Some(_)) {
+  if (!Sets.add(mutable walk.state.pairKeys, key)) {
     return
   }
-  walk.state.pairKeys[key] = true
   Arrays.push(mutable walk.state.pairs, SharePair {
     first,
     second,
@@ -949,7 +949,7 @@ function forgetRoot(mutable walk: WriteWalk, local: int) uses alloc {
       if (pair.first.root != local && pair.second.root != local) {
         Arrays.push(mutable pairs, pair)
       } else {
-        const _ = Maps.remove(
+        const _ = Sets.remove(
           mutable walk.state.pairKeys,
           makePairKey(pair.first.id, pair.second.id),
         )
@@ -1117,10 +1117,9 @@ function recordFound(
   reason: LiveReason,
   origin: int,
 ) uses alloc {
-  if (walk.reported[site] is Some(_)) {
+  if (!Sets.add(mutable walk.reported, site)) {
     return
   }
-  walk.reported[site] = true
   Arrays.push(mutable walk.found, FoundWrite {
     site,
     hit,
@@ -1149,7 +1148,7 @@ function noteWrite(
         Arrays.push(mutable kept, pair)
         continue
       }
-      const _ = Maps.remove(mutable walk.state.pairKeys, makePairKey(pair.first.id, pair.second.id))
+      const _ = Sets.remove(mutable walk.state.pairKeys, makePairKey(pair.first.id, pair.second.id))
       checkHit(checker, mutable walk, target, mode, site, pair, pair.first, pair.second)
       checkHit(checker, mutable walk, target, mode, site, pair, pair.second, pair.first)
     }
@@ -1349,15 +1348,11 @@ function canOriginCopy(checker: Checker, walk: WriteWalk, origin: int): bool use
 }
 
 function holdsHeapValue(checker: Checker, type: Type): bool uses alloc {
-  let visited: Map<int, bool> = Map {}
+  let visited: Set<int> = Sets.create()
   return searchHeapValue(checker, type, mutable visited)
 }
 
-function searchHeapValue(
-  checker: Checker,
-  type: Type,
-  mutable visited: Map<int, bool>,
-): bool uses alloc {
+function searchHeapValue(checker: Checker, type: Type, mutable visited: Set<int>): bool uses alloc {
   // An enum holds what its payloads hold: `Some(bag.items)` keeps the array
   // that bag.items names. An enum already visited adds nothing new. A
   // Dynamic's value may hold one too.
@@ -1396,10 +1391,9 @@ function searchHeapValue(
       return false
     }
     Type.TEnum(index) => {
-      if (visited[index] is Some(_)) {
+      if (!Sets.add(mutable visited, index)) {
         return false
       }
-      visited[index] = true
       for (const variant of Arrays.values(checker.enums[index].variants)) {
         for (const field of Arrays.values(variant.fields)) {
           if (searchHeapValue(checker, field.fieldType, mutable visited)) {
@@ -1435,7 +1429,7 @@ function isUsedBy(places: PlaceTable, place: Place, inside: bool, write: Pending
 function isAnyPendingDone(walk: WriteWalk, place: Place, inside: bool): bool {
   // Whether a pending write is used by place now, or was reported since.
   for (const write of Arrays.values(walk.state.pending)) {
-    if (isUsedBy(walk.places, place, inside, write) || walk.reported[write.site] is Some(_)) {
+    if (isUsedBy(walk.places, place, inside, write) || Sets.has(walk.reported, write.site)) {
       return true
     }
   }
@@ -1462,7 +1456,7 @@ function noteUse(mutable walk: WriteWalk, place: Place, pos: Pos, inside: bool) 
         LiveReason.LaterUse(pos.line),
         write.origin,
       )
-    } else if (walk.reported[write.site] is None) {
+    } else if (!Sets.has(walk.reported, write.site)) {
       Arrays.push(mutable kept, write)
     }
   }
@@ -1885,8 +1879,7 @@ function reportRename(
       const fixes = [createFix("copy the value", [insertAt(pos, "copy("), insertAt(end, ")")])]
       const noun = describeTracked(checker, type)
       const key = pos.line * POSITION_STRIDE + pos.column
-      if (walk.renamePositions[key] is None) {
-        walk.renamePositions[key] = true
+      if (Sets.add(mutable walk.renamePositions, key)) {
         Arrays.push(mutable walk.renames, FoundRename {
           pos,
           fixes,

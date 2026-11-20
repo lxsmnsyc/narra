@@ -31,6 +31,8 @@ import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { isThreadModule } from "narrac/check/threadcheck"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 export function getDeclarationName(declaration: Decl): string {
   return match (declaration) {
@@ -94,7 +96,7 @@ export function declareType(
 }
 
 export function importModules(mutable checker: Checker, file: File) uses alloc {
-  let aliases: Map<string, bool> = Map {}
+  let aliases: Set<string> = Sets.create()
   for (const importDecl of Arrays.values(file.imports)) {
     // std/ext/... is the Narra part of a builtin std module, and std/internal/... holds
     // primitives and tables (a source module such as std/internal/unicode is loaded
@@ -235,7 +237,7 @@ export function memberScope(checker: Checker, path: string): int uses alloc {
 function bindAlias(
   mutable checker: Checker,
   importDecl: ImportDecl,
-  mutable aliases: Map<string, bool>,
+  mutable aliases: Set<string>,
 ) uses alloc {
   // aliases holds the aliases the current file has bound. Another file of the module
   // may bind an alias again for the same path, never for another one.
@@ -244,7 +246,7 @@ function bindAlias(
   }
   const current = checker.current
   if (checker.scopes[current].modules[importDecl.alias] is Some(previous)) {
-    if (previous != importDecl.path || aliases[importDecl.alias] is Some(_)) {
+    if (previous != importDecl.path || Sets.has(aliases, importDecl.alias)) {
       reportError(
         mutable checker,
         importDecl.pos,
@@ -253,14 +255,14 @@ function bindAlias(
       )
     }
   }
-  aliases[importDecl.alias] = true
+  Sets.add(mutable aliases, importDecl.alias)
   checker.scopes[current].modules[importDecl.alias] = importDecl.path
 }
 
 function importPackageModule(
   mutable checker: Checker,
   importDecl: ImportDecl,
-  mutable aliases: Map<string, bool>,
+  mutable aliases: Set<string>,
 ): bool uses alloc {
   // Returns false when the path is not a package module, so the caller tries std
   // modules.
@@ -689,7 +691,7 @@ function buildRenameAliasFix(
   if (
     aliasTaken(checker, suggestion) ||
       checker.scopes[scope].modules[suggestion] is Some(_) ||
-      file.facts.inTemplate[alias] is Some(_) ||
+      Sets.has(file.facts.inTemplate, alias) ||
       (isEnum && stdModule is None)
   ) {
     return []
@@ -746,10 +748,10 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
 
   // An imported name may not clash with the module's functions, constants,
   // aliases or types.
-  let declared: Map<string, bool> = Map {}
+  let declared: Set<string> = Sets.create()
   for (const declaration of Arrays.values(file.declarations)) {
     if (declaration is Decl.Func(funcDecl)) {
-      declared[funcDecl.name] = true
+      Sets.add(mutable declared, funcDecl.name)
     }
   }
   const scope = checker.current
@@ -782,9 +784,7 @@ export function checkImportNames(mutable checker: Checker, file: File) uses allo
         continue
       }
       const isConst = checker.scopes[scope].consts[name.local] is Some(_)
-      if (
-        declared[name.local] is Some(_) || isConst || isAlias || aliasTaken(checker, name.local)
-      ) {
+      if (Sets.has(declared, name.local) || isConst || isAlias || aliasTaken(checker, name.local)) {
         reportError(
           mutable checker,
           importDecl.pos,

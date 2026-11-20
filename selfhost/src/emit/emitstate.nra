@@ -42,6 +42,8 @@ import { cachedCType, cachedTypeId, opFuncName } from "narrac/emit/cnames"
 import * as Cells from "std/cell"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // An expression's C text and whether it is an owned reference (Go's (string, bool)).
 export struct Code {
@@ -80,7 +82,7 @@ export struct DynamicNeed {
 // The helper functions and std runtime sections the emitted code names, in
 // note order. A cell, so code that holds the Emitter read-only can note.
 export struct HelperNotes {
-  seen: Map<string, bool>
+  seen: Set<string>
   names: Array<string>
 }
 
@@ -107,9 +109,9 @@ export struct Emitter {
   // parallel to the start of traitNeeds.
   traitPrototypes: Array<string> = []
   traitDefinitions: Array<string> = []
-  traitSeen: Map<string, bool>
+  traitSeen: Set<string>
   closureCounts: Map<string, int>
-  thunks: Map<string, bool>
+  thunks: Set<string>
   closureEnvs: StringBuilder
   closurePrototypes: StringBuilder
   closureDefinitions: StringBuilder
@@ -144,7 +146,7 @@ export struct Emitter {
   // writes skip the sharing test.
   hoistedArrays: Array<int> = []
   frameFields: Array<string> = []
-  frameSeen: Map<string, bool>
+  frameSeen: Set<string>
   liveValues: Array<Array<TempVar>> = []
   generatorElement: Type
   // Arguments evaluated early to keep the written order, by expression id; an
@@ -184,7 +186,7 @@ export struct BodyContext {
   taskValue: Type
   inStream: bool
   frameFields: Array<string>
-  frameSeen: Map<string, bool>
+  frameSeen: Set<string>
   liveValues: Array<Array<TempVar>>
   refCaptures: Array<int>
   syntheticTypes: Map<int, Type>
@@ -229,7 +231,7 @@ export function enterBodyContext(
   emitter.inAsync = false
   emitter.inStream = false
   emitter.frameFields = []
-  emitter.frameSeen = Map {}
+  emitter.frameSeen = Sets.create()
   emitter.liveValues = []
   emitter.out = Str.builder()
   emitter.indent = 0
@@ -315,7 +317,7 @@ export function newEmitter(
   return Emitter {
     checker,
     typeNames: Cells.create(Map {}),
-    helpers: Cells.create(HelperNotes { seen: Map {}, names: [] }),
+    helpers: Cells.create(HelperNotes { seen: Sets.create(), names: [] }),
     entry,
     tests,
     file: "",
@@ -331,14 +333,14 @@ export function newEmitter(
     scopes: [],
     loopFrames: [],
     traitNeeds: [],
-    traitSeen: Map {},
+    traitSeen: Sets.create(),
     closureCounts: Map {},
-    thunks: Map {},
+    thunks: Sets.create(),
     closureEnvs: Str.builder(),
     closurePrototypes: Str.builder(),
     closureDefinitions: Str.builder(),
     unsupported: [],
-    frameSeen: Map {},
+    frameSeen: Sets.create(),
     generatorElement: Type.TVoid,
     taskValue: Type.TVoid,
     streamOption: Type.TVoid,
@@ -364,13 +366,13 @@ export function noteReference(mutable emitter: Emitter, name: string) uses alloc
 }
 
 export function noteHelper(emitter: Emitter, name: string) uses alloc {
-  if (Cells.get(emitter.helpers).seen[name] is Some(_)) {
+  if (Sets.has(Cells.get(emitter.helpers).seen, name)) {
     return
   }
   // Take the notes out of the cell, so the write does not copy them.
   let notes = copy(Cells.get(emitter.helpers))
-  Cells.set(emitter.helpers, HelperNotes { seen: Map {}, names: [] })
-  notes.seen[name] = true
+  Cells.set(emitter.helpers, HelperNotes { seen: Sets.create(), names: [] })
+  Sets.add(mutable notes.seen, name)
   Arrays.push(mutable notes.names, name)
   Cells.set(emitter.helpers, notes)
 }
@@ -533,8 +535,7 @@ export function declareVariable(
   if (!emitter.inFrame) {
     return `${typeName} ${name}`
   }
-  if (emitter.frameSeen[name] is None) {
-    emitter.frameSeen[name] = true
+  if (Sets.add(mutable emitter.frameSeen, name)) {
     Arrays.push(mutable emitter.frameFields, `${typeName} ${name}`)
   }
   return `f->${name}`

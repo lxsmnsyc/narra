@@ -55,6 +55,8 @@ import * as Consts from "narrac/emit/emitconsts"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Cells from "std/cell"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // The result of emitting a program: the C text, which has a marker line for
 // each unsupported construct, and the distinct constructs in first-seen order.
@@ -103,13 +105,13 @@ export function emitProgram(
   const helperNotes = copy(Cells.get(emitter.helpers).seen)
   for (const path of Arrays.values(checker.used)) {
     const runtime = runtimeFor(path)
-    const called = helperNotes[path] is Some(_) || (tests && path == "std/test")
+    const called = Sets.has(helperNotes, path) || (tests && path == "std/test")
     if (runtime != "" && called) {
       Str.append(mutable builder, `\n${runtime}`)
     }
   }
   // The sized modules share one runtime that no module path names.
-  if (helperNotes["std/internal/sized"] is Some(_)) {
+  if (Sets.has(helperNotes, "std/internal/sized")) {
     Str.append(mutable builder, `\n${runtimeFor("std/internal/sized")}`)
   }
 
@@ -313,7 +315,7 @@ function emitReachableBodies(mutable emitter: Emitter): ReachableBodies uses all
     if (Arrays.length(mapCandidates) > Maps.size(mapTexts)) {
       const named = collectNamedTypes(emitter)
       for (const candidate of Arrays.values(mapCandidates)) {
-        if (mapTexts[candidate.name] is None && named[candidate.name] is Some(_)) {
+        if (mapTexts[candidate.name] is None && Sets.has(named, candidate.name)) {
           mapTexts[candidate.name] = EmitMaps.emitMapFunction(
             mutable emitter,
             mapTemplate,
@@ -361,17 +363,17 @@ function collectReachedConstants(
   return constants
 }
 
-function collectNamedTypes(emitter: Emitter): Map<string, bool> uses alloc {
+function collectNamedTypes(emitter: Emitter): Set<string> uses alloc {
   // The C names in the name cache: every type that emitted code has named.
-  let named: Map<string, bool> = Map {}
+  let named: Set<string> = Sets.create()
   for (const entry of Maps.entries(Cells.get(emitter.typeNames))) {
     const #[_, name] = entry
-    named[name] = true
+    Sets.add(mutable named, name)
   }
   return named
 }
 
-function collectUsedTypes(emitter: Emitter): Map<string, bool> uses alloc {
+function collectUsedTypes(emitter: Emitter): Set<string> uses alloc {
   // The named types, closed over the types their C definitions hold.
   let used = collectNamedTypes(emitter)
   let pending: Array<Type> = []
@@ -390,11 +392,10 @@ function collectUsedTypes(emitter: Emitter): Map<string, bool> uses alloc {
     changed = false
     let waiting: Array<Type> = []
     for (const type of Arrays.values(pending)) {
-      if (used[cachedTypeId(emitter.checker, emitter.typeNames, type)] is Some(_)) {
+      if (Sets.has(used, cachedTypeId(emitter.checker, emitter.typeNames, type))) {
         for (const part of Arrays.values(listTypeParts(emitter, type))) {
           const partName = cachedTypeId(emitter.checker, emitter.typeNames, part)
-          if (used[partName] is None) {
-            used[partName] = true
+          if (Sets.add(mutable used, partName)) {
             changed = true
           }
         }
@@ -488,40 +489,8 @@ struct SortItem {
   type: Type
 }
 
-function mergeSort(items: Array<SortItem>): Array<SortItem> from items uses alloc {
-  const count = Arrays.length(items)
-  if (count < 2) {
-    return items
-  }
-  const middle = count / 2
-  let left: Array<SortItem> = []
-  let right: Array<SortItem> = []
-  for (const index of Ranges.between(0, count)) {
-    if (index < middle) {
-      Arrays.push(mutable left, items[index])
-    } else {
-      Arrays.push(mutable right, items[index])
-    }
-  }
-  const sortedLeft = mergeSort(left)
-  const sortedRight = mergeSort(right)
-  let merged: Array<SortItem> = []
-  let leftIndex = 0
-  let rightIndex = 0
-  while (leftIndex < Arrays.length(sortedLeft) || rightIndex < Arrays.length(sortedRight)) {
-    if (
-      rightIndex >= Arrays.length(sortedRight) ||
-        (leftIndex < Arrays.length(sortedLeft) &&
-          sortedLeft[leftIndex].key <= sortedRight[rightIndex].key)
-    ) {
-      Arrays.push(mutable merged, sortedLeft[leftIndex])
-      leftIndex++
-    } else {
-      Arrays.push(mutable merged, sortedRight[rightIndex])
-      rightIndex++
-    }
-  }
-  return merged
+function compareSortItems(left: SortItem, right: SortItem): Ordering {
+  return Ordered.compare(left.key, right.key)
 }
 
 function sortKey(emitter: Emitter, type: Type): string uses alloc {
@@ -548,7 +517,8 @@ function arrays(emitter: Emitter): Array<Type> uses alloc {
     }
   }
   let sorted: Array<Type> = []
-  for (const item of Arrays.values(mergeSort(items))) {
+  Arrays.sortBy(mutable items, compareSortItems)
+  for (const item of Arrays.values(items)) {
     Arrays.push(mutable sorted, item.type)
   }
   return sorted
@@ -559,32 +529,32 @@ function arrayName(emitter: Emitter, type: Type): string uses alloc {
   return substring(name, 0, Str.length(name) - 1)
 }
 
-function emitArrayTypedefs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
+function emitArrayTypedefs(emitter: Emitter, used: Set<string>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
     const name = arrayName(emitter, type)
-    if (used[name] is Some(_)) {
+    if (Sets.has(used, name)) {
       Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
     }
   }
   return Str.build(builder)
 }
 
-function emitTypeTypedefs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
+function emitTypeTypedefs(emitter: Emitter, used: Set<string>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(emitter.checker.order)) {
     const name = cachedCType(emitter.checker, emitter.typeNames, type)
-    if (used[name] is Some(_)) {
+    if (Sets.has(used, name)) {
       Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
     }
   }
   return Str.build(builder)
 }
 
-function emitArrayStructs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
+function emitArrayStructs(emitter: Emitter, used: Set<string>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(arrays(emitter))) {
-    if (used[arrayName(emitter, type)] is None) {
+    if (!Sets.has(used, arrayName(emitter, type))) {
       continue
     }
     if (type is Type.TArray(element)) {
@@ -597,25 +567,26 @@ function emitArrayStructs(emitter: Emitter, used: Map<string, bool>): string use
   return Str.build(builder)
 }
 
-function emitCommentTable(mutable emitter: Emitter, used: Map<string, bool>): string uses alloc {
+function emitCommentTable(mutable emitter: Emitter, used: Set<string>): string uses alloc {
   let items: Array<SortItem> = []
   for (const type of Arrays.values(emitter.checker.order)) {
     const key = cachedTypeId(emitter.checker, emitter.typeNames, type)
-    if (isInterned(emitter, type) && used[key] is Some(_)) {
+    if (isInterned(emitter, type) && Sets.has(used, key)) {
       Arrays.push(mutable items, SortItem { key, type })
     }
   }
   for (const entry of Maps.entries(emitter.checker.composites)) {
     const #[_, composite] = entry
     const key = cachedTypeId(emitter.checker, emitter.typeNames, composite)
-    if (!containsTypeParameter(emitter.checker, composite) && used[key] is Some(_)) {
+    if (!containsTypeParameter(emitter.checker, composite) && Sets.has(used, key)) {
       Arrays.push(mutable items, SortItem { key, type: composite })
     }
   }
   // The table names C types, which do not carry effects.
   emitter.checker.printEffects = false
   let builder = Str.builder()
-  for (const item of Arrays.values(mergeSort(items))) {
+  Arrays.sortBy(mutable items, compareSortItems)
+  for (const item of Arrays.values(items)) {
     Str.append(mutable builder, `/* ${item.key} = ${typeString(emitter.checker, item.type)} */\n`)
   }
   emitter.checker.printEffects = true

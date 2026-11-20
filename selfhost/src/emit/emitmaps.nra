@@ -49,6 +49,8 @@ import { enumAllocation } from "narrac/emit/emitdecls"
 import { callFunctionValue } from "narrac/emit/emitclosures"
 import { useEq, useHash } from "narrac/emit/emittraits"
 import { RUNTIME_MAP_H } from "narrac/runtime/runtimemap"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 const NODE = "selfhost-emit-maps"
 
@@ -57,40 +59,8 @@ struct MapItem {
   type: Type
 }
 
-function mergeSort(items: Array<MapItem>): Array<MapItem> from items uses alloc {
-  const count = Arrays.length(items)
-  if (count < 2) {
-    return items
-  }
-  const middle = count / 2
-  let left: Array<MapItem> = []
-  let right: Array<MapItem> = []
-  for (const index of Ranges.between(0, count)) {
-    if (index < middle) {
-      Arrays.push(mutable left, items[index])
-    } else {
-      Arrays.push(mutable right, items[index])
-    }
-  }
-  const sortedLeft = mergeSort(left)
-  const sortedRight = mergeSort(right)
-  let merged: Array<MapItem> = []
-  let leftIndex = 0
-  let rightIndex = 0
-  while (leftIndex < Arrays.length(sortedLeft) || rightIndex < Arrays.length(sortedRight)) {
-    if (
-      rightIndex >= Arrays.length(sortedRight) ||
-        (leftIndex < Arrays.length(sortedLeft) &&
-          sortedLeft[leftIndex].key <= sortedRight[rightIndex].key)
-    ) {
-      Arrays.push(mutable merged, sortedLeft[leftIndex])
-      leftIndex++
-    } else {
-      Arrays.push(mutable merged, sortedRight[rightIndex])
-      rightIndex++
-    }
-  }
-  return merged
+function compareMapItems(left: MapItem, right: MapItem): Ordering {
+  return Ordered.compare(left.key, right.key)
 }
 
 export function listMapTypes(emitter: Emitter): Array<Type> uses alloc {
@@ -105,7 +75,8 @@ export function listMapTypes(emitter: Emitter): Array<Type> uses alloc {
     }
   }
   let sorted: Array<Type> = []
-  for (const item of Arrays.values(mergeSort(items))) {
+  Arrays.sortBy(mutable items, compareMapItems)
+  for (const item of Arrays.values(items)) {
     Arrays.push(mutable sorted, item.type)
   }
   return sorted
@@ -124,21 +95,21 @@ function getValueType(type: Type): Type from type {
   return match (type) { Type.TMap(_, valueType) => valueType, _ => type }
 }
 
-export function emitMapTypedefs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
+export function emitMapTypedefs(emitter: Emitter, used: Set<string>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(listMapTypes(emitter))) {
     const name = containerName(emitter, type)
-    if (used[name] is Some(_)) {
+    if (Sets.has(used, name)) {
       Str.append(mutable builder, `typedef struct ${name} ${name};\n`)
     }
   }
   return Str.build(builder)
 }
 
-export function emitMapStructs(emitter: Emitter, used: Map<string, bool>): string uses alloc {
+export function emitMapStructs(emitter: Emitter, used: Set<string>): string uses alloc {
   let builder = Str.builder()
   for (const type of Arrays.values(listMapTypes(emitter))) {
-    if (used[containerName(emitter, type)] is None) {
+    if (!Sets.has(used, containerName(emitter, type))) {
       continue
     }
     const keyName = cachedCType(emitter.checker, emitter.typeNames, getKeyType(type))

@@ -1,7 +1,7 @@
 ---
 id: effect-export-gap
 title: "Reproduce the exported uses alloc printing gap"
-status: active
+status: dropped
 priority: could
 type: fix
 story: batch-20
@@ -43,3 +43,5 @@ Look for the shape the narra-skills node met: its outcome and log (`roadmaps/sel
 
 - [ ] Either "Not reproduced" with the shapes tried, or a case that fails on the batch base and passes on the branch.
 - [ ] `sh scripts/test.sh` passes.
+
+Dropped 2026-11-20: not reproduced on feat/batch-20 (11 single-file shapes and a package, check and build, seed and stage-1). The only shape that compiles is the entry function `run`, which is exempt from `uses` by design. See outcome.md.

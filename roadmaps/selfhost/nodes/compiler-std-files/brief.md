@@ -1,7 +1,7 @@
 ---
 id: compiler-std-files
 title: "The compiler uses std file and folder functions"
-status: todo
+status: done
 priority: should
 type: refactor
 story: batch-23

@@ -1,7 +1,7 @@
 ---
 id: std-async-fold
 title: "Fold std/async/* into std/fs, std/time and std/net"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

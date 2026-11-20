@@ -340,7 +340,7 @@ export function run(args: Array<string>): int {
 6
 ```
 
-To test the length and bind in one step, use `is` or `match`, as `items is [first, ..._]` does. A `FixedArray` has a length the compiler knows. A pattern of exactly that many elements always matches, and it takes the array apart like a tuple. On a `FixedArray` the rest must be `..._`, since a named rest would need a type with a length of its own.
+To test the length and bind in one step, use `is` or `match`, as `items is [first, ..._]` does. A `FixedArray` has a length the compiler knows ([chapter 17](17-proofs-and-compile-time.md#arrays-with-a-fixed-length) teaches it). A pattern of exactly that many elements always matches, and it takes the array apart like a tuple. On a `FixedArray` the rest must be `..._`, since a named rest would need a type with a length of its own.
 
 ```narra error
 // error: 4:9: this pattern does not match every Array<int>; use match or `is` to test a value

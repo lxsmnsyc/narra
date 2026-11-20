@@ -793,7 +793,7 @@ struct Book derives Shape, Show {
   tags: Array<string>
 }
 
-export function run(args: Array<string>): int uses io, alloc {
+export function run(args: Array<string>): int {
   const book = Book {
     title: "Dune",
     author: "Herbert",
@@ -839,7 +839,7 @@ struct Book derives Shape, Show {
   year: int = 2000
 }
 
-function report(text: string) uses io, alloc {
+function report(text: string) {
   const result = Json.decode<Book>(text)
   if (result is Err(message)) {
     print(`error: ${message}`)
@@ -848,7 +848,7 @@ function report(text: string) uses io, alloc {
   }
 }
 
-export function run(args: Array<string>): int uses io, alloc {
+export function run(args: Array<string>): int {
   report(`{"title":"Dune","cents":"990"}`)
   report(`{"title":"Dune"}`)
   report(`{"title":"Dune","cents":990`)
@@ -886,7 +886,7 @@ struct Order derives Shape {
   prices: Map<string, int>
 }
 
-export function run(args: Array<string>): int uses io, alloc {
+export function run(args: Array<string>): int {
   const order = Order { items: [Item.Book("Dune", 990), Item.Gift], prices: Map { "Dune": 990 } }
   print(Json.encode(order))
   const bad = Json.decode<Item>(`{"type":"Film"}`)
@@ -928,7 +928,7 @@ enum Item derives Shape, Show {
   Gift
 }
 
-export function run(args: Array<string>): int uses io, alloc {
+export function run(args: Array<string>): int {
   const tree = Json.parse(`{"a":[1,2.5,"x",null,true]}`)
   if (tree is Ok(value)) {
     print(Json.stringify(value))

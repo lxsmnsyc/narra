@@ -2,7 +2,7 @@
 
 Until now the programs in this guide have printed and finished. A real program also reads files, takes its input from the command line, and tells the system whether it worked. This chapter builds `lines`, a small tool that counts the lines in the files named on its command line. When no file is named, it counts its standard input. On the way it covers `std/fs`, `std/path`, `std/env`, `std/io`, `std/process`, `std/bytes` and `std/time`.
 
-Every function in this chapter that touches the outside world has the `io` effect from chapter 10, and most of them also have `alloc`. A function of yours that calls one has to declare both: `uses io, alloc`.
+Every function in this chapter that touches the outside world has the `io` effect from chapter 10, and most of them also have `alloc`. An exported function of yours that calls one has to declare both: `uses io, alloc`. Private functions and `run` may leave the list out. The samples write it there too, so that each signature shows what the function does.
 
 ## Read a file
 

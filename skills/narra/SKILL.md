@@ -71,7 +71,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-Use `const` unless the name is assigned again. A `let` that is never assigned is an error. Passing `mutable name` counts as an assignment.
+Use `const` unless the name is assigned again. A `const` array or struct can still change through `name[0] = ...`, `name.field = ...` or `mutable name`. A `let` that is never assigned is an error. Passing `mutable name` counts as an assignment.
 
 ```narra error E1510
 export function run(args: Array<string>): int {
@@ -158,4 +158,4 @@ test "double doubles" {
 
 ## More
 
-The guide is in `docs/guide/` of the Narra repository. Read the chapter for the topic before writing code you are unsure about: values and types (2), functions (3), structs and enums (4), `match` (5), `Option` and `Result` (6), traits (7), modules (8), `mutable` (9), effects and tests (10), the standard library (11), and the tools (12).
+The guide is in `docs/guide/` of the Narra repository. Read the chapter for the topic before writing code you are unsure about: values and types (2), functions (3), structs and enums (4), `match` (5), `Option` and `Result` (6), traits and JSON (7), modules and packages (8), `mutable` and `Cell` (9), effects and tests (10), files and the system (11), generators (12), the standard library (13), async (14), threads (15), unsafe code and C (16), proofs and `@const` (17), the tools (18), and targets (19).

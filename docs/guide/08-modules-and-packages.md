@@ -249,7 +249,7 @@ Before you add `export`, decide whether other files should depend on that functi
 
 ## What a module can hold
 
-Besides functions and structs, a module can export enums, traits and constants. A constant at the top of a file is a `const` whose value the compiler can work out. That can be a number, a string, or an array or struct of them:
+Besides functions and structs, a module can export enums, traits, type aliases and constants. To pass on a name that another module exports, import it and export it again, as [chapter 4](04-structs-and-enums.md#export-a-name-from-another-module) shows. A constant at the top of a file is a `const` whose value the compiler can work out. That can be a number, a string, or an array or struct of them:
 
 ```narra
 import * as Str from "std/string"

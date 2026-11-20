@@ -49,7 +49,7 @@ export function run(args: Array<string>): int {
 9592 primes below 100000
 ```
 
-The `divisor != 0` test in `isPrime` is the check the compiler asks for before `%` on a name ([chapter 6](06-option-and-result.md)). What happened in `run`:
+The `divisor != 0` test in `isPrime` is the check the compiler asks for before `%` on a name ([chapter 2](02-values-and-types.md#dividing-by-a-name)). What happened in `run`:
 
 - `Thread.scope(body)` calls `body` with a `Scope` and gives what `body` returns, or nothing when `body` returns nothing. Before it returns, it waits for every thread started in the scope.
 - `Thread.start(scope, work)` runs `work` on a new thread and gives a `Thread<int>` at once, a handle to the running thread. The two counts run at the same time, on two cores when the machine has them.
@@ -106,7 +106,7 @@ Copy the value into a `const` first, as chapter 3 shows. A thread function has a
 - It cannot capture the `Scope`. A `Scope` can be passed to a function, but not stored, returned or captured by a closure that outlives the call. So only the code inside `Thread.scope` starts threads in it.
 - Each value it captures, and the value it returns, must be `Sendable`.
 
-`Sendable` is a trait the compiler gives a type by itself. Numbers, strings, arrays, structs and enums of such values are `Sendable`. Types that would let two threads reach the same changing object are not. A `Cell` from `std/cell` is one of them, so this program is an error:
+`Sendable` is a trait the compiler gives a type by itself. Numbers, strings, arrays, structs and enums of such values are `Sendable`. Types that would let two threads reach the same changing object are not. A `Cell` from `std/cell` ([chapter 9](09-memory-and-mutable.md#state-that-closures-share-cell)) is one of them, so this program is an error:
 
 ```narra error
 // error: 8:40: capture "visits" of the thread function: Cell<int> is not Sendable
@@ -444,6 +444,7 @@ export function run(args: Array<string>): int {
 The compiler checks `Sendable` at each place a value crosses to another thread. Those are a capture of a thread function, the result of one, and the type of a channel, a `Shared` or an `Atomic`. A type is `Sendable` unless it holds, at any depth:
 
 - a function, such as a closure kept in a field,
+- a `Dynamic` trait value ([chapter 7](07-traits.md#values-of-different-types-in-one-array)),
 - a `Cell`,
 - an `Async` handle, a generator or an async generator, which belong to the thread that runs them,
 - a `Scope` or a `Thread` handle,

@@ -345,7 +345,7 @@ The rule after `requires` is a list of patterns joined by `&&`. Each is a compar
 
 Unwrapping gives back the fact, wherever the value comes from: a parameter, a field or an array element. `Day.toInt(day)` is known to be from 0 to 6, so it proves an index and a `requires` condition. With a rule such as `!= 0` or `>= 1`, it proves a divisor. The fact covers only the unwrapped value: `Day.toInt(day) + 1` is a plain `int` again. A `string` rule gives no fact.
 
-`derives Shape` (chapter 13) decodes a refinement type and then tests its rule, so a `Day` read from JSON is always from 0 to 6. `export opaque distinct type` hides `check` together with `from`, so only the declaring module can make values.
+`derives Shape` ([chapter 7](07-traits.md#saving-and-loading-values)) decodes a refinement type and then tests its rule, so a `Day` read from JSON is always from 0 to 6. `export opaque distinct type` hides `check` together with `from`, so only the declaring module can make values.
 
 ## A length as a parameter
 

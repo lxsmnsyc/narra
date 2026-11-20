@@ -37,7 +37,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-`backup` and `hero` would name one player, and a write through one name would have to copy the player first, so that the other keeps its hp. The source would not show that copy. So Narra rejects the second name at the line that makes it. Arrays, maps, structs, boxes, string builders and generators are the values that change in place, so a name for one of them cannot be given to another name. Numbers, strings, enums and functions never change in place, so `const total = count` is fine.
+`backup` and `hero` would name one player, and a write through one name would have to copy the player first, so that the other keeps its hp. The source would not show that copy. So Narra rejects the second name at the line that makes it. Arrays, maps, structs, boxes, string builders and generators ([chapter 12](12-generators.md)) are the values that change in place, so a name for one of them cannot be given to another name. Numbers, strings, enums and functions never change in place, so `const total = count` is fine.
 
 The fix is the one the message gives: write `copy(...)`. Now the two names hold two players, and the copy happens where you can see it:
 
@@ -668,7 +668,7 @@ The module has four functions:
 
 A `Cell` is not copied the way a struct is. Passing it to a function, capturing it in a closure or storing it in a struct makes another handle to the same slot. So `addPoints`, `resetScore` and `run` above all see every write. A type like this is an identity type. `Shared`, in [chapter 15](15-threads-and-shared-state.md), is another. `==` on two cells is an error, because it would not be clear whether it compares the handles or the values. Compare `Cells.get(first)` with `Cells.get(second)`.
 
-Reach for a `Cell` when an escaping closure must change something. When the closure is passed straight to a function that only calls it, a `let` is enough, as chapter 3 showed. A `Cell` works on one thread only. Sending one to another thread is an error, and chapter 15 shows what to use there.
+Reach for a `Cell` when an escaping closure must change something. When the closure is passed straight to a function that only calls it, a `let` is enough, as chapter 3 showed. A `Cell` works on one thread only. Sending one to another thread is an error, and [chapter 15](15-threads-and-shared-state.md#share-a-value-with-a-lock) shows what to use there.
 
 ## Enums and tuples are replaced
 
@@ -758,7 +758,7 @@ Cells.set(handler, Some(() => {
 leak check: 2 allocations still live
 ```
 
-The same can happen with `Shared`, `Sender`, `Receiver` and `Async`, the other identity types. A handle stored inside the object it names makes the same loop.
+The same can happen with `Shared`, `Sender` and `Receiver` ([chapter 15](15-threads-and-shared-state.md)) and `Async` ([chapter 14](14-async.md)), the other identity types. A handle stored inside the object it names makes the same loop.
 
 There are two ways out. The first is to clear the slot before the last outside handle goes away. Setting the `Cell` back to `None` drops the closure, and the loop is gone:
 

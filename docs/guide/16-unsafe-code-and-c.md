@@ -144,7 +144,7 @@ A call through a trait (chapter 7) sees only the trait's signature. So a functio
 
 ## C types
 
-An `extern` function takes and returns numbers, `bool` and pointers (`Ptr<T>`, below), or returns nothing. C uses integers of several sizes, and so does Narra. `i8`, `i16` and `i32` hold whole numbers of 8, 16 and 32 bits, and `int` (also written `i64`) has 64. `u8`, `u16`, `u32` and `u64` hold numbers that are never negative. Each size has a module, such as `std/i32` (imported as `I32`) and `std/u8` (`U8`), with `toString` and conversions. `Int.from(value)` turns a smaller number into an `int`, and `Int.wrap(value)` turns a `u64` into an `int` by keeping its 64 bits.
+An `extern` function takes and returns numbers, `bool` and pointers (`Ptr<T>`, below), or returns nothing. C uses integers of several sizes, and so does Narra. [Chapter 2](02-values-and-types.md#numbers-of-other-sizes) teaches the sized integers `i8` to `u64` and their modules, such as `std/i32`.
 
 Each Narra type stands for one C type:
 

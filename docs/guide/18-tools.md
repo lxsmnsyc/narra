@@ -79,7 +79,7 @@ narrac emit . > weather.c
 
 The file starts with the runtime that every program shares, followed by the code of the package. `narrac emit --tests .` adds the test blocks, which `build` leaves out, and `--bin NAME` picks one binary. For the C of an optimized build, build with `-emit-c`: `narrac build -release -emit-c weather.c .` writes the file and the executable. To read the C of one function, search the file for its name: `toFahrenheit` is `f_` followed by a hash of its module, then `_toFahrenheit`.
 
-`narrac targets` lists the systems that `-target` and `check --target` accept, each as a name and the triple of the C compiler that builds for it:
+`narrac targets` lists the systems that `build --target` and `check --target` accept, each as a name and the triple of the C compiler that builds for it:
 
 ```sh
 narrac targets
@@ -415,6 +415,6 @@ Two options help when the server seems wrong. By default it checks again only th
 
 ## The commands
 
-`narrac` has these commands: `build`, `run` and `test` for programs, `check`, `explain` and `apply-fix` for errors, `fmt` for layout, `query` and `audit` for questions about a package, `emit` for the C code, `lsp` for editors and `targets` for the systems `-target` accepts. `narrac --help` prints them with their flags. The [commands reference](../reference/commands.md) lists every flag, exit code and environment variable.
+`narrac` has these commands: `build`, `run` and `test` for programs, `check`, `explain` and `apply-fix` for errors, `fmt` for layout, `query` and `audit` for questions about a package, `emit` for the C code, `lsp` for editors and `targets` for the systems `--target` accepts. `narrac --help` prints them with their flags. The [commands reference](../reference/commands.md) lists every flag, exit code and environment variable.
 
 Next: [19. Building for other systems](19-building-for-other-systems.md).

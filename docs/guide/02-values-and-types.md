@@ -68,7 +68,7 @@ You add to a value with `+=`. `-=`, `*=`, `/=` and the other compound forms work
 ```narra
 import * as Int from "std/int"
 
-export function run(args: Array<string>): int uses io, alloc {
+export function run(args: Array<string>): int {
   let weeks = 0
   weeks += 2
   weeks++
@@ -801,6 +801,8 @@ export function run(args: Array<string>): int {
 2
 ```
 
+`(price) => price + price / 10` is an arrow function: a function without a name, written where it is used. [Chapter 3](03-functions-and-closures.md#pass-a-function-as-a-value) teaches it.
+
 `Arrays.withCapacity(count)` makes an empty array with room for `count` elements, which saves growing it when you know the size in advance. `Arrays.values(items)` loops over the elements, as `for (const price of prices)` already does.
 
 ## Look up a value by name
@@ -961,7 +963,7 @@ does not fit in a u8
 number does not fit in 8 bits (0 to 255)
 ```
 
-`parse(text, base)` reads a number from text in the given base, such as 10 or 16, and returns a `Result`. The error text names the range of the type.
+`parse(text, base)` reads a number from text in the given base, such as 10 or 16, and returns a `Result`: `Ok` with the number, or `Err` with a message. The error text names the range of the type. [Chapter 6](06-option-and-result.md) covers `Result`.
 
 #### No mixing, and the conversions
 
@@ -1170,7 +1172,7 @@ export function run(args: Array<string>): int {
 
 ### Random numbers
 
-`std/random`, imported as `Random`, makes numbers from a seed. A generator is a value that changes as you draw from it, so pass it as `mutable` ([chapter 9](09-memory-and-mutable.md) explains the word). `Random.seeded(seed)` starts one, and the same seed gives the same numbers on every run and every platform, which makes a test repeatable. `Random.fromSystem()` seeds from the system and needs the `io` effect ([chapter 10](10-effects-and-testing.md)).
+`std/random`, imported as `Random`, makes numbers from a seed. A random number generator changes as you draw from it, so pass it as `mutable` ([chapter 9](09-memory-and-mutable.md) explains the word). `Random.seeded(seed)` starts one, and the same seed gives the same numbers on every run and every platform, which makes a test repeatable. `Random.fromSystem()` seeds from the system and needs the `io` effect ([chapter 10](10-effects-and-testing.md)).
 
 - `Random.nextInt(mutable random, low, high)` draws from `low` up to below `high`. It returns `None` when the range is empty.
 - `Random.nextFloat(mutable random)` draws an `f64` from 0 up to below 1.

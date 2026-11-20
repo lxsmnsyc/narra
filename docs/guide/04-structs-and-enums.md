@@ -140,7 +140,7 @@ export function run(args: Array<string>): int {
 compared field by field
 ```
 
-A struct behaves like the arrays of chapter 2: `copy(tea)` makes a value of its own, and changing `moreTea` leaves `tea` as it was. Without `copy`, `let moreTea = tea` would make two names for one struct, and changing `moreTea` while `tea` is still used is a compile error. You can assign a field of a `const` or a `let` name.
+A struct behaves like the arrays of chapter 2: `copy(tea)` makes a value of its own, and changing `moreTea` leaves `tea` as it was. Without `copy`, `let moreTea = tea` would make two names for one struct, so the compiler rejects it and asks for `copy(tea)` ([chapter 9](09-memory-and-mutable.md#a-second-name-for-a-value)). You can assign a field of a `const` or a `let` name.
 
 Often you want a new value that differs in one or two fields. `{ ...tea, priceCents: 200 }` copies every field of `tea`, then sets the fields listed after it. It is a new value, and `tea` does not change. The last `if` shows that `==` and `!=` compare two structs field by field.
 
@@ -730,12 +730,12 @@ export const isVoucher = Payments.isVoucher
 export const describe = Payments.describe
 ```
 
-`export type Payment = Payments.Payment` is an alias, so it is the same type, variants included. `export const isVoucher = Payments.isVoucher` is a constant that holds the function, and it keeps what the function declares: `describe` still `uses alloc`, so a caller of `Till.describe` declares `uses alloc` too. `src/main.nra` imports all three from `"shop/till"`:
+`export type Payment = Payments.Payment` is an alias, so it is the same type, variants included. `export const isVoucher = Payments.isVoucher` is a constant that holds the function, and it keeps what the function declares: `describe` still `uses alloc`, so an exported function that calls it declares `uses alloc` too. `src/main.nra` imports all three from `"shop/till"`:
 
 ```narra file shop src/main.nra
 import { Payment, isVoucher, describe } from "shop/till"
 
-export function run(args: Array<string>): int uses alloc {
+export function run(args: Array<string>): int {
   for (const payment of [Payment.Cash(500), Payment.Voucher("SPRING")]) {
     print(describe(payment))
     if (isVoucher(payment)) {
@@ -752,7 +752,7 @@ voucher SPRING
 no change to give
 ```
 
-Chapter 8 covers modules and imports in full.
+[Chapter 8](08-modules-and-packages.md) covers modules and imports in full.
 
 The next chapter looks closer at `match` and the patterns it uses, and at the other places patterns appear.
 

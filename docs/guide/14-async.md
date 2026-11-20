@@ -66,7 +66,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-All the tasks run on one thread, taking turns. A task only gives up its turn where it waits on another task, a timer or the network. So two tasks never change the same value at the same moment, and a long calculation in one task holds up all the others. Chapter 15 shows how to run work in parallel on several cores.
+All the tasks run on one thread, taking turns. A task only gives up its turn where it waits on another task, a timer or the network. So two tasks never change the same value at the same moment, and a long calculation in one task holds up all the others. [Chapter 15](15-threads-and-shared-state.md) shows how to run work in parallel on several cores.
 
 A call of an async function has the effects of the function, plus `alloc` for the task it starts. `await` itself has none ([chapter 10](10-effects-and-testing.md)).
 
@@ -316,7 +316,7 @@ export async function run(args: Array<string>): int {
 }
 ```
 
-Return the new value from the task instead, and add it up after the `await`. The message also names `Cell` from `std/cell`, a box whose contents tasks can share and change. For the same reason, an async function takes no `mutable` parameter, and a parameter of function type must be `escaping`.
+Return the new value from the task instead, and add it up after the `await`. The message also names `Cell` from `std/cell` ([chapter 9](09-memory-and-mutable.md#state-that-closures-share-cell)), a slot whose contents tasks can share and change. For the same reason, an async function takes no `mutable` parameter, and a parameter of function type must be `escaping`.
 
 ## Read files and talk to the network
 

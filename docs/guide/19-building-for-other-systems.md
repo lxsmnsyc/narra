@@ -365,7 +365,7 @@ export function run(args: Array<string>): int {
 15.0
 ```
 
-An array literal with a vector type before it gives one number for each lane. `Simd.splat` fills every lane with one number, and a vector and a plain number cannot meet in one operator, so `prices * 0.5` is an error. `Simd.sum` adds the lanes. `halved[2]` reads one lane, and the compiler must prove the index in range, as for a fixed-size array. Integer lanes wrap around on overflow, like integers do. `Simd.load` and `Simd.store` copy lanes from and to an `Array`, and `Simd.select`, `Simd.shuffle` and the comparisons `Simd.less` and `Simd.equal` cover masks and reordering.
+An array literal with a vector type before it gives one number for each lane. `Simd.splat` fills every lane with one number, and a vector and a plain number cannot meet in one operator, so `prices * 0.5` is an error. `Simd.sum` adds the lanes. `halved[2]` reads one lane, and the compiler must prove the index in range, as for a fixed-size array ([chapter 17](17-proofs-and-compile-time.md#arrays-with-a-fixed-length)). Integer lanes wrap around on overflow, like integers do. `Simd.load` and `Simd.store` copy lanes from and to an `Array`, and `Simd.select`, `Simd.shuffle` and the comparisons `Simd.less` and `Simd.equal` cover masks and reordering.
 
 The C compiler turns the types into its vector extensions. The build passes no flag for a particular processor, so x86-64 code uses SSE2 and arm64 code uses NEON. The same source builds for every row above. A float sum is the same on all of them. Most programs never need vectors. They are for loops over large arrays of numbers.
 

@@ -139,7 +139,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A condition compares one integer parameter with a constant: `==`, `!=`, `<`, `<=`, `>` or `>=`, and several of them joined by `&&` or written on more `requires` lines. A function with `requires` cannot be passed around as a value, because a call through the value could not be checked.
+A condition here compares one integer parameter with a constant: `==`, `!=`, `<`, `<=`, `>` or `>=`, and several of them joined by `&&` or written on more `requires` lines. [Chapter 17](17-proofs-and-compile-time.md#conditions-between-two-parameters) adds conditions between two parameters and with `||`. A function with `requires` cannot be passed around as a value, because a call through the value could not be checked.
 
 ### Arguments a caller may leave out
 

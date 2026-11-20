@@ -52,5 +52,5 @@ The branch `feat/batch-20` starts from `main` after PR #124 (batch-19) merged. W
 
 ## Acceptance
 
-- [ ] Every child done or out of the batch with a reason.
-- [ ] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes.
+- [x] Every child done or out of the batch with a reason.
+- [x] `sh scripts/test.sh` passes; the seed is current; `pnpm --dir website build` passes. test.sh: PASS, 10496 cases; bootstrap fixed point, seed current; website build passes.

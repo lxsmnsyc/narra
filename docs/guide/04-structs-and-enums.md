@@ -354,6 +354,209 @@ export function run(args: Array<string>): int {
 
 The memory behind a box, an array or an enum variant is freed as soon as nothing uses it any more. You never free it yourself. Chapter 9 explains how that works.
 
+## Structs and enums for any type
+
+`Option<Order>` and `Box<Order>` take a type in angle brackets, and they work the same whatever that type is. Your own structs and enums can do this too. The shop counts its stock of items, but also of things that are not items, such as paper bags. A lookup can find a price or a name. Give the declaration a type parameter, as the generic functions of [chapter 3](03-functions-and-closures.md#one-function-for-many-types) have:
+
+```narra
+import * as Int from "std/int"
+
+struct Item {
+  name: string
+  priceCents: int
+}
+
+struct Stock<T> {
+  thing: T
+  count: int = 0
+}
+
+enum Lookup<T> {
+  Found(value: T)
+  Missing(name: string)
+}
+
+function findPrice(items: Array<Item>, name: string): Lookup<int> {
+  for (const item of items) {
+    if (item.name == name) {
+      return Lookup.Found(item.priceCents)
+    }
+  }
+  return Lookup.Missing(name)
+}
+
+export function run(args: Array<string>): int {
+  const tea = Stock { thing: Item { name: "tea", priceCents: 250 }, count: 12 }
+  const bags = Stock { thing: "paper bag" }
+  print(`${tea.thing.name}: ${Int.toString(tea.count)}`)
+  print(`${bags.thing}: ${Int.toString(bags.count)}`)
+
+  const items = [tea.thing]
+  for (const name of ["tea", "cake"]) {
+    match (findPrice(items, name)) {
+      Lookup.Found(cents) => print(`${name} costs ${Int.toString(cents)}`)
+      Lookup.Missing(missing) => print(`no ${missing}`)
+    }
+  }
+  return 0
+}
+```
+
+```text
+tea: 12
+paper bag: 0
+tea costs 250
+no cake
+```
+
+`struct Stock<T>` declares a struct with a type parameter `T`, and the field `thing` has that type. You do not write `T` when you build a value. The compiler works it out from the fields: `tea` is a `Stock<Item>` and `bags` is a `Stock<string>`. In a type, such as a parameter or a result, you write the type argument, as in `Lookup<int>`.
+
+`Lookup.Missing(name)` has no field of type `T`, so the variant alone does not say what `T` is. In `findPrice` the result type says it. Where nothing does, the compiler asks for a type:
+
+```narra error
+// error: 8:25: cannot tell the type of Missing here; add a type annotation
+enum Lookup<T> {
+  Found(value: T)
+  Missing(name: string)
+}
+
+export function run(args: Array<string>): int {
+  const result = Lookup.Missing("cake")
+  return 0
+}
+```
+
+Write `const result: Lookup<int> = Lookup.Missing("cake")`, and the program compiles.
+
+A type parameter can also require traits of the type, as in `struct Stock<T: Show>`. [Chapter 7](07-traits.md#traits-for-a-generic-type) explains traits and shows how.
+
+## Give a type a second name
+
+Some types are long to write, or a short name says better what they mean. `type Name = ...` gives a type a second name, called an alias:
+
+```narra
+import * as Int from "std/int"
+
+enum Payment {
+  Cash(cents: int)
+  Voucher(code: string)
+}
+
+type Cart = Array<string>
+type Pay = Payment
+type PriceRule = (cents: int) => int
+type Pair<T> = #[T, T]
+type Shelf<V> = Map<string, V>
+
+function describe(payment: Pay): string {
+  return match (payment) {
+    Pay.Cash(cents) => `cash ${Int.toString(cents)}`
+    Pay.Voucher(code) => `voucher ${code}`
+  }
+}
+
+function cheaper(prices: Pair<int>, rule: PriceRule): int {
+  const #[first, second] = prices
+  return rule(first < second ? first : second)
+}
+
+export function run(args: Array<string>): int {
+  const cart: Cart = ["tea", "cake"]
+  const payment: Payment = Pay.Cash(500)
+  let shelf: Shelf<int> = Map {}
+  shelf["tea"] = 12
+  print(describe(payment))
+  print(describe(Payment.Voucher("SPRING")))
+  print(Int.toString(cheaper(#[250, 320], (cents) => cents - 50)))
+  print(cart[1])
+  if (shelf["tea"] is Some(count)) {
+    print(Int.toString(count))
+  }
+  return 0
+}
+```
+
+```text
+cash 500
+voucher SPRING
+200
+cake
+12
+```
+
+An alias is the same type as the one it names. A `Cart` is an `Array<string>`, and a `Payment` can go where a `Pay` is expected and back. An alias of an enum also gives its variants: `Pay.Cash(500)` builds a `Payment`, and `Pay.Cash(cents)` works as a pattern.
+
+An alias can take type parameters. `Pair<T>` is a tuple of two values of the same type, and `Shelf<V>` is a map from names to `V`. Every use writes the type arguments, so `Pair` alone is an error:
+
+```narra error
+// error: 5:17: type alias Pair takes 1 type arguments, found 0
+type Pair<T> = #[T, T]
+
+export function run(args: Array<string>): int {
+  const prices: Pair = #[1, 2]
+  return 0
+}
+```
+
+An alias cannot refer to itself. `type Tree = Array<Tree>` is an error that says a recursive type needs an enum, as in [Data that contains itself](#data-that-contains-itself).
+
+## Name the type of a value
+
+Sometimes a type should follow a value you already have. `typeof name` in a type stands for the type of `name`, which can be a `const`, a `let`, a parameter or a function:
+
+```narra
+import * as Int from "std/int"
+
+const shopPrices: Map<string, int> = Map { "tea": 250, "cake": 400 }
+
+function priceOf(prices: typeof shopPrices, name: string): int {
+  if (prices[name] is Some(cents)) {
+    return cents
+  }
+  return 0
+}
+
+function halfPrice(cents: int): int {
+  return cents / 2
+}
+
+function applyTwice(change: typeof halfPrice, cents: int): int {
+  return change(change(cents))
+}
+
+export function run(args: Array<string>): int {
+  let sale: typeof shopPrices = copy(shopPrices)
+  sale["tea"] = applyTwice(halfPrice, priceOf(shopPrices, "tea"))
+  print(Int.toString(priceOf(sale, "tea")))
+  print(Int.toString(priceOf(sale, "cake")))
+  return 0
+}
+```
+
+```text
+62
+400
+```
+
+`typeof shopPrices` is `Map<string, int>`, and `typeof halfPrice` is the function type `(cents: int) => int`. If you later change the type of `shopPrices`, `priceOf` and `sale` follow it. Only a name can come after `typeof`, not a field such as `item.name` or any other expression.
+
+A top-level constant written without a type has the type of its value. The compiler does not know that type yet when it reads the signatures of the module. So `typeof` of such a constant in a signature, a field or an alias is an error:
+
+```narra error
+// error: 4:31: the type of constant "standardDiscount" is not known here; write it as `const standardDiscount: Type = ...`
+const standardDiscount = 50
+
+function applyDiscount(cents: typeof standardDiscount): int {
+  return cents
+}
+
+export function run(args: Array<string>): int {
+  return applyDiscount(standardDiscount)
+}
+```
+
+Inside a function body, `typeof standardDiscount` works.
+
 ## Keep similar numbers apart
 
 Customer ids and order ids are both numbers, and nothing stops you from passing one where the other belongs. A distinct type is a new type with the same values as an existing one, which the compiler keeps apart from it:
@@ -399,6 +602,8 @@ export function run(args: Array<string>): int {
   return describeCustomer(order)
 }
 ```
+
+A distinct type is not an alias. `type Id = int` would make `Id` and `int` the same type, and the compiler would not keep them apart. A distinct type can also be ordered, printed and given operations of its own, as [chapter 7](07-traits.md#traits-on-a-distinct-type) shows.
 
 ## Hide the fields of a struct
 
@@ -449,6 +654,98 @@ the span ends before it starts
 ```
 
 It prints `7`, then `the span ends before it starts`. Writing `Span { start: 5, end: 1 }` or `span.start` in `main.nra` is an error. The message says that `Span` is an opaque struct of module `"timeline/span"`, and to use that module's functions. Every `Span` comes from `makeSpan`, so every `Span` follows the rule.
+
+A distinct type can be `opaque` too. Other modules can then read its value with `toInt`, but only the declaring module can call `from`. Receipt numbers start at 1 and go up by one, and no other module should make up a number. Here is `src/numbers.nra` of a package named `receipts`:
+
+```narra file receipts src/numbers.nra
+export opaque distinct type ReceiptNumber = int
+
+export function firstReceipt(): ReceiptNumber {
+  return ReceiptNumber.from(1)
+}
+
+export function nextReceipt(number: ReceiptNumber): ReceiptNumber {
+  return ReceiptNumber.from(ReceiptNumber.toInt(number) + 1)
+}
+```
+
+`src/main.nra` gets its numbers from those two functions:
+
+```narra file receipts src/main.nra
+import * as Int from "std/int"
+import { ReceiptNumber, firstReceipt, nextReceipt } from "receipts/numbers"
+
+export function run(args: Array<string>): int {
+  const first = firstReceipt()
+  const second = nextReceipt(first)
+  print(Int.toString(ReceiptNumber.toInt(second)))
+  if (first != second) {
+    print("two receipts")
+  }
+  return 0
+}
+```
+
+```text
+2
+two receipts
+```
+
+`ReceiptNumber.from(5)` in `main.nra` is an error: `ReceiptNumber.from is not available outside module "receipts/numbers": ReceiptNumber is an opaque distinct type`.
+
+## Export a name from another module
+
+Say the shop's payment code lives in `src/payments.nra`. You want the rest of the program to import everything about the till from one module, `src/till.nra`. Narra has no statement that passes on another module's export as it is. Instead, the module imports the name and declares its own export with it: `export type` for a type and `export const` for a function. Here is `src/payments.nra` of a package named `shop`:
+
+```narra file shop src/payments.nra
+export enum Payment {
+  Cash(cents: int)
+  Voucher(code: string)
+}
+
+export function isVoucher(payment: Payment): bool {
+  return match (payment) {
+    Payment.Cash(_) => false
+    Payment.Voucher(_) => true
+  }
+}
+```
+
+`src/till.nra` exports both names again:
+
+```narra file shop src/till.nra
+import * as Payments from "shop/payments"
+
+export type Payment = Payments.Payment
+export const isVoucher = Payments.isVoucher
+```
+
+`export type Payment = Payments.Payment` is an alias, so it is the same type, variants included. `export const isVoucher = Payments.isVoucher` is a constant that holds the function. `src/main.nra` imports both from `"shop/till"`:
+
+```narra file shop src/main.nra
+import { Payment, isVoucher } from "shop/till"
+
+export function run(args: Array<string>): int {
+  for (const payment of [Payment.Cash(500), Payment.Voucher("SPRING")]) {
+    match (payment) {
+      Payment.Cash(_) => print("cash")
+      Payment.Voucher(code) => print(`voucher ${code}`)
+    }
+    if (isVoucher(payment)) {
+      print("no change to give")
+    }
+  }
+  return 0
+}
+```
+
+```text
+cash
+voucher SPRING
+no change to give
+```
+
+Chapter 8 covers modules and imports in full.
 
 The next chapter looks closer at `match` and the patterns it uses, and at the other places patterns appear.
 

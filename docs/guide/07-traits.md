@@ -2,7 +2,7 @@
 
 A shop sells books and songs. Both have a title and a price, and both need a line in the catalog, but they are different structs. A trait lets one function work with both. The trait names an operation, and each type supplies its own version. Generic code can then ask for "any type that has this operation".
 
-This chapter builds the catalog, then uses the traits that every type can have: printing, ordering and equality.
+This chapter builds the catalog, then uses the traits that every type can have: printing, ordering, equality and hashing. It also shows traits on generic and distinct types, and an array that holds values of different types.
 
 ## Giving two types the same operation
 
@@ -219,6 +219,114 @@ Some(42)
 
 When you want different text, leave out `derives` and write `implements Show` with your own `implement Show for Book` block, as with `Label` above. A `Show` you write yourself is used everywhere a derived one would be, including inside `Show.show` of an array of books.
 
+## Traits for a generic type
+
+The shop sells two items together at one price, such as two books. `Bundle<T>` is a generic struct, as in [chapter 4](04-structs-and-enums.md#structs-and-enums-for-any-type), and its label is built from the labels of its two items. One `implement` block covers every `Bundle`, whatever `T` is:
+
+```narra
+import * as Int from "std/int"
+
+trait Label {
+  function label(item: Self): string
+}
+
+struct Book implements Label {
+  title: string
+  author: string
+  cents: int
+}
+
+implement Label for Book {
+  function label(item: Book): string {
+    return `${item.title} by ${item.author}`
+  }
+}
+
+struct Bundle<T: Label>
+  implements Label {
+  first: T
+  second: T
+  cents: int
+}
+
+implement Label for Bundle<T> {
+  function label(bundle: Bundle<T>): string {
+    return `${Label.label(bundle.first)} + ${Label.label(bundle.second)}`
+  }
+}
+
+function printCatalog<T: Label>(heading: string, items: Array<T>) {
+  print(heading)
+  for (const item of items) {
+    print(`  ${Label.label(item)}`)
+  }
+}
+
+export function run(args: Array<string>): int {
+  const dune = Book { title: "Dune", author: "Herbert", cents: 990 }
+  const emma = Book { title: "Emma", author: "Austen", cents: 450 }
+  const pair = Bundle { first: dune, second: emma, cents: 1200 }
+  printCatalog("Bundles", [pair])
+  print(Int.toString(pair.cents))
+  return 0
+}
+```
+
+```text
+Bundles
+  Dune by Herbert + Emma by Austen
+1200
+```
+
+`struct Bundle<T: Label>` puts a constraint on the type parameter of a struct, as `<T: Label>` does on a function. `implement Label for Bundle<T>` writes the type with the same parameter names as its declaration. The functions in the block see the constraint, so `Label.label(bundle.first)` is allowed. A `Bundle` has `Label` itself, so `printCatalog` takes an array of bundles.
+
+The block has no constraints of its own. Leave `: Label` out of the struct, and the call in the block is an error:
+
+```narra error
+// error: 13:23: Label.label needs T to implement Label; declare it as <T: Label>
+trait Label {
+  function label(item: Self): string
+}
+
+struct Bundle<T> implements Label {
+  first: T
+  second: T
+}
+
+implement Label for Bundle<T> {
+  function label(bundle: Bundle<T>): string {
+    return Label.label(bundle.first)
+  }
+}
+
+export function run(args: Array<string>): int {
+  return 0
+}
+```
+
+A constraint on a struct applies to every use of the struct. Building a bundle of numbers is an error, because `int` has no `Label`:
+
+```narra error
+// error: 12:16: int does not implement Label, which Bundle needs for type parameter T
+trait Label {
+  function label(item: Self): string
+}
+
+struct Bundle<T: Label> {
+  first: T
+  second: T
+}
+
+export function run(args: Array<string>): int {
+  const pair = Bundle { first: 1, second: 2 }
+  return pair.first
+}
+```
+
+The same goes for a generic function that takes a `Bundle<T>`: it declares `<T: Label>` too, and the compiler says so when it is missing.
+
+There is one `implement` block for all instances of a generic type. `implement Label for Bundle<int>` is an error that asks you to name the type as `Bundle<T>`. A generic enum takes its traits the same way, as in `enum Choice<T: Label> implements Label` with `implement Label for Choice<T>`.
+
 ## Finding the cheapest item with `Ordered`
 
 To find the cheapest item, a function must compare two items. The standard trait for that is `Ordered`. Its one function, `Ordered.compare(a, b)`, returns an `Ordering`: `Ordering.Less`, `Ordering.Equal` or `Ordering.Greater`. Numbers and strings already implement it.
@@ -343,6 +451,231 @@ export function run(args: Array<string>): int {
 
 Compare the fields you care about instead, such as `first.title == second.title`.
 
+## Map keys and `Hashable`
+
+A map finds a key by its hash, a number worked out from the key's contents. The trait behind it is `Hashable`, and the compiler implements it for every type without a function or a float inside. A map key needs both `Equatable` and `Hashable`. A decimal number cannot be a key, because two results of a calculation that print the same can differ in the last bit:
+
+```narra error
+// error: 7:14: Weight cannot be a map key: float keys are not allowed
+struct Weight {
+  kilograms: f64
+}
+
+export function run(args: Array<string>): int {
+  let stock: Map<Weight, int> = Map {}
+  stock[Weight { kilograms: 0.5 }] = 3
+  return 0
+}
+```
+
+The stock count above found a book by all of its fields. Say the shop wants one count per title, whatever the price. Write both traits yourself, and use only the title in each:
+
+```narra
+import * as Int from "std/int"
+import * as Hash from "std/hash"
+
+struct Book implements Equatable, Hashable {
+  title: string
+  cents: int
+}
+
+implement Equatable for Book {
+  function equals(a: Book, b: Book): bool {
+    return a.title == b.title
+  }
+}
+
+implement Hashable for Book {
+  function hash(book: Book): int {
+    return Hash.of(book.title)
+  }
+}
+
+export function run(args: Array<string>): int {
+  let stock: Map<Book, int> = Map {}
+  stock[Book { title: "Dune", cents: 990 }] = 3
+  if (stock[Book { title: "Dune", cents: 700 }] is Some(count)) {
+    print(`Dune ${Int.toString(count)}`)
+  }
+  return 0
+}
+```
+
+```text
+Dune 3
+```
+
+`Hash.of(value)` from `std/hash` returns the hash of any `Hashable` value. Two values that are equal must have the same hash, so write the two traits from the same fields. A type that implements one of the two but not the other cannot be a map key: the error says `it implements one of Equatable and Hashable but not the other`. A generic function that calls `Hash.of` on a `T` declares `<T: Hashable>`.
+
+## A trait function that makes a value
+
+So far every trait function took a `Self` value. A trait function can also return `Self` without taking one. The shop shows a placeholder entry for a title it does not stock yet, and books and songs make different placeholders:
+
+```narra
+import * as Arrays from "std/array"
+
+trait Placeholder {
+  function placeholder(title: string): Self
+}
+
+struct Book implements Placeholder derives Show {
+  title: string
+  cents: int
+}
+
+struct Song implements Placeholder derives Show {
+  title: string
+  seconds: int
+}
+
+implement Placeholder for Book {
+  function placeholder(title: string): Book {
+    return Book { title, cents: 0 }
+  }
+}
+
+implement Placeholder for Song {
+  function placeholder(title: string): Song {
+    return Song { title, seconds: 30 }
+  }
+}
+
+function placeholders<T: Placeholder>(titles: Array<string>): Array<T> {
+  let made: Array<T> = []
+  for (const title of titles) {
+    Arrays.push(mutable made, Placeholder.placeholder<T>(title))
+  }
+  return made
+}
+
+export function run(args: Array<string>): int {
+  const book = Placeholder.placeholder<Book>("Dune")
+  const song: Song = Placeholder.placeholder("Blue")
+  print(Show.show(book))
+  print(Show.show(song))
+  print(Show.show(placeholders<Song>(["Red", "Green"])))
+  return 0
+}
+```
+
+```text
+Book { title: "Dune", cents: 0 }
+Song { title: "Blue", seconds: 30 }
+[Song { title: "Red", seconds: 30 }, Song { title: "Green", seconds: 30 }]
+```
+
+No argument says which version to call, so the call names the type: `Placeholder.placeholder<Book>("Dune")`. When the expected type says it, as in `const song: Song = ...`, you can leave it out. In the generic `placeholders`, `<T>` passes on whichever type the caller chose. Without a type, the call is an error:
+
+```narra error
+// error: 17:39: Placeholder.placeholder has Self only in its result; name the type, as in Placeholder.placeholder<Type>(...)
+trait Placeholder {
+  function placeholder(title: string): Self
+}
+
+struct Book implements Placeholder {
+  title: string
+}
+
+implement Placeholder for Book {
+  function placeholder(title: string): Book {
+    return Book { title }
+  }
+}
+
+export function run(args: Array<string>): int {
+  const book = Placeholder.placeholder("Dune")
+  print(book.title)
+  return 0
+}
+```
+
+## Values of different types in one array
+
+An array holds values of one type, so `printCatalog` above prints either books or songs. A shelf that mixes them needs a type for "any value with a `Label`". That type is `Dynamic<Label>`. `Dynamic.of(value)` wraps a value in it, and you need no import for either:
+
+```narra
+import * as Int from "std/int"
+
+trait Label {
+  function label(item: Self): string
+}
+
+struct Book implements Label {
+  title: string
+  author: string
+  cents: int
+}
+
+struct Song implements Label {
+  title: string
+  seconds: int
+  cents: int
+}
+
+implement Label for Book {
+  function label(item: Book): string {
+    return `${item.title} by ${item.author}`
+  }
+}
+
+implement Label for Song {
+  function label(item: Song): string {
+    return `${item.title} (${Int.toString(item.seconds)} s)`
+  }
+}
+
+export function run(args: Array<string>): int {
+  const shelf: Array<Dynamic<Label>> = [
+    Dynamic.of(Book { title: "Dune", author: "Herbert", cents: 990 }),
+    Dynamic.of(Song { title: "Blue", seconds: 215, cents: 129 }),
+    Dynamic.of(Book { title: "Emma", author: "Austen", cents: 450 }),
+  ]
+  for (const item of shelf) {
+    print(Label.label(item))
+  }
+  return 0
+}
+```
+
+```text
+Dune by Herbert
+Blue (215 s)
+Emma by Austen
+```
+
+Each `Dynamic<Label>` holds a value and remembers its type. `Label.label(item)` calls the version of that type: `Book`'s for a book, `Song`'s for a song. The choice happens when the program runs, while `printCatalog` picks its version when it compiles.
+
+`Dynamic.of` needs to know which trait to wrap the value for. So it goes where the type is written, such as a `const` with a type, a parameter or an array of `Dynamic<Label>`. A bare `const item = Dynamic.of(book)` is an error that asks for that type.
+
+A `Dynamic` lets you use the trait and nothing else. You cannot read the fields of the value inside, since the compiler no longer knows its type:
+
+```narra error
+// error: 18:14: Dynamic<Label> has no fields
+trait Label {
+  function label(item: Self): string
+}
+
+struct Book implements Label {
+  title: string
+}
+
+implement Label for Book {
+  function label(item: Book): string {
+    return item.title
+  }
+}
+
+export function run(args: Array<string>): int {
+  const item: Dynamic<Label> = Dynamic.of(Book { title: "Dune" })
+  print(item.title)
+  return 0
+}
+```
+
+A `Dynamic` also has no `==` and cannot be a map key. It does not count as a type with the trait, so it does not meet a constraint such as `<T: Label>`. Loop over the values and call the trait function on each, as above. Copies of a `Dynamic` share one value, which cannot be changed through any of them.
+
+Only some traits work with `Dynamic`. Each function of the trait must take `Self` as its first parameter and use it nowhere else. `Label` and `Show` qualify, so `Array<Dynamic<Show>>` holds anything printable. `Ordered` does not, because `compare` takes two `Self` values, and neither does `Placeholder`, which returns `Self`. `Dynamic<Ordered>` is an error that names the function at fault.
+
 ## Traits for a type you did not declare
 
 Only the module that declares a type can implement a trait for it. You cannot add `Show` to `int`, for instance:
@@ -389,5 +722,59 @@ export function run(args: Array<string>): int {
 €9.90
 [€12.05, €0.05]
 ```
+
+## Traits on a distinct type
+
+A distinct type from [chapter 4](04-structs-and-enums.md#keep-similar-numbers-apart) is another way to wrap a type. It has `==` and works as a map key when its base type does. It has no order and no `Show` until you give it them. List the traits after the base type, as a struct lists them after its name:
+
+```narra
+import * as Int from "std/int"
+
+trait Label {
+  function label(item: Self): string
+}
+
+distinct type CustomerId = int implements Label derives Ordered, Show
+
+implement Label for CustomerId {
+  function label(id: CustomerId): string {
+    return `customer #${Int.toString(CustomerId.toInt(id))}`
+  }
+}
+
+export function run(args: Array<string>): int {
+  const ann = CustomerId.from(12)
+  const bo = CustomerId.from(7)
+  print(Label.label(ann))
+  print(Show.show(bo))
+  if (Ordered.compare(bo, ann) is Ordering.Less) {
+    print("bo signed up first")
+  }
+  return 0
+}
+```
+
+```text
+customer #12
+7
+bo signed up first
+```
+
+A derived trait of a distinct type is the trait of its base type. `Show.show(bo)` prints `7`, as `Show.show(7)` does, and `Ordered.compare` compares the two numbers. The base type must have the trait:
+
+```narra error
+// error: 6:40: cannot derive Show for VisitLog: its base type Visit does not implement Show
+struct Visit {
+  minutes: int
+}
+
+distinct type VisitLog = Visit derives Show
+
+export function run(args: Array<string>): int {
+  return 0
+}
+```
+
+`==` and the hash of a distinct type always compare the base value, so you cannot write your own `implement Equatable` or `implement Hashable` for one.
 
 Next: [8. Modules and packages](08-modules-and-packages.md).

@@ -1,7 +1,7 @@
 ---
 id: snippet-warnings
 title: "Doc samples print no unrelated warnings"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-22

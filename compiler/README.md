@@ -73,6 +73,7 @@ Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are 
 - `refs` finds functions, constants and enum variants (calls, values, constructors and patterns). Uses of a type name in annotations or struct literals are not tracked.
 - `callers` and `recursion` read the call graph of the effect pass (`EffectState.calls`). Calls through function values are not edges. A call inside an arrow function belongs to the enclosing function.
 - Only the package's own modules are searched, not std source modules.
+- `interface std/<module>` answers for every public std module without loading a package (`selfhost/src/tools/querystd.nra`): builtin functions from the registry, then the declarations of the module's Narra source and of its `std/ext/<name>` part. Registry rows have no parameter names, so a signature lists the types only, `export function join(string, string): string uses alloc`. A builtin whose check computes the signature has no types in the registry and prints `(...)`. A builtin has `"location": null`. `std/internal/*` and `std/ext/*` are unknown modules.
 - `selfhost/src/tools/querysites.nra` builds the position index, `querysignature.nra` prints `interface` signatures, `querygraph.nra` finds cycles and `queryjson.nra` writes JSON.
 - The `query` suite runs `testdata/query/<case>/queries.txt` (`> command` lines, each followed by `# exit N` when the exit code is not 0, the expected stdout, and `# stderr` with the expected stderr when there is any) against the package in that folder.
 

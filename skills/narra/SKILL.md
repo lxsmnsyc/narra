@@ -136,7 +136,7 @@ export function check(value: int): Result<int, string> {
 }
 ```
 
-Only `print`, `assert` and `panic` are global functions. Everything else is imported from `std/...`, as `import * as Arrays from "std/array"`. Statements end at a line break, with no semicolons. There are no classes, `new` or `this`; use `struct`, `enum` and functions of the module.
+Only `print`, `assert`, `panic` and `copy` are global functions. Everything else is imported from `std/...`, as `import * as Arrays from "std/array"`. Statements end at a line break, with no semicolons. There are no classes, `new` or `this`; use `struct`, `enum` and functions of the module.
 
 ## Tests
 

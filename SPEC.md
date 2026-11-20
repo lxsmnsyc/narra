@@ -1,4 +1,4 @@
-# Narra specification (draft)
+# Narra specification
 
 This document defines the Narra language. Each section states the rules first, then shows an example. `DECISIONS.md` explains why each rule was chosen over the alternatives.
 

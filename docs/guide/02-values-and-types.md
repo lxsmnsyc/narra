@@ -350,7 +350,7 @@ first: 200
 
 `prices[0]` is the first element, because positions start at 0. Reading a position past the end stops the program with a message. `for (const price of prices)` runs its block once per element, with `price` bound to each element in turn.
 
-The functions for arrays come from `std/array`, imported as `Arrays`, and each takes the array as its first argument. `Arrays.push(mutable prices, 400)` adds an element at the end. The word `mutable` in the call marks the argument that the function changes. You can see at the call which of your values may change. Only a `let` name can be passed that way. Chapter 9 explains `mutable` in full.
+The functions for arrays come from `std/array`, imported as `Arrays`, and each takes the array as its first argument. `Arrays.push(mutable prices, 400)` adds an element at the end. The word `mutable` in the call marks the argument that the function changes. You can see at the call which of your values may change. A `const` or a `let` name can be passed that way. Chapter 9 explains `mutable` in full.
 
 Writing the call as a method on the array, `prices.push(400)`, is an error that points you back to the module function:
 
@@ -572,6 +572,7 @@ export function run(args: Array<string>): int {
   const cheapest: #[string, int] = #["tea", 250]
   const #[name, priceCents] = cheapest
   print(`${name} at ${Int.toString(priceCents)}`)
+  print(`${cheapest[0]} at ${Int.toString(cheapest[1])}`)
   const items: Array<#[string, int]> = [#["tea", 250], #["coffee", 320]]
   for (const #[itemName, itemPrice] of items) {
     print(`${itemName}=${Int.toString(itemPrice)}`)
@@ -582,11 +583,21 @@ export function run(args: Array<string>): int {
 
 ```text
 tea at 250
+tea at 250
 tea=250
 coffee=320
 ```
 
-`const #[name, priceCents] = cheapest` takes the tuple apart into two names. That is the only way to read a tuple: it has no positions to index.
+`const #[name, priceCents] = cheapest` takes the tuple apart into two names. `cheapest[0]` reads one position, here `"tea"`, and `cheapest[1]` reads `250`. The index must be a number written in the code, so the compiler knows the type of the result and the read cannot fail. A tuple has no way to change one position, so `cheapest[0] = "milk"` is an error:
+
+```narra error
+// error: 4:3: only variables, fields and array elements can be assigned
+export function run(args: Array<string>): int {
+  let pair = #["tea", 250]
+  pair[0] = "milk"
+  return 0
+}
+```
 
 The next chapter moves the receipt code into functions, so that each piece has a name and can be used again.
 

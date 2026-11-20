@@ -68,7 +68,7 @@ export function run(args: Array<string>): int {
 3
 ```
 
-`Int.toString` lives in the standard module `std/int`. The `import` line makes the functions of that module available under the name `Int`. Only `print`, `assert` and `panic` are there without an import. Everything else, including the functions for strings, arrays and maps, comes from a module you import.
+`Int.toString` lives in the standard module `std/int`. The `import` line makes the functions of that module available under the name `Int`. Only `print`, `assert`, `panic` and `copy` are there without an import. Everything else, including the functions for strings, arrays and maps, comes from a module you import.
 
 When you are only looking for mistakes, `narrac check hello.nra` reports the errors without building anything.
 

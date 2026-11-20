@@ -698,6 +698,8 @@ two receipts
 Say the shop's payment code lives in `src/payments.nra`. You want the rest of the program to import everything about the till from one module, `src/till.nra`. Narra has no statement that passes on another module's export as it is. Instead, the module imports the name and declares its own export with it: `export type` for a type and `export const` for a function. Here is `src/payments.nra` of a package named `shop`:
 
 ```narra file shop src/payments.nra
+import * as Int from "std/int"
+
 export enum Payment {
   Cash(cents: int)
   Voucher(code: string)
@@ -709,28 +711,33 @@ export function isVoucher(payment: Payment): bool {
     Payment.Voucher(_) => true
   }
 }
+
+export function describe(payment: Payment): string uses alloc {
+  return match (payment) {
+    Payment.Cash(cents) => `cash ${Int.toString(cents)}`
+    Payment.Voucher(code) => `voucher ${code}`
+  }
+}
 ```
 
-`src/till.nra` exports both names again:
+`src/till.nra` exports all three names again:
 
 ```narra file shop src/till.nra
 import * as Payments from "shop/payments"
 
 export type Payment = Payments.Payment
 export const isVoucher = Payments.isVoucher
+export const describe = Payments.describe
 ```
 
-`export type Payment = Payments.Payment` is an alias, so it is the same type, variants included. `export const isVoucher = Payments.isVoucher` is a constant that holds the function. `src/main.nra` imports both from `"shop/till"`:
+`export type Payment = Payments.Payment` is an alias, so it is the same type, variants included. `export const isVoucher = Payments.isVoucher` is a constant that holds the function, and it keeps what the function declares: `describe` still `uses alloc`, so a caller of `Till.describe` declares `uses alloc` too. `src/main.nra` imports all three from `"shop/till"`:
 
 ```narra file shop src/main.nra
-import { Payment, isVoucher } from "shop/till"
+import { Payment, isVoucher, describe } from "shop/till"
 
-export function run(args: Array<string>): int {
+export function run(args: Array<string>): int uses alloc {
   for (const payment of [Payment.Cash(500), Payment.Voucher("SPRING")]) {
-    match (payment) {
-      Payment.Cash(_) => print("cash")
-      Payment.Voucher(code) => print(`voucher ${code}`)
-    }
+    print(describe(payment))
     if (isVoucher(payment)) {
       print("no change to give")
     }
@@ -740,7 +747,7 @@ export function run(args: Array<string>): int {
 ```
 
 ```text
-cash
+cash 500
 voucher SPRING
 no change to give
 ```

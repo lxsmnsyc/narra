@@ -4,8 +4,13 @@
 // that scope, and Thread.join waits for it and gives its result. Every thread
 // a scope started has ended when Thread.scope returns. Importing this module
 // builds the program in thread mode (D111 item 2).
+//
+// The compiler turns Thread.start with an async arrow or the name of an async
+// function into startTask, whose thread runs the task on its own event loop
+// and keeps the value the task gives.
 
 import * as Boxes from "std/box"
+import * as Tasks from "std/internal/async"
 import * as CellSlot from "std/internal/cell"
 import * as Threads from "std/internal/thread"
 
@@ -65,6 +70,19 @@ export function start<T, effect E>(
 ): Thread<T> uses E, alloc {
   const result: Box<Option<T>> = Boxes.new(None)
   const id = Threads.start(() => CellSlot.store(result, Some(work())))
+  const control = Boxes.new(ThreadControl { id, joined: false })
+  CellSlot.store(threadScope.threads, ThreadList.Started(control, threadScope.threads.value))
+  return Thread { result, control }
+}
+
+function startTask<T, effect E>(
+  threadScope: Scope,
+  escaping work: () => Async<T> uses E,
+): Thread<T> uses E, alloc {
+  const result: Box<Option<T>> = Boxes.new(None)
+  // The task runs on the loop of the new thread; once it has finished, the
+  // thread cancels and drains the tasks still running, as for start.
+  const id = Threads.start(() => CellSlot.store(result, Some(Tasks.runUntilDone(work()))))
   const control = Boxes.new(ThreadControl { id, joined: false })
   CellSlot.store(threadScope.threads, ThreadList.Started(control, threadScope.threads.value))
   return Thread { result, control }

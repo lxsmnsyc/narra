@@ -72,6 +72,14 @@ export const INTERNAL_ASYNC_FUNCS: Array<StdFunc> = [
   },
   // The value of a finished task, borrowed from its frame.
   StdFunc { name: "Tasks.value", module: "std/internal/async", key: "value", check: "checkTasks" },
+  // Runs the loop of this thread until the task has finished and gives its
+  // value, borrowed from its frame; for an async thread function.
+  StdFunc {
+    name: "Tasks.runUntilDone",
+    module: "std/internal/async",
+    key: "runUntilDone",
+    check: "checkTasks",
+  },
   // A handle whose value is the index that Tasks.watch sets first.
   StdFunc {
     name: "Tasks.winner",
@@ -171,7 +179,7 @@ export function checkTasksCall<W: Walker>(
   if (name == "Tasks.finished") {
     return Type.TBool
   }
-  if (name == "Tasks.value") {
+  if (name == "Tasks.value" || name == "Tasks.runUntilDone") {
     return value
   }
   return Type.TVoid
@@ -260,6 +268,18 @@ export function emitAsyncCall<W: EmitWalker>(
       }
       const valueName = cachedCType(emitter.checker, emitter.typeNames, value)
       return plain(`(*(${valueName}*)(${handle})->value)`)
+    }
+  }
+  if (name == "Tasks.runUntilDone") {
+    const handleType = copy(readNodeType(emitter, getExpressionId(arguments[0].value)))
+    const handle = emitHandleArgument(walker, mutable emitter, arguments, 0)
+    if (handleType is Type.TAsync(value)) {
+      if (value == Type.TVoid) {
+        writeLine(mutable emitter, `narra_loop_run_until(${handle});`)
+        return plain("((void)0)")
+      }
+      const valueName = cachedCType(emitter.checker, emitter.typeNames, value)
+      return plain(`(*(${valueName}*)narra_loop_run_until(${handle}))`)
     }
   }
   if (name == "Tasks.next") {

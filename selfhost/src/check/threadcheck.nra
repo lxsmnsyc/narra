@@ -16,6 +16,7 @@ import {
   Ref,
   getExpressionId,
   getExpressionPos,
+  findLocal,
 } from "narrac/check/check"
 import * as Arrays from "std/array"
 
@@ -79,6 +80,7 @@ struct ThreadFunction {
 
 const THREAD_FUNCTIONS: Array<ThreadFunction> = [
   ThreadFunction { module: "std/thread", name: "start", work: 1 },
+  ThreadFunction { module: "std/thread", name: "startTask", work: 1 },
   ThreadFunction { module: "std/parallel", name: "map", work: 1 },
 ]
 
@@ -323,7 +325,7 @@ export function checkThreadCall(
   if (work < 0 || work >= Arrays.length(arguments)) {
     return
   }
-  checkThreadFunction(mutable checker, arguments[work].value)
+  checkThreadFunction(mutable checker, arguments[work].value, info.name == "startTask")
   if (info.module == "std/parallel" && Arrays.length(arguments) > 0) {
     const items = arguments[0].value
     const itemsType = copy(getNodeType(checker, getExpressionId(items)))
@@ -475,18 +477,70 @@ export function checkAtomicType(
   }
 }
 
-function checkThreadFunction(mutable checker: Checker, work: Expr) uses alloc {
-  match (work) {
-    Expr.AsyncExpr(_, pos, _) => {
-      reportAsyncThread(mutable checker, pos)
+export function findTaskStart(checker: Checker, funcIndex: int, arguments: Array<Arg>): int {
+  // Thread.start with an async arrow or the name of an async function runs
+  // startTask of std/thread, whose thread runs the task on its own loop.
+  const info = checker.functions[funcIndex]
+  if (info.module != "std/thread" || info.name != "start" || Arrays.length(arguments) != 2) {
+    return -1
+  }
+  if (!isAsyncWork(checker, arguments[1].value)) {
+    return -1
+  }
+  if (checker.scopeIndex["std/thread"] is Some(threadScope)) {
+    if (checker.scopes[threadScope].functions["startTask"] is Some(taskIndex)) {
+      return taskIndex
     }
-    Expr.ArrowExpr(nodeId, pos, _, _, _, _) => {
+  }
+  return -1
+}
+
+function isAsyncWork(checker: Checker, work: Expr): bool {
+  match (work) {
+    Expr.AsyncExpr(_, _, Expr.ArrowExpr(_, _, _, _, _, _)) => {
+      return true
+    }
+    Expr.Ident(_, _, name) => {
+      if (findLocal(checker, name) >= 0) {
+        return false
+      }
+      return isAsyncFunction(checker, checker.scopes[checker.current].functions[name])
+    }
+    Expr.FieldExpr(_, _, Expr.Ident(_, _, alias), name) => {
+      if (findLocal(checker, alias) >= 0) {
+        return false
+      }
+      // The name of a function of an imported module.
+      if (checker.scopes[checker.current].modules[alias] is Some(path)) {
+        if (checker.scopeIndex[path] is Some(moduleScope)) {
+          return isAsyncFunction(checker, checker.scopes[moduleScope].functions[name])
+        }
+      }
+      return false
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+function isAsyncFunction(checker: Checker, found: Option<int>): bool {
+  if (found is Some(funcIndex)) {
+    return checker.functions[funcIndex].declaration.isAsync
+  }
+  return false
+}
+
+function checkThreadFunction(mutable checker: Checker, work: Expr, runsTask: bool) uses alloc {
+  match (work) {
+    Expr.AsyncExpr(_, pos, Expr.ArrowExpr(nodeId, _, _, _, _, _))
+      | Expr.ArrowExpr(nodeId, pos, _, _, _, _) => {
       checkArrowCaptures(mutable checker, nodeId, pos)
-      checkThreadResult(mutable checker, nodeId, pos)
+      checkThreadResult(mutable checker, nodeId, pos, runsTask)
     }
     Expr.Ident(nodeId, pos, _) | Expr.FieldExpr(nodeId, pos, _, _) => {
       // The name of a top-level function, of this module or an imported one.
-      checkNamedThreadFunction(mutable checker, nodeId, pos)
+      checkNamedThreadFunction(mutable checker, nodeId, pos, runsTask)
     }
     _ => {
       reportFunctionValue(mutable checker, getExpressionPos(work))
@@ -494,25 +548,17 @@ function checkThreadFunction(mutable checker: Checker, work: Expr) uses alloc {
   }
 }
 
-function checkNamedThreadFunction(mutable checker: Checker, nodeId: int, pos: Pos) uses alloc {
-  if (getRef(checker, nodeId) is Ref.Function(funcIndex)) {
-    if (checker.functions[funcIndex].declaration.isAsync) {
-      reportAsyncThread(mutable checker, pos)
-      return
-    }
-    checkThreadResult(mutable checker, nodeId, pos)
+function checkNamedThreadFunction(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  runsTask: bool,
+) uses alloc {
+  if (getRef(checker, nodeId) is Ref.Function(_)) {
+    checkThreadResult(mutable checker, nodeId, pos, runsTask)
     return
   }
   reportFunctionValue(mutable checker, pos)
-}
-
-function reportAsyncThread(mutable checker: Checker, pos: Pos) uses alloc {
-  reportError(
-    mutable checker,
-    pos,
-    "E1192",
-    "a thread function cannot be async; write a plain function, which may start tasks of its own",
-  )
 }
 
 function reportFunctionValue(mutable checker: Checker, pos: Pos) uses alloc {
@@ -543,11 +589,23 @@ function checkArrowCaptures(mutable checker: Checker, nodeId: int, pos: Pos) use
   }
 }
 
-function checkThreadResult(mutable checker: Checker, nodeId: int, pos: Pos) uses alloc {
+function checkThreadResult(
+  mutable checker: Checker,
+  nodeId: int,
+  pos: Pos,
+  runsTask: bool,
+) uses alloc {
   const workType = copy(getNodeType(checker, nodeId))
   if (workType is Some(Type.TFunc(_, result, _, _, _))) {
-    if (result != Type.TVoid) {
-      checkSendable(mutable checker, pos, result, "the result of the thread function")
+    // The value of a task that runs on the thread crosses back, not its handle.
+    let crossing = copy(result)
+    if (runsTask) {
+      if (result is Type.TAsync(value)) {
+        crossing = copy(value)
+      }
+    }
+    if (crossing != Type.TVoid) {
+      checkSendable(mutable checker, pos, crossing, "the result of the thread function")
     }
   }
 }

@@ -1,0 +1,6 @@
+# Log: async-thread-functions
+
+- 2026-11-20: design. `Thread.start` stays one function for users. The checker sends a call whose work is an async arrow or the name of an async function to `startTask`, a private function of `std/thread` (the `Co.resume` redirect is the model, but by function index, so `startTask` stays out of the reference). Its thread calls `Tasks.runUntilDone(work())`, a new primitive that runs the thread's loop until the handle is done (`narra_loop_run_until`, shared with the async entry). The thread's loop exit then cancels and drains the rest, as before.
+- `asyncvoid.nra`: `Thread<T>` in a signature no longer counts as a void value, so an `Async<void>` thread function gives a `Thread<void>` through `startTask` (E1150 fired before).
+- fmt: an async arrow as the last argument hugs, as a plain arrow does and as oxfmt does; `testdata/fmt/async_arrow_hug`.
+- Cancelled await: not reproduced. Tried a cancelled sleep, a cancelled await chain, idle, an async block, a bare `Time.sleep` handle, `Net.accept`, `for await` over a stream, `Async.next`, `Async.all` and `Async.race`. All return. `Async.all` and `Async.race` wait for their inputs after a cancel, as SPEC says, so a race over a long sleep looks like a hang.

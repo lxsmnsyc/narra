@@ -3123,16 +3123,6 @@ A Scope joins its threads when its Thread.scope returns, so it must not outlive 
 
 Fix: pass the Scope as a parameter to the function that starts threads, or open a new Thread.scope where it is needed.
 
-#### E1192
-
-```text
-a thread function cannot be async; write a plain function, which may start tasks of its own
-```
-
-A thread runs one plain function. An async function would give an Async handle, which belongs to the event loop of the thread that made it.
-
-Fix: write a plain function; it may start tasks, which its thread finishes before it ends.
-
 #### E1193
 
 ```text

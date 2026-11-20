@@ -8,28 +8,30 @@ import * as Time from "std/time"
 export function run(_args: Array<string>): int {
   const #[sender, receiver] = Channel.create<string>(1)
   const sent = Thread.scope((scope) => {
-    const producer = Thread.start(scope, () => {
-      let count = 0
-      for (let i = 0; i < 20; i++) {
-        if (Channel.send(sender, `value ${Int.toString(i)}`)) {
-          count++
+    const consumer = Thread.start(scope, async () => {
+      let received = 0
+      for (const value of Channel.values(receiver)) {
+        // The receiver sleeps for 2 ms now and then, so the sender waits.
+        if (received % 5 == 0) {
+          const slept = await Time.sleep(Time.milliseconds(2))
+          if (slept is Err(_)) {
+            return received
+          }
         }
+        print(value)
+        received++
       }
-      Channel.close(sender)
-      return count
+      return received
     })
-    let received = 0
-    for (const value of Channel.values(receiver)) {
-      // Time.sleep needs an async caller, so the receiver spins for 2 ms.
-      if (received % 5 == 0) {
-        const start = Time.now()
-        while (Time.asMilliseconds(Time.elapsed(start)) < 2) {}
+    let count = 0
+    for (let i = 0; i < 20; i++) {
+      if (Channel.send(sender, `value ${Int.toString(i)}`)) {
+        count++
       }
-      print(value)
-      received++
     }
-    print(`received ${Int.toString(received)}`)
-    return Thread.join(producer)
+    Channel.close(sender)
+    print(`received ${Int.toString(Thread.join(consumer))}`)
+    return count
   })
   print(`sent ${Int.toString(sent)}`)
   return 0

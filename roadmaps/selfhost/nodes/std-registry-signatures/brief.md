@@ -1,7 +1,7 @@
 ---
 id: std-registry-signatures
 title: "Readable signatures for every builtin std function"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-21
@@ -43,7 +43,7 @@ depends_on:
 
 std-interface-query (outcome) prints builtin signatures from the registry, which has no parameter names, and 135 builtins with a check function instead of a type list print `(...)` (for example `export function push(...) uses alloc`: Array.push, Map.remove, Range.upTo, std/ptr, std/simd, sized from/tryFrom/wrap). A generated std reference built on that is not readable.
 
-Give every registry entry parameter names, and give each check-function builtin a written signature (generic form, for example `push<T>(mutable array: Array<T>, item: T): void uses alloc`) used only for display: `query interface`, the LSP hover and signature help. The checker keeps its check functions. A test fails when a public builtin prints `(...)` or an unnamed parameter.
+Give every registry entry parameter names, and give each check-function builtin a written signature (generic form, for example `push<T>(mutable array: Array<T>, item: T): void uses alloc`) used only for display: `query interface`, the LSP hover and signature help. Also list the types that builtin modules define without source (for example `StringBuilder` in `std/string`), with their methods. The checker keeps its check functions. A test fails when a public builtin prints `(...)` or an unnamed parameter.
 
 ## Acceptance
 

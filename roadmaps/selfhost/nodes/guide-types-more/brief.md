@@ -1,7 +1,7 @@
 ---
 id: guide-types-more
 title: "Generic types, aliases, typeof, Dynamic"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

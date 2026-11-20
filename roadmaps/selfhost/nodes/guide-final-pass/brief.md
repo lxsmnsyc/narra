@@ -81,6 +81,12 @@ depends_on:
   - on: grammar-fixes
     kind: hard
     why: reads the finished chapters
+  - on: grammar-fixes-two
+    kind: hard
+    why: edits chapters 4 and 7
+  - on: const-function-effects
+    kind: hard
+    why: may edit chapter 4
 ---
 # Guide index, cross-links and a read-through
 
@@ -91,6 +97,7 @@ After every chapter writer of batch-21 lands, make the guide read as one book:
 - `docs/guide/README.md`: the chapter list with one line per chapter as written, and the "built but not taught" and "Planned" lists updated (fixed-size arrays, `ensures`, refinement types and others are now taught).
 - Cross-links the writers left as placeholders or one-sentence mentions now that the target chapter exists: chapter 14 names `Cell` (chapter 9 teaches it); chapter 15 leaves `Dynamic<Trait>` out of the non-`Sendable` list (chapter 7 may teach it now); chapters 9 and 14 link forward to chapters written later. Search every chapter for "chapter N" mentions and `Next:` lines and check each target.
 - Read chapters 1 to 20 in order as a learner, and fix concepts used before they are taught (move the explanation or add a forward link), contradictions between chapters, and repeated explanations (keep one, link from the others). Keep every chapter's samples running.
+- Re-exporting is taught in chapter 4 ("Export a name from another module"); chapter 8 (modules and packages) should link to it.
 - `skills/narra/SKILL.md`: update anything the guide now says differently.
 
 ## Acceptance

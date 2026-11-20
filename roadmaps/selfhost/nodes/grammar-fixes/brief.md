@@ -1,7 +1,7 @@
 ---
 id: grammar-fixes
 title: "TextMate grammar: labels and function types in type arguments"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-21

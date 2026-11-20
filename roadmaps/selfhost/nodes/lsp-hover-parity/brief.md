@@ -1,7 +1,7 @@
 ---
 id: lsp-hover-parity
 title: "LSP hover matches narrac query hovers"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-20

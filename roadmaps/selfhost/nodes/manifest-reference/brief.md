@@ -1,7 +1,7 @@
 ---
 id: manifest-reference
 title: "narra.toml reference"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

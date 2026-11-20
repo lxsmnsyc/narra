@@ -507,9 +507,9 @@ Sometimes a type should follow a value you already have. `typeof name` in a type
 ```narra
 import * as Int from "std/int"
 
-const shopPrices: Map<string, int> = Map { "tea": 250, "cake": 400 }
+const SHOP_PRICES: Map<string, int> = Map { "tea": 250, "cake": 400 }
 
-function priceOf(prices: typeof shopPrices, name: string): int {
+function priceOf(prices: typeof SHOP_PRICES, name: string): int {
   if (prices[name] is Some(cents)) {
     return cents
   }
@@ -525,8 +525,8 @@ function applyTwice(change: typeof halfPrice, cents: int): int {
 }
 
 export function run(args: Array<string>): int {
-  let sale: typeof shopPrices = copy(shopPrices)
-  sale["tea"] = applyTwice(halfPrice, priceOf(shopPrices, "tea"))
+  let sale: typeof SHOP_PRICES = copy(SHOP_PRICES)
+  sale["tea"] = applyTwice(halfPrice, priceOf(SHOP_PRICES, "tea"))
   print(Int.toString(priceOf(sale, "tea")))
   print(Int.toString(priceOf(sale, "cake")))
   return 0
@@ -538,24 +538,24 @@ export function run(args: Array<string>): int {
 400
 ```
 
-`typeof shopPrices` is `Map<string, int>`, and `typeof halfPrice` is the function type `(cents: int) => int`. If you later change the type of `shopPrices`, `priceOf` and `sale` follow it. Only a name can come after `typeof`, not a field such as `item.name` or any other expression.
+`typeof SHOP_PRICES` is `Map<string, int>`, and `typeof halfPrice` is the function type `(cents: int) => int`. If you later change the type of `SHOP_PRICES`, `priceOf` and `sale` follow it. Only a name can come after `typeof`, not a field such as `item.name` or any other expression.
 
 A top-level constant written without a type has the type of its value. The compiler does not know that type yet when it reads the signatures of the module. So `typeof` of such a constant in a signature, a field or an alias is an error:
 
 ```narra error
-// error: 4:31: the type of constant "standardDiscount" is not known here; write it as `const standardDiscount: Type = ...`
-const standardDiscount = 50
+// error: 4:31: the type of constant "STANDARD_DISCOUNT" is not known here; write it as `const STANDARD_DISCOUNT: Type = ...`
+const STANDARD_DISCOUNT = 50
 
-function applyDiscount(cents: typeof standardDiscount): int {
+function applyDiscount(cents: typeof STANDARD_DISCOUNT): int {
   return cents
 }
 
 export function run(args: Array<string>): int {
-  return applyDiscount(standardDiscount)
+  return applyDiscount(STANDARD_DISCOUNT)
 }
 ```
 
-Inside a function body, `typeof standardDiscount` works.
+Inside a function body, `typeof STANDARD_DISCOUNT` works.
 
 ## Keep similar numbers apart
 

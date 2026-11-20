@@ -242,8 +242,7 @@ implement Label for Book {
   }
 }
 
-struct Bundle<T: Label>
-  implements Label {
+struct Bundle<T: Label> implements Label {
   first: T
   second: T
   cents: int

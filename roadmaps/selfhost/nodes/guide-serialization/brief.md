@@ -1,7 +1,7 @@
 ---
 id: guide-serialization
 title: "Saving and loading values: Shape and JSON"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

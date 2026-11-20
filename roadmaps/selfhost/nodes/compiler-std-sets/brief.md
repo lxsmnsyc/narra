@@ -1,7 +1,7 @@
 ---
 id: compiler-std-sets
 title: "The compiler uses std/set"
-status: todo
+status: done
 priority: should
 type: refactor
 story: batch-23

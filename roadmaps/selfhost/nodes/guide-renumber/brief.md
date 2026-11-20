@@ -1,7 +1,7 @@
 ---
 id: guide-renumber
 title: "Renumber the guide to the 20-chapter order"
-status: active
+status: done
 priority: could
 type: chore
 story: batch-21

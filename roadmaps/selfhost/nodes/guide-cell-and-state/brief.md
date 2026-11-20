@@ -1,7 +1,7 @@
 ---
 id: guide-cell-and-state
 title: "Cell, replaced values and cycles"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

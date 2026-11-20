@@ -1,7 +1,7 @@
 ---
 id: guide-system-io
 title: "Chapter 11: files and the system"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

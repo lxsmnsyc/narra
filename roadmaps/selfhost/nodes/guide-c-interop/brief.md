@@ -1,7 +1,7 @@
 ---
 id: guide-c-interop
 title: "Chapter 16: unsafe code and C"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21

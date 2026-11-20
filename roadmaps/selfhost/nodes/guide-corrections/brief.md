@@ -1,7 +1,7 @@
 ---
 id: guide-corrections
 title: "Fix the guide's wrong statements and the std list"
-status: todo
+status: active
 priority: could
 type: docs
 story: batch-21
@@ -28,6 +28,7 @@ owns:
   - skills/narra/SKILL.md
 shared:
   - docs/guide/02-values-and-types.md
+  - SPEC.md
 reserves: []
 provides: []
 depends_on:
@@ -39,7 +40,7 @@ depends_on:
 
 ## Goal
 
-Audit rows 42, 7, 50, 58: chapter 2 says tuples cannot be indexed (`pair[0]` compiles) and that only a `let` can be passed as `mutable` (a `const` compiles); chapters 1 and 8 and `skills/narra/SKILL.md` leave `copy` out of the functions available without an import; chapter 8 lists 14 std modules while the compiler accepts 54 (list them all, grouped, each with one line, until the std reference exists). Check each against the compiler first; fix the text to match the compiler.
+Audit rows 42, 7, 50, 58: chapter 2 says tuples cannot be indexed (`pair[0]` compiles) and that only a `let` can be passed as `mutable` (a `const` compiles); chapters 1 and 8 and `skills/narra/SKILL.md` leave `copy` out of the functions available without an import; chapter 8 lists 14 std modules while the compiler accepts 54 (list them all, grouped, each with one line, until the std reference exists). Also: the `SPEC.md` title still says "(draft)"; drop it, so the site's `/spec` page reads "Narra specification" (maintainer is releasing v0.1.0). Check each against the compiler first; fix the text to match the compiler.
 
 ## Rules
 

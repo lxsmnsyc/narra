@@ -1,7 +1,7 @@
 ---
 id: bench-zig-odin
 title: "Zig and Odin in the benchmarks"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

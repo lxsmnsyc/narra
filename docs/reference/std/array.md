@@ -46,6 +46,14 @@ export function push<T>(mutable items: Array<T>, item: T) uses alloc
 
 Effects: `alloc`.
 
+### truncate
+
+```narra fragment
+export function truncate<T>(mutable items: Array<T>, length: int)
+```
+
+Effects: none.
+
 ### values
 
 ```narra fragment
@@ -79,3 +87,51 @@ export function slice<T>(items: Array<T>, start: int, finish: int): Option<Array
 ```
 
 Effects: `alloc`.
+
+### pop
+
+```narra fragment
+export function pop<T>(mutable items: Array<T>): Option<T> uses alloc
+```
+
+Effects: `alloc`.
+
+### indexOf
+
+```narra fragment
+export function indexOf<T: Equatable>(items: Array<T>, wanted: T): Option<int>
+```
+
+Effects: none.
+
+### contains
+
+```narra fragment
+export function contains<T: Equatable>(items: Array<T>, wanted: T): bool
+```
+
+Effects: none.
+
+### reverse
+
+```narra fragment
+export function reverse<T>(mutable items: Array<T>) uses alloc
+```
+
+Effects: `alloc`.
+
+### sort
+
+```narra fragment
+export function sort<T: Ordered>(mutable items: Array<T>) uses alloc
+```
+
+Effects: `alloc`.
+
+### sortBy
+
+```narra fragment
+export function sortBy<T, effect E>(mutable items: Array<T>, compare: (T, T) => Ordering uses E) uses alloc, E
+```
+
+Effects: `alloc`, `E`.

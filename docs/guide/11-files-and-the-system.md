@@ -157,7 +157,9 @@ export function run(args: Array<string>): int uses io, alloc {
   const _first = Fs.writeText(Path.join(folder, "notes/a.txt"), "a")
   const _second = Fs.writeText(Path.join(folder, "notes/b.txt"), "b")
   if (Fs.listDir(Path.join(folder, "notes")) is Ok(names)) {
-    print(`entries: ${Int.toString(Arrays.length(names))}`)
+    let sorted = copy(names)
+    Arrays.sort(mutable sorted)
+    print(`entries: ${Str.join(sorted, ", ")}`)
   }
 
   if (Fs.removeDir(Path.join(folder, "notes")) is Err(message)) {
@@ -182,7 +184,7 @@ createDirAll: made
 createDirAll again: already there
 exists: yes
 isDir: yes
-entries: 3
+entries: 2026, a.txt, b.txt
 removeDir: <folder>/notes: Directory not empty
 exists: no
 ```
@@ -192,7 +194,7 @@ What each function does:
 - `Fs.exists(path)` and `Fs.isDir(path)` return a `bool`. They need `io`, but not `alloc`, and they never fail: a path they cannot reach is "not there".
 - `Fs.createDir(path)` makes one folder and fails when the parent is missing or the folder exists, as the second line shows.
 - `Fs.createDirAll(path)` makes the folder and every missing parent. Its result is `Ok(true)` when it made something and `Ok(false)` when the folder was already there, so it is safe to call twice.
-- `Fs.listDir(path)` returns the names inside a folder, without the folder's own path. The order is the one the system gives, and `.` and `..` are not in it. The `notes` folder holds `2026`, `a.txt` and `b.txt`, hence three entries.
+- `Fs.listDir(path)` returns the names inside a folder, without the folder's own path. The order is the one the system gives, so the sample sorts the names with `Arrays.sort` (chapter 2); `.` and `..` are not in the list.
 - `Fs.removeFile(path)` and `Fs.removeDir(path)` remove a file and an empty folder. A folder with anything inside is an error, as the `removeDir` line shows.
 
 Every function that can fail returns a `Result`, and ignoring one is a compile error (chapter 6). The sample gives the results it does not need to names that start with `_`, which discards them on purpose.

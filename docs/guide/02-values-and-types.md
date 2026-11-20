@@ -805,6 +805,39 @@ export function run(args: Array<string>): int {
 
 `Arrays.withCapacity(count)` makes an empty array with room for `count` elements, which saves growing it when you know the size in advance. `Arrays.values(items)` loops over the elements, as `for (const price of prices)` already does.
 
+### Sort, search and shrink
+
+These functions from `std/array` change the array they are given, so the call writes `mutable`. `Arrays.sort(mutable items)` puts numbers and strings in increasing order. `Arrays.sortBy(mutable items, compare)` takes a function that compares two elements and returns `Ordering.Less`, `Ordering.Equal` or `Ordering.Greater`; use it for another order or to sort by one field. Both keep elements that compare equal in their old order. `Arrays.reverse(mutable items)` turns the array around. `Arrays.pop(mutable items)` removes the last element and returns it as an `Option`, which is `None` for an empty array. `Arrays.truncate(mutable items, length)` keeps the first `length` elements and does nothing when the array is not longer. `Arrays.contains(items, wanted)` and `Arrays.indexOf(items, wanted)` look for an element, and `indexOf` returns its first position as an `Option`:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+export function run(args: Array<string>): int uses io, alloc {
+  let prices = [250, 320, 180, 400]
+  Arrays.sort(mutable prices)
+  print(Str.join(Arrays.map(prices, (price) => Int.toString(price)), " "))
+  Arrays.sortBy(mutable prices, (first, second) => Int.compare(second, first))
+  print(Str.join(Arrays.map(prices, (price) => Int.toString(price)), " "))
+  if (Arrays.pop(mutable prices) is Some(cheapest)) {
+    print(Int.toString(cheapest))
+  }
+  Arrays.truncate(mutable prices, 1)
+  print(Int.toString(Arrays.length(prices)))
+  print(Show.show(Arrays.contains(prices, 400)))
+  return 0
+}
+```
+
+```text
+180 250 320 400
+400 320 250 180
+180
+1
+true
+```
+
 ## Look up a value by name
 
 The shop keeps a count of each item in stock. A `Map` looks up a value by a key. `Map<string, int>` maps item names to counts:

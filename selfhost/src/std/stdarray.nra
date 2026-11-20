@@ -45,6 +45,14 @@ export const ARRAY_FUNCS: Array<StdFunc> = [
     signature: "<T>(mutable items: Array<T>, item: T)",
   },
   StdFunc {
+    name: "Array.truncate",
+    module: "std/array",
+    key: "truncate",
+    mutables: [true, false],
+    check: "checkArrayTruncate",
+    signature: "<T>(mutable items: Array<T>, length: int)",
+  },
+  StdFunc {
     name: "Array.withCapacity",
     module: "std/array",
     key: "withCapacity",
@@ -130,6 +138,36 @@ function checkArrayPush<W: Walker>(
   return Type.TVoid
 }
 
+function checkArrayTruncate<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (!arguments[0].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0905",
+      "Array.truncate changes the array; write Array.truncate(mutable items, length)",
+    )
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TArray(_)) {
+    checkMutableArgument(mutable checker, arguments[0].value)
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+    checkExclusive(mutable checker, arguments, [0])
+    return Type.TVoid
+  }
+  const message = `Array.truncate needs an array, found ${typeString(checker, found)}`
+  reportError(mutable checker, pos, "E0906", message)
+  return Type.TVoid
+}
+
 function checkArrayFilled<W: Walker>(
   mutable checker: Checker,
   walker: W,
@@ -200,6 +238,9 @@ export function checkArrayCall<W: Walker>(
   }
   if (kind == "checkArrayPush") {
     return checkArrayPush(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkArrayTruncate") {
+    return checkArrayTruncate(mutable checker, walker, pos, arguments, name)
   }
   if (kind == "checkArrayFilled") {
     return copy(checkArrayFilled(mutable checker, walker, pos, arguments, name, want))

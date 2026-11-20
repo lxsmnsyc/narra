@@ -24,3 +24,91 @@ export function slice<T>(items: Array<T>, start: int, finish: int): Option<Array
   }
   return Some(result)
 }
+
+export function pop<T>(mutable items: Array<T>): Option<T> uses alloc {
+  const count = Arrays.length(items)
+  if (count == 0) {
+    return None
+  }
+  // The last item is copied out before the array shrinks, so a shared array is copied once.
+  const last = copy(items[count - 1])
+  Arrays.truncate(mutable items, count - 1)
+  return Some(last)
+}
+
+export function indexOf<T: Equatable>(items: Array<T>, wanted: T): Option<int> {
+  for (let index = 0; index < Arrays.length(items); index++) {
+    if (items[index] == wanted) {
+      return Some(index)
+    }
+  }
+  return None
+}
+
+export function contains<T: Equatable>(items: Array<T>, wanted: T): bool {
+  return indexOf(items, wanted) is Some(_)
+}
+
+export function reverse<T>(mutable items: Array<T>) uses alloc {
+  let low = 0
+  let high = Arrays.length(items) - 1
+  while (low < high) {
+    const held = copy(items[low])
+    items[low] = copy(items[high])
+    items[high] = held
+    low++
+    high--
+  }
+}
+
+export function sort<T: Ordered>(mutable items: Array<T>) uses alloc {
+  sortBy(mutable items, (first: T, second: T) => Ordered.compare(first, second))
+}
+
+export function sortBy<T, effect E>(
+  mutable items: Array<T>,
+  compare: (first: T, second: T) => Ordering uses E,
+) uses alloc, E {
+  const count = Arrays.length(items)
+  if (count < 2) {
+    return
+  }
+  // Bottom-up merge sort: runs of `width` items are merged pairwise. A merge takes
+  // from the left run on a tie, which keeps equal items in their order.
+  let buffer: Array<T> = Arrays.withCapacity(count)
+  for (const item of items) {
+    Arrays.push(mutable buffer, copy(item))
+  }
+  let width = 1
+  while (width < count) {
+    for (let start = 0; start < count; start += width * 2) {
+      const middle = smaller(start + width, count)
+      const finish = smaller(start + width * 2, count)
+      let left = start
+      let right = middle
+      for (let target = start; target < finish; target++) {
+        if (
+          right >= finish ||
+            (left < middle && compare(items[left], items[right]) != Ordering.Greater)
+        ) {
+          buffer[target] = copy(items[left])
+          left++
+        } else {
+          buffer[target] = copy(items[right])
+          right++
+        }
+      }
+    }
+    for (let index = 0; index < count; index++) {
+      items[index] = copy(buffer[index])
+    }
+    width *= 2
+  }
+}
+
+function smaller(first: int, second: int): int {
+  if (first < second) {
+    return first
+  }
+  return second
+}

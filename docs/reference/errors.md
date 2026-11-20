@@ -1976,7 +1976,7 @@ Array.push changes the array; write Array.push(mutable items, value)
 #### E0906
 
 ```text
-Array.push needs an array, found %s
+%s needs an array, found %s
 ```
 
 #### E0907

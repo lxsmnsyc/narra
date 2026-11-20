@@ -40,6 +40,7 @@ Maintainer requests, 2026-11-20, before the `v0.1.0` tag:
 - Remove the `std/async/*` modules. Each std API has one form, sync or async, never both. The `async` language feature stays.
 - Doc samples print no warnings that are unrelated to the example (mostly the unused `args` of `run`).
 - Find the std modules a first user will miss, and add the ones that matter.
+- Add Zig and Odin to the benchmarks (maintainer, 2026-11-20).
 
 The branch `feat/batch-22` starts from `feat/batch-21` (PR #126, not merged yet); it is rebased onto `main` after #126 merges. Worktree `../narra-batch-22`, local only.
 

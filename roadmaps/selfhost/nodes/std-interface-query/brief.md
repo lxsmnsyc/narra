@@ -1,7 +1,7 @@
 ---
 id: std-interface-query
 title: "narrac query interface for every public std module"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-21

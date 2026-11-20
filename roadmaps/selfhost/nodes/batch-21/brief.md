@@ -1,7 +1,7 @@
 ---
 id: batch-21
 title: "Batch 21: docs that teach every crucial concept"
-status: active
+status: done
 priority: could
 type: story
 story:

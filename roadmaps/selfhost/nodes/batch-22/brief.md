@@ -1,7 +1,7 @@
 ---
 id: batch-22
 title: "Batch 22: one form per std API, clean samples, std gaps"
-status: active
+status: done
 priority: could
 type: story
 story: 

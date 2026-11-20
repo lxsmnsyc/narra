@@ -28,6 +28,9 @@ shared:
 reserves: []
 provides: []
 depends_on:
+  - on: batch-23
+    kind: hard
+    why: the compiler uses the new std and std headers are clean before the tag (maintainer, 2026-11-20)
   - on: curl-installer
     kind: hard
     why: the release must carry the installers

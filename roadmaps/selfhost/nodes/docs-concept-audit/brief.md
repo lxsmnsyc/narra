@@ -1,7 +1,7 @@
 ---
 id: docs-concept-audit
 title: "Audit the docs for missing concepts"
-status: active
+status: done
 priority: could
 type: spike
 story: batch-21
@@ -40,5 +40,7 @@ Rank each concept: crucial (a user writing a first real program hits it, or the 
 
 ## Acceptance
 
-- [ ] `audit.md` in this folder: the inventory as a table (concept, source, rank, where the docs teach it, status), then the gaps grouped into proposed writing nodes (id, chapter or page, concepts covered, size), with the crucial gaps first. Reconcile it with the nine outline nodes after first-release (`site-reference-section`, `std-interface-query`, `std-reference`, `std-doc-comments`, `cli-reference`, `manifest-reference`, `error-index`, `spec-decision-links`, `guide-concurrency`): say which become part of this batch.
-- [ ] The maintainer approves the list.
+- [x] `audit.md` in this folder: the inventory as a table (concept, source, rank, where the docs teach it, status), then the gaps grouped into proposed writing nodes (id, chapter or page, concepts covered, size), with the crucial gaps first. Reconcile it with the nine outline nodes after first-release (`site-reference-section`, `std-interface-query`, `std-reference`, `std-doc-comments`, `cli-reference`, `manifest-reference`, `error-index`, `spec-decision-links`, `guide-concurrency`): say which become part of this batch.
+- [x] The maintainer approves the list.
+
+Approved 2026-11-20: all 22 writing nodes before v0.1.0, and the 20-chapter order.

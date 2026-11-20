@@ -1,7 +1,7 @@
 ---
 id: site-reference-section
 title: "Reference section on the site"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-21

@@ -1,7 +1,7 @@
 ---
 id: grammar-fixes-two
 title: "Highlighters: implements on the struct line, capitals after typeof"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-21

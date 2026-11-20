@@ -1,7 +1,7 @@
 ---
 id: std-reference
 title: "Generated std reference"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-21

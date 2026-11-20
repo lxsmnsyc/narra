@@ -1,7 +1,7 @@
 ---
 id: std-registry-signatures
 title: "Readable signatures for every builtin std function"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-21

@@ -1,7 +1,7 @@
 ---
 id: docs-structure-review
 title: "Review the structure of the docs"
-status: active
+status: done
 priority: could
 type: spike
 story: batch-20
@@ -47,5 +47,7 @@ Base each proposal on evidence (what the page holds, who reads it, what links to
 
 ## Acceptance
 
-- [ ] A proposed structure (pages, order, what moves, what is generated, what is dropped) with the reason for each change; the maintainer approves.
-- [ ] Follow-up nodes for the approved changes.
+- [x] A proposed structure (pages, order, what moves, what is generated, what is dropped) with the reason for each change; the maintainer approves.
+- [x] Follow-up nodes for the approved changes.
+
+Approved by the maintainer on 2026-11-20, all changes. Follow-ups: docs-release-pass (batch-20) and nine outline nodes after first-release. LICENSE: MIT, in docs-release-pass.

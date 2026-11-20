@@ -1,7 +1,7 @@
 ---
 id: narrac-version
 title: "narrac --version"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-20

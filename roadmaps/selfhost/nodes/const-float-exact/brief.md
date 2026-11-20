@@ -1,7 +1,7 @@
 ---
 id: const-float-exact
 title: "@const evaluation reads long float literals"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-20

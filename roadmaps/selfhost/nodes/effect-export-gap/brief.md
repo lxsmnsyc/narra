@@ -1,7 +1,7 @@
 ---
 id: effect-export-gap
 title: "Reproduce the exported uses alloc printing gap"
-status: todo
+status: active
 priority: could
 type: fix
 story: batch-20

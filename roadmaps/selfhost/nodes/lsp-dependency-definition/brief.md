@@ -1,7 +1,7 @@
 ---
 id: lsp-dependency-definition
 title: "Go to definition into git dependencies"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-20

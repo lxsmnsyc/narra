@@ -41,8 +41,9 @@ import { collectPatternLocals } from "narrac/check/patterns"
 import { getPosKey } from "narrac/syntax/trivia"
 import { isCopyTracked, isCopyCall, canShareType } from "narrac/std/stdcopy"
 import * as Arrays from "std/array"
-import * as Maps from "std/map"
 import * as Ranges from "std/range"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // A return of a function (owner -1), an arrow function (owner: its node id)
 // or a block expression (owner: its node id).
@@ -77,7 +78,7 @@ struct SharingFacts {
   // The arrow function being walked, or -1.
   arrow: int
   // The tracked types a value of each type holds, by type key (kept in the checker between bodies).
-  heldTypeSets: Map<string, Map<string, bool>>
+  heldTypeSets: Map<string, Set<string>>
 }
 
 export function checkSharedResults(mutable checker: Checker, funcDecl: FuncDecl) uses alloc {
@@ -241,7 +242,7 @@ function findArgument(
 }
 
 function createFacts(
-  heldTypeSets: Map<string, Map<string, bool>>,
+  heldTypeSets: Map<string, Set<string>>,
 ): SharingFacts from heldTypeSets uses alloc {
   return SharingFacts {
     givenFirst: Map {},
@@ -586,14 +587,16 @@ function findHeldKey(
     if (facts.heldTypeSets[typeName] is Some(_)) {
       return typeName
     }
-    let held: Map<string, bool> = Map {}
-    let visited: Map<string, bool> = Map {}
+    let held: Set<string> = Sets.create()
+    let visited: Set<string> = Sets.create()
     addHeldTypes(checker, known, mutable held, mutable visited)
     facts.heldTypeSets[typeName] = held
     return typeName
   }
   if (facts.heldTypeSets["*"] is None) {
-    facts.heldTypeSets["*"] = Map { "*": true }
+    let everything: Set<string> = Sets.create()
+    Sets.add(mutable everything, "*")
+    facts.heldTypeSets["*"] = everything
   }
   return "*"
 }
@@ -614,21 +617,20 @@ function haveCommonHeldTypes(
 function addHeldTypes(
   checker: Checker,
   type: Type,
-  mutable held: Map<string, bool>,
-  mutable visited: Map<string, bool>,
+  mutable held: Set<string>,
+  mutable visited: Set<string>,
 ) uses alloc {
   // Each type is walked once, so a recursive enum costs one visit per type.
   const typeName = typeKey(type)
-  if (visited[typeName] is Some(_)) {
+  if (!Sets.add(mutable visited, typeName)) {
     return
   }
-  visited[typeName] = true
   if (isCopyTracked(checker, type)) {
-    held[typeName] = true
+    Sets.add(mutable held, typeName)
   }
   match (type) {
     Type.TParam(_) => {
-      held["*"] = true
+      Sets.add(mutable held, "*")
     }
     Type.TArray(element)
       | Type.TBox(element)
@@ -691,15 +693,15 @@ function isFieldWritten(written: Array<FieldInit>, name: string): bool {
   return false
 }
 
-function haveCommonType(left: Map<string, bool>, right: Map<string, bool>): bool uses alloc {
-  if (Maps.size(right) == 0) {
+function haveCommonType(left: Set<string>, right: Set<string>): bool uses alloc {
+  if (Sets.size(right) == 0) {
     return false
   }
-  if (left["*"] is Some(_) || right["*"] is Some(_)) {
-    return Maps.size(left) > 0
+  if (Sets.has(left, "*") || Sets.has(right, "*")) {
+    return Sets.size(left) > 0
   }
-  for (const #[key, _] of Maps.entries(right)) {
-    if (left[key] is Some(_)) {
+  for (const key of Sets.values(right)) {
+    if (Sets.has(left, key)) {
       return true
     }
   }
@@ -714,9 +716,9 @@ function haveCommonType(left: Map<string, bool>, right: Map<string, bool>): bool
 struct SharingQuery {
   owner: int
   // Locals already followed, so a cycle of assignments ends.
-  visited: Map<int, bool>
+  visited: Set<int>
   // Block expressions already followed.
-  blocks: Map<int, bool>
+  blocks: Set<int>
   found: Array<int>
 }
 
@@ -824,10 +826,9 @@ function collectShared(
       }
     }
     Expr.BlockExpr(nodeId, _, _) => {
-      if (query.blocks[nodeId] is Some(_)) {
+      if (!Sets.add(mutable query.blocks, nodeId)) {
         return
       }
-      query.blocks[nodeId] = true
       for (const site of Arrays.values(facts.returns)) {
         if (site.owner == nodeId) {
           collectShared(checker, facts, mutable query, site.value)
@@ -863,10 +864,9 @@ function followLocal(
     addFound(mutable query, local)
     return
   }
-  if (query.visited[local] is Some(_)) {
+  if (!Sets.add(mutable query.visited, local)) {
     return
   }
-  query.visited[local] = true
   if (facts.givenFirst[local] is Some(first)) {
     let index = first
     while (index >= 0) {
@@ -904,7 +904,7 @@ function findSharedLocals(
   owner: int,
   value: Expr,
 ): Array<int> from checker uses alloc {
-  let query = SharingQuery { owner, visited: Map {}, blocks: Map {}, found: [] }
+  let query = SharingQuery { owner, visited: Sets.create(), blocks: Sets.create(), found: [] }
   collectShared(checker, facts, mutable query, value)
   return query.found
 }
@@ -917,17 +917,17 @@ function checkFunctionReturns(
   funcDecl: FuncDecl,
 ) uses alloc {
   const shared = findSharedParameter(funcDecl)
-  let reported: Map<int, bool> = Map {}
+  let reported: Set<int> = Sets.create()
   for (const site of Arrays.values(facts.returns)) {
     if (site.owner != -1) {
       continue
     }
     for (const local of Arrays.values(copy(findSharedLocals(checker, facts, -1, site.value)))) {
       const index = findParameterPosition(checker, funcDecl.parameters, local)
-      if (index < 0 || index == shared || reported[index] is Some(_)) {
+      if (index < 0 || index == shared || Sets.has(reported, index)) {
         continue
       }
-      reported[index] = true
+      Sets.add(mutable reported, index)
       reportSharedParameter(mutable checker, funcDecl.result, funcDecl.parameters[index].name, site)
     }
   }

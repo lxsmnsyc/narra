@@ -29,6 +29,8 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as Maps from "std/map"
 import { Pos, Decl, Stmt, Expr, Pattern } from "narrac/syntax/ast"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 export enum CommentKind {
   Line
@@ -61,8 +63,8 @@ export struct Attached {
 export struct Trivia {
   comments: Array<Comment> // source order
   attached: Map<string, Array<Attached>> // by anchor key, in source order
-  blankBefore: Map<string, bool> // anchors with a blank line before them
-  parenthesized: Map<int, bool> // expression ids written inside ( )
+  blankBefore: Set<string> // anchors with a blank line before them
+  parenthesized: Set<int> // expression ids written inside ( )
   ends: Map<string, Pos> // anchor key to the position after the node's last token
 }
 
@@ -80,12 +82,12 @@ export struct Collector {
   enabled: bool
   records: Array<NodeRecord> // in the order the nodes finish: children first
   recordIndex: Map<string, int> // key to index in records
-  parenthesized: Map<int, bool>
+  parenthesized: Set<int>
   // the range a node had before its parentheses were added, by key
   insideParens: Map<string, NodeRecord>
   // keys of the conditionals that `return c ? a : b` turns into an if: they
   // have no printer of their own, so their parentheses stay in their range
-  convertedKeys: Map<string, bool>
+  convertedKeys: Set<string>
 }
 
 export function createCollector(enabled: bool): Collector uses alloc {
@@ -93,9 +95,9 @@ export function createCollector(enabled: bool): Collector uses alloc {
     enabled,
     records: [],
     recordIndex: Map {},
-    parenthesized: Map {},
+    parenthesized: Sets.create(),
     insideParens: Map {},
-    convertedKeys: Map {},
+    convertedKeys: Sets.create(),
   }
 }
 
@@ -423,14 +425,14 @@ function getInnerRanges(
   records: Array<NodeRecord>,
   tree: RecordTree,
   insideParens: Map<string, NodeRecord>,
-  convertedKeys: Map<string, bool>,
+  convertedKeys: Set<string>,
 ): Array<NodeRecord> from records uses alloc {
   // Prettier's tree has no node for parentheses, so a comment between them and the expression belongs to the parent: it leads or trails the expression instead of sitting inside it.
   let inner: Array<NodeRecord> = []
   for (const index of Ranges.upTo(Arrays.length(records))) {
     const record = records[index]
     // only expressions lose their parentheses; a statement's text ends at its last token, even a `)`
-    if (convertedKeys[record.key] is Some(_) || substring(record.key, 0, 1) != "e") {
+    if (Sets.has(convertedKeys, record.key) || substring(record.key, 0, 1) != "e") {
       Arrays.push(mutable inner, record)
       continue
     }
@@ -584,8 +586,8 @@ function findBlankLines(
   attached: Map<string, Array<Attached>>,
   comments: Array<Comment>,
   lines: Array<string>,
-): Map<string, bool> uses alloc {
-  let blank: Map<string, bool> = Map {}
+): Set<string> uses alloc {
+  let blank: Set<string> = Sets.create()
   // In each list of siblings, what comes before a node is its leading comments and, before those, the previous sibling (with its trailing comments). Nothing comes before the first item unless it has leading comments, so the first item never has a blank line before it, nor its first comment.
   markBlankLines(mutable blank, records, tree.rootChildren, attached, comments, lines)
   for (const children of Arrays.values(tree.childLists)) {
@@ -595,7 +597,7 @@ function findBlankLines(
 }
 
 function markBlankLines(
-  mutable blank: Map<string, bool>,
+  mutable blank: Set<string>,
   records: Array<NodeRecord>,
   siblings: Array<int>,
   attached: Map<string, Array<Attached>>,
@@ -610,7 +612,7 @@ function markBlankLines(
         if (item.placement is Placement.Leading) {
           const comment = comments[item.comment]
           if (previousLine > 0 && hasBlankLineBetween(lines, previousLine, comment.pos.line)) {
-            blank[`c${Int.toString(item.comment)}`] = true
+            Sets.add(mutable blank, `c${Int.toString(item.comment)}`)
           }
           previousLine = comment.end.line
         }
@@ -621,7 +623,7 @@ function markBlankLines(
         isListKey(record.key) &&
         hasBlankLineBetween(lines, previousLine, record.start.line)
     ) {
-      blank[record.key] = true
+      Sets.add(mutable blank, record.key)
     }
     previousLine = getTrailingEndLine(record, attached, comments)
   }

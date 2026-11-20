@@ -164,6 +164,8 @@ import * as Arrays from "std/array"
 import * as Boxes from "std/box"
 import * as Ranges from "std/range"
 import * as Maps from "std/map"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // A syntax error: `error <line>:<col>: <message>` in the dump.
 export struct Diagnostic {
@@ -315,7 +317,7 @@ function isNameCharacter(character: char): bool {
   return isNameStart(character) || (character >= '0' && character <= '9')
 }
 
-function markTemplateDots(mutable names: Map<string, bool>, text: string) uses alloc {
+function markTemplateDots(mutable names: Set<string>, text: string) uses alloc {
   // The parser keeps no positions inside ${...}, so a fix cannot rename a name used there.
   const characters = Str.chars(text)
   const count = Arrays.length(characters)
@@ -330,7 +332,7 @@ function markTemplateDots(mutable names: Map<string, bool>, text: string) uses a
       end++
     }
     if (end < count && characters[end] == '.') {
-      names[sliceText(characters, index, end)] = true
+      Sets.add(mutable names, sliceText(characters, index, end))
       index = end + 1
     } else {
       index = end
@@ -391,7 +393,7 @@ function findHeaderLine(source: string): int {
 }
 
 function finishFacts(parser: Parser, source: string): SourceFacts from parser uses alloc {
-  let inTemplate: Map<string, bool> = Map {}
+  let inTemplate: Set<string> = Sets.create()
   let dotUses: Map<string, Array<DotUse>> = Map {}
   const count = Arrays.length(parser.tokens)
   for (const index of Ranges.upTo(count)) {
@@ -424,7 +426,7 @@ function finishFacts(parser: Parser, source: string): SourceFacts from parser us
     dotUses[token.text] = known
   }
   // The `${}` parts of templates added their names while the parser read them.
-  let referenced: Map<string, bool> = copy(parser.facts.referenced)
+  let referenced: Set<string> = copy(parser.facts.referenced)
   collectReferencedNames(mutable referenced, parser.tokens)
   return SourceFacts {
     source,
@@ -445,7 +447,7 @@ function finishFacts(parser: Parser, source: string): SourceFacts from parser us
   }
 }
 
-function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<Token>) uses alloc {
+function collectReferencedNames(mutable names: Set<string>, tokens: Array<Token>) uses alloc {
   // An import declaration ends at its path string; its names are not recorded.
   let inImport = false
   for (const index of Ranges.upTo(Arrays.length(tokens))) {
@@ -467,7 +469,7 @@ function collectReferencedNames(mutable names: Map<string, bool>, tokens: Array<
         continue
       }
     }
-    names[token.text] = true
+    Sets.add(mutable names, token.text)
   }
 }
 
@@ -3287,7 +3289,7 @@ function convertReturnedTernary(mutable parser: Parser, value: Expr): Stmt from 
   }
   if (value is Expr.BlockExpr(ternaryId, _, block)) {
     if (parser.collector.enabled) {
-      parser.collector.convertedKeys[getIdKey(ternaryId)] = true
+      Sets.add(mutable parser.collector.convertedKeys, getIdKey(ternaryId))
     }
     if (
       block.statements[0] is Stmt.IfStmt(pos, condition, thenBlock, Some(Stmt.BlockStmt(elseBlock)))
@@ -4114,7 +4116,7 @@ function parsePrimaryBody(mutable parser: Parser): Expr {
       const inner = parseExpr(mutable parser)
       expect(mutable parser, SYMBOL_RIGHT_PAREN)
       if (parser.collector.enabled && isOk(parser)) {
-        parser.collector.parenthesized[getExprId(inner)] = true
+        Sets.add(mutable parser.collector.parenthesized, getExprId(inner))
       }
       return inner
     }
@@ -4295,7 +4297,7 @@ function parseTaggedTemplate(mutable parser: Parser, tag: Expr, token: Token): E
   const valuesExpression = Expr.ArrayLit(newId(mutable parser), pos, pieces.holes, false)
   const callId = newId(mutable parser)
   parser.facts.callEnds[callId] = Pos { line: token.endLine, column: token.endColumn }
-  parser.facts.taggedCalls[callId] = true
+  Sets.add(mutable parser.facts.taggedCalls, callId)
   return Expr.CallExpr(callId, pos, tag, [], [
     Arg { pos, name: None, isMutable: false, value: partsExpression },
     Arg { pos, name: None, isMutable: false, value: valuesExpression },
@@ -4400,17 +4402,15 @@ function splitTemplate(mutable parser: Parser, token: Token, tagged: bool): Temp
         parser.facts.templateTokenEnds[tokenKey] = tokenEnd
       }
       collectReferencedNames(mutable parser.facts.referenced, lexed.value)
-      for (const entry of Maps.entries(innerParser.facts.referenced)) {
-        const #[referencedName, referencedFlag] = entry
-        parser.facts.referenced[referencedName] = referencedFlag
+      for (const referencedName of Sets.values(innerParser.facts.referenced)) {
+        Sets.add(mutable parser.facts.referenced, referencedName)
       }
       for (const entry of Maps.entries(innerParser.facts.callEnds)) {
         const #[callId, callEnd] = entry
         parser.facts.callEnds[callId] = callEnd
       }
-      for (const entry of Maps.entries(innerParser.facts.taggedCalls)) {
-        const #[taggedId, isTagged] = entry
-        parser.facts.taggedCalls[taggedId] = isTagged
+      for (const taggedId of Sets.values(innerParser.facts.taggedCalls)) {
+        Sets.add(mutable parser.facts.taggedCalls, taggedId)
       }
       if (innerParser.failed is Some(diagnostic)) {
         failAt(mutable parser, diagnostic.pos, diagnostic.code, diagnostic.message)
@@ -4588,7 +4588,7 @@ function parsePatternBody(mutable parser: Parser): Pattern {
         })
       } else {
         const shorthandId = newId(mutable parser)
-        parser.facts.shorthandIds[shorthandId] = true
+        Sets.add(mutable parser.facts.shorthandIds, shorthandId)
         const shorthand = Pattern.PatName(shorthandId, getPos(name), name.text)
         Arrays.push(mutable fields, FieldPattern {
           pos: getPos(name),

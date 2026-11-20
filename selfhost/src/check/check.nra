@@ -68,6 +68,8 @@ import { writeTypeUses } from "narrac/check/typeuses"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
 import * as Ranges from "std/range"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // The names one module sees (Go's modScope): its own declarations, the
 // names it imports and the prelude's types and generics. An imported name
@@ -520,7 +522,7 @@ export struct Checker {
   typeBounds: Array<TypeBoundCheck> = []
   dynamicTraits: Array<DynamicTraitUse> = []
   errors: Array<CheckError>
-  errorKeys: Map<string, bool> // file, line, column and message of each error in errors
+  errorKeys: Set<string> // file, line, column and message of each error in errors
   // Structs and enums in C definition order, set by finish (Go's
   // Program.Types).
   order: Array<Type>
@@ -543,7 +545,7 @@ export struct Checker {
   scopeIndex: Map<string, int>
   packageName: string
   single: bool
-  dependencyNames: Map<string, bool>
+  dependencyNames: Set<string>
   used: Array<string>
   // Set when a module imports a std thread module: the thread checks of
   // threadcheck.nra run only then.
@@ -569,7 +571,7 @@ export struct Checker {
   // Generic structs whose open default check reported an error, and the struct
   // instances whose defaults of fields that use a type parameter are still to
   // be checked with the instance's types (body.nra's checkInstanceDefaults).
-  failedDefaults: Map<int, bool>
+  failedDefaults: Set<int>
   pendingInstanceDefaults: Array<int> = []
   bodies: Array<BodyInfo> = []
   body: int = -1
@@ -677,7 +679,7 @@ export struct Checker {
   // for the fix that adds `from` to the type a shared result does not fit.
   writtenFunctionTypes: Map<string, Array<WrittenFunctionType>>
   // The tracked types a value of each type holds, by type key, for the shared results check.
-  heldTypeSets: Map<string, Map<string, bool>>
+  heldTypeSets: Map<string, Set<string>>
   // The target of this build (std/build), and the `if` conditions it decides: the
   // condition's expression id to the branch kept, true for the then branch.
   buildTarget: BuildTarget
@@ -773,7 +775,7 @@ export function newChecker(ids: int): Checker uses alloc {
     functions: [],
     consts: [],
     instances: Map {},
-    failedDefaults: Map {},
+    failedDefaults: Sets.create(),
     aliasNames: Map {},
     instanceTypes: [],
     concrete: [],
@@ -794,7 +796,7 @@ export function newChecker(ids: int): Checker uses alloc {
     implFunctions: Map {},
     mapKeys: [],
     errors: [],
-    errorKeys: Map {},
+    errorKeys: Sets.create(),
     order: [],
     heapEnums: [],
     countedStructs: [],
@@ -805,7 +807,7 @@ export function newChecker(ids: int): Checker uses alloc {
     scopeIndex: Map {},
     packageName: "",
     single: false,
-    dependencyNames: Map {},
+    dependencyNames: Sets.create(),
     used: [],
     entries: [],
     entryTargets: [],
@@ -876,10 +878,9 @@ function reportErrorWithFixes(
   message: string,
 ) uses alloc {
   const key = `${code}|${file}|${Int.toString(pos.line)}|${Int.toString(pos.column)}|${message}`
-  if (checker.errorKeys[key] is Some(_)) {
+  if (!Sets.add(mutable checker.errorKeys, key)) {
     return
   }
-  checker.errorKeys[key] = true
   // In a chain `a + b + c` the inner errors start at the same text. Only the
   // outermost keeps its fix, because the others would leave an error.
   if (Arrays.length(fixes) > 0) {
@@ -1464,7 +1465,7 @@ export function findFixedArraySize(checker: Checker, type: Type): int uses alloc
 function reportLargeFixedArrays(mutable checker: Checker) uses alloc {
   // Generic instances and struct fields that name a later struct are measured only here,
   // once every layout is known; each is reported at the struct that holds it.
-  let reported: Map<string, bool> = Map {}
+  let reported: Set<string> = Sets.create()
   for (const type of Arrays.values(copy(checker.order))) {
     if (
       !(type is Type.TFixedArray(_, _)) ||
@@ -1484,10 +1485,9 @@ function reportLargeFixedArrays(mutable checker: Checker) uses alloc {
       }
     }
     const key = typeKey(holder)
-    if (reported[key] is Some(_)) {
+    if (!Sets.add(mutable reported, key)) {
       continue
     }
-    reported[key] = true
     reportTypeError(
       mutable checker,
       holder,
@@ -1733,7 +1733,7 @@ function decideHeapEnum(checker: Checker, index: int, mutable memo: LayoutMemo):
   let heap = false
   if (isBoxedEnum(checker.enums[index])) {
     // An enum that holds itself, or whose payload is large, keeps it on the heap.
-    let visited: Map<int, bool> = Map {}
+    let visited: Set<int> = Sets.create()
     for (const variant of Arrays.values(checker.enums[index].variants)) {
       for (const field of Arrays.values(variant.fields)) {
         if (reachesEnum(checker, field.fieldType, index, mutable visited)) {
@@ -1753,7 +1753,7 @@ function reachesEnum(
   checker: Checker,
   type: Type,
   target: int,
-  mutable visited: Map<int, bool>,
+  mutable visited: Set<int>,
 ): bool uses alloc {
   // Only structs, enums and distinct types are followed: arrays, maps, boxes
   // and functions are pointers.
@@ -1762,10 +1762,9 @@ function reachesEnum(
       if (index == target) {
         return true
       }
-      if (visited[index] is Some(_)) {
+      if (!Sets.add(mutable visited, index)) {
         return false
       }
-      visited[index] = true
       for (const variant of Arrays.values(checker.enums[index].variants)) {
         for (const field of Arrays.values(variant.fields)) {
           if (reachesEnum(checker, field.fieldType, target, mutable visited)) {
@@ -1777,10 +1776,9 @@ function reachesEnum(
     Type.TStruct(index) => {
       // Struct keys are negative, so they never equal an enum index.
       const key = 0 - 1 - index
-      if (visited[key] is Some(_)) {
+      if (!Sets.add(mutable visited, key)) {
         return false
       }
-      visited[key] = true
       for (const field of Arrays.values(checker.structs[index].fields)) {
         if (reachesEnum(checker, field.fieldType, target, mutable visited)) {
           return true
@@ -2402,7 +2400,7 @@ export function declareLocal(
       : pos
   )
   const number = checker.localCount
-  const shorthand = checker.scopes[checker.current].facts.shorthandIds[nodeId] is Some(_)
+  const shorthand = Sets.has(checker.scopes[checker.current].facts.shorthandIds, nodeId)
   Arrays.push(
     mutable checker.bodies[body].locals,
     LocalInfo {

@@ -15,6 +15,8 @@ import {
   isVersionBefore,
   listVersions,
 } from "narrac/driver/depcache"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 struct Requirement {
   name: string
@@ -314,7 +316,7 @@ export function resolveDependencies(
   for (const override of Arrays.values(overrides)) {
     overrideByName[override.name] = override
   }
-  let overrideUsed: Map<string, bool> = Map {}
+  let overrideUsed: Set<string> = Sets.create()
   let queue: Array<Requirement> = []
   for (const root of Arrays.values(roots)) {
     pushRequirements(mutable queue, root)
@@ -322,7 +324,7 @@ export function resolveDependencies(
   let firstGit: Map<string, string> = Map {}
   let selected: Map<string, LockEntry> = Map {}
   let names: Array<string> = []
-  let visited: Map<string, bool> = Map {}
+  let visited: Set<string> = Sets.create()
   let position = 0
   while (position < Arrays.length(queue)) {
     const requirement = copy(queue[position])
@@ -334,7 +336,7 @@ export function resolveDependencies(
       git = override.git
       version = override.version
       isOverride = true
-      overrideUsed[requirement.name] = true
+      Sets.add(mutable overrideUsed, requirement.name)
     }
     if (firstGit[requirement.name] is Some(knownGit)) {
       if (knownGit != git) {
@@ -350,10 +352,9 @@ export function resolveDependencies(
       Arrays.push(mutable names, requirement.name)
     }
     const key = `${requirement.name} ${version}`
-    if (visited[key] is Some(_)) {
+    if (!Sets.add(mutable visited, key)) {
       continue
     }
-    visited[key] = true
     const found = findTag(git, requirement.name, version, isOverride, locked)
     if (found is Err(error)) {
       if (requirement.isSibling && error.code == "E0451") {
@@ -397,7 +398,7 @@ export function resolveDependencies(
     }
   }
   for (const override of Arrays.values(overrides)) {
-    if (overrideUsed[override.name] is None) {
+    if (!Sets.has(overrideUsed, override.name)) {
       return Err(
         createResolveError(
           "E0455",

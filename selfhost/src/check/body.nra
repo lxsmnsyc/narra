@@ -82,6 +82,8 @@ import * as Int from "std/int"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as ThreadCheck from "narrac/check/threadcheck"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 struct BodyWalker implements Walker {}
 
@@ -233,14 +235,14 @@ implement Walker for BodyWalker {
 }
 
 export function checkPackage(package: Package): Checker from package uses alloc {
-  return checkModules(package, Map {}, createUnknownTarget(true)).checker
+  return checkModules(package, Sets.create(), createUnknownTarget(true)).checker
 }
 
 export function checkPackageFor(
   package: Package,
   target: BuildTarget,
 ): Checker from package uses alloc {
-  return checkModules(package, Map {}, target).checker
+  return checkModules(package, Sets.create(), target).checker
 }
 
 // The result of checkModules. The errors before unusedStart come from the
@@ -255,7 +257,7 @@ export struct ModulesCheck {
 
 export function checkModules(
   package: Package,
-  skipped: Map<string, bool>,
+  skipped: Set<string>,
   target: BuildTarget,
 ): ModulesCheck from package uses alloc {
   let checker = newPackageChecker(package)
@@ -279,7 +281,7 @@ export function checkModules(
     checkQueuedDefaults(mutable checker, walker)
     queuedErrors = queuedErrors + Arrays.length(checker.errors) - beforeDefaults
     // narrac lsp reuses the results of the modules in skipped; with it empty this is checkPackage.
-    if (skipped[module.path] is None) {
+    if (!Sets.has(skipped, module.path)) {
       checkDefaults(mutable checker, walker, module.ast)
       checkModuleBodies(mutable checker, walker, module.ast)
     }
@@ -301,7 +303,7 @@ export function checkModules(
   // unchecked, their private functions would look unused.
   let hidden: Array<int> = []
   for (const module of Arrays.values(package.modules)) {
-    if (skipped[module.path] is Some(_)) {
+    if (Sets.has(skipped, module.path)) {
       if (checker.scopeIndex[module.path] is Some(scope)) {
         if (checker.scopes[scope].isSource) {
           checker.scopes[scope].isSource = false
@@ -370,7 +372,7 @@ function checkGenericDefaults(
   )
   // An instance repeats the check only for a default that held with the parameters open.
   if (Arrays.length(checker.errors) > before) {
-    checker.failedDefaults[generic] = true
+    Sets.add(mutable checker.failedDefaults, generic)
   }
   enter(mutable checker, saved)
 }
@@ -381,7 +383,7 @@ function checkInstanceDefaults(
   structIndex: int,
 ) uses alloc {
   const instance = copy(checker.structs[structIndex])
-  if (checker.failedDefaults[instance.generic] is Some(_)) {
+  if (Sets.has(checker.failedDefaults, instance.generic)) {
     return
   }
   const info = copy(checker.generics[instance.generic])

@@ -40,6 +40,8 @@ import { Package, ParseCache, SourceModule } from "narrac/driver/modules"
 import { LoadError } from "narrac/driver/manifest"
 import { checkConstants } from "narrac/check/consteval"
 import { reportSharedWrites } from "narrac/check/sharedwrites"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // What the cache keeps of one module: the module it checked and its errors.
 // A changed source is parsed with new ids, so an equal firstId means an equal
@@ -63,7 +65,7 @@ export struct CheckCache {
   liveIds: int
   paths: Map<string, Array<string>>
   results: Map<string, ModuleResult>
-  valid: Map<string, bool>
+  valid: Set<string>
   full: bool
   trace: bool
   // The host target, read once per server process.
@@ -76,7 +78,7 @@ export function createCheckCache(): CheckCache uses alloc {
     liveIds: 0,
     paths: Map {},
     results: Map {},
-    valid: Map {},
+    valid: Sets.create(),
     full: false,
     trace: false,
   }
@@ -91,7 +93,7 @@ export function loadPackage(
   // cache starts over and the next check is whole.
   if (cache.parses.nextId > 4 * cache.liveIds + 100000) {
     cache.parses = Modules.createParseCache()
-    cache.valid = Map {}
+    cache.valid = Sets.create()
   }
   const loaded = Modules.loadCached(path, overrides, mutable cache.parses)
   if (loaded is Ok(package)) {
@@ -111,7 +113,7 @@ export function checkLoaded(
   // Cached results are reused where they cannot change. Each file's errors come in the order
   // of a whole check.
   if (!cache.full && canReuse(cache, package)) {
-    const first = checkChanged(mutable cache, package, Map {})
+    const first = checkChanged(mutable cache, package, Sets.create())
     match (first) {
       Ok(errors) => {
         return errors
@@ -119,9 +121,9 @@ export function checkLoaded(
       Err(missing) => {
         // Check again with the modules whose unused or effect list was missing.
         if (Arrays.length(missing) > 0) {
-          let extra: Map<string, bool> = Map {}
+          let extra: Set<string> = Sets.create()
           for (const path of Arrays.values(missing)) {
-            extra[path] = true
+            Sets.add(mutable extra, path)
           }
           const second = checkChanged(mutable cache, package, extra)
           if (second is Ok(errors)) {
@@ -139,7 +141,7 @@ function makeResultKey(package: Package, modulePath: string): string uses alloc 
 }
 
 function canReuse(cache: CheckCache, package: Package): bool {
-  if (cache.valid[package.directory] is None) {
+  if (!Sets.has(cache.valid, package.directory)) {
     return false
   }
   const known = cache.paths[package.directory]
@@ -180,7 +182,7 @@ function checkWhole(
   package: Package,
 ): Array<CheckError> from package uses io, alloc {
   const target = chooseServerTarget(mutable cache, package)
-  const result = Body.checkModules(package, Map {}, target)
+  const result = Body.checkModules(package, Sets.create(), target)
   let checker = copy(result.checker)
   const unusedRan = result.unusedStart == 0
   const checkCount = Arrays.length(checker.errors)
@@ -192,16 +194,16 @@ function checkWhole(
   const effectsEnd = Arrays.length(checker.errors)
   reportSharedWrites(mutable checker)
   const errors = checker.errors
-  let moduleFiles: Map<string, bool> = Map {}
+  let moduleFiles: Set<string> = Sets.create()
   for (const module of Arrays.values(package.modules)) {
-    moduleFiles[module.file] = true
+    Sets.add(mutable moduleFiles, module.file)
   }
   // Every error must lie in a module file to be kept by module. An effect
   // error stops the effect pass for every module, so the results are reused
   // only when there is none.
   let attributable = result.queuedErrors == 0 && effectsEnd == checkCount
   for (const error of Arrays.values(errors)) {
-    attributable = attributable && moduleFiles[error.file] is Some(_)
+    attributable = attributable && Sets.has(moduleFiles, error.file)
   }
   // The results of the last check of this package go before the new ones are written.
   const keyPrefix = `${package.directory}\n`
@@ -228,9 +230,9 @@ function checkWhole(
   }
   cache.paths[package.directory] = paths
   if (attributable) {
-    cache.valid[package.directory] = true
+    Sets.add(mutable cache.valid, package.directory)
   } else {
-    const _removed = Maps.remove(mutable cache.valid, package.directory)
+    const _removed = Sets.remove(mutable cache.valid, package.directory)
   }
   writeTrace(cache, "whole package")
   return errors
@@ -254,7 +256,7 @@ function selectErrors(
 function checkChanged(
   mutable cache: CheckCache,
   package: Package,
-  extra: Map<string, bool>,
+  extra: Set<string>,
 ): Result<Array<CheckError>, Array<string>> from cache uses io, alloc {
   // An Err lists the modules to add to extra, the modules checked anyway, and is empty when
   // the whole package must be checked.
@@ -270,7 +272,7 @@ function checkChanged(
     }
     Arrays.push(mutable results, cached.value)
     if (cached.value.module.firstId != module.firstId) {
-      dirty[module.path] = true
+      Sets.add(mutable dirty, module.path)
       if (makeSignature(module) != makeSignature(cached.value.module)) {
         Arrays.push(mutable reach, module.path)
       }
@@ -279,17 +281,17 @@ function checkChanged(
   addImporters(mutable dirty, package, reach)
 
   // The others are declared but not checked.
-  let skipped: Map<string, bool> = Map {}
-  let dirtyFiles: Map<string, bool> = Map {}
-  let moduleFiles: Map<string, bool> = Map {}
+  let skipped: Set<string> = Sets.create()
+  let dirtyFiles: Set<string> = Sets.create()
+  let moduleFiles: Set<string> = Sets.create()
   let checkedNames: Array<string> = []
   for (const module of Arrays.values(package.modules)) {
-    moduleFiles[module.file] = true
-    if (dirty[module.path] is Some(_)) {
-      dirtyFiles[module.file] = true
+    Sets.add(mutable moduleFiles, module.file)
+    if (Sets.has(dirty, module.path)) {
+      Sets.add(mutable dirtyFiles, module.file)
       Arrays.push(mutable checkedNames, module.file)
     } else {
-      skipped[module.path] = true
+      Sets.add(mutable skipped, module.path)
     }
   }
   const result = Body.checkModules(package, skipped, target)
@@ -301,10 +303,10 @@ function checkChanged(
   let unusedCount = 0
   for (const index of Ranges.upTo(Arrays.length(checker.errors))) {
     const error = checker.errors[index]
-    if (moduleFiles[error.file] is None) {
+    if (!Sets.has(moduleFiles, error.file)) {
       return Err([])
     }
-    if (dirtyFiles[error.file] is Some(_)) {
+    if (Sets.has(dirtyFiles, error.file)) {
       if (index < result.unusedStart) {
         checkCount++
       } else {
@@ -313,7 +315,7 @@ function checkChanged(
     }
   }
   for (const index of Ranges.upTo(Arrays.length(package.modules))) {
-    if (dirty[package.modules[index].path] is None) {
+    if (!Sets.has(dirty, package.modules[index].path)) {
       checkCount += Arrays.length(results[index].checkErrors)
     }
   }
@@ -328,7 +330,7 @@ function checkChanged(
     let missing: Array<string> = []
     for (const index of Ranges.upTo(Arrays.length(package.modules))) {
       const path = package.modules[index].path
-      if (dirty[path] is None) {
+      if (!Sets.has(dirty, path)) {
         if (!results[index].unusedKnown) {
           Arrays.push(mutable missing, path)
         }
@@ -348,7 +350,7 @@ function checkChanged(
     let missing: Array<string> = []
     for (const index of Ranges.upTo(Arrays.length(package.modules))) {
       const path = package.modules[index].path
-      if (dirty[path] is None && !results[index].effectsKnown) {
+      if (!Sets.has(dirty, path) && !results[index].effectsKnown) {
         Arrays.push(mutable missing, path)
       }
     }
@@ -371,7 +373,7 @@ function checkChanged(
   // Store the results of the checked modules.
   for (const index of Ranges.upTo(Arrays.length(package.modules))) {
     const module = package.modules[index]
-    if (dirty[module.path] is Some(_)) {
+    if (Sets.has(dirty, module.path)) {
       results[index] = ModuleResult {
         module,
         checkErrors: selectErrors(errors, 0, result.unusedStart, module.file),
@@ -417,24 +419,24 @@ function appendErrors(mutable merged: Array<CheckError>, errors: Array<CheckErro
 }
 
 function addImporters(
-  mutable dirty: Map<string, bool>,
+  mutable dirty: Set<string>,
   package: Package,
   reach: Array<string>,
 ) uses alloc {
-  let reached: Map<string, bool> = Map {}
+  let reached: Set<string> = Sets.create()
   let queue = copy(reach)
   let next = 0
   while (next < Arrays.length(queue)) {
     const target = queue[next]
     next++
     for (const module of Arrays.values(package.modules)) {
-      if (reached[module.path] is Some(_)) {
+      if (Sets.has(reached, module.path)) {
         continue
       }
       for (const importDecl of Arrays.values(module.ast.imports)) {
         if (importDecl.path == target) {
-          reached[module.path] = true
-          dirty[module.path] = true
+          Sets.add(mutable reached, module.path)
+          Sets.add(mutable dirty, module.path)
           Arrays.push(mutable queue, module.path)
           break
         }
@@ -452,12 +454,15 @@ function makeSignature(module: SourceModule): string uses alloc {
   }
   const tokens = lexed.value
   // The positions of the opening braces of the bodies to leave out.
-  let bodyStarts: Map<string, bool> = Map {}
+  let bodyStarts: Set<string> = Sets.create()
   for (const declaration of Arrays.values(module.ast.declarations)) {
     if (declaration is Decl.Func(funcDecl)) {
       if (Arrays.length(funcDecl.typeParameters) == 0) {
         if (funcDecl.body is Some(block)) {
-          bodyStarts[`${Int.toString(block.pos.line)}:${Int.toString(block.pos.column)}`] = true
+          Sets.add(
+            mutable bodyStarts,
+            `${Int.toString(block.pos.line)}:${Int.toString(block.pos.column)}`,
+          )
         }
       }
     }
@@ -474,7 +479,7 @@ function makeSignature(module: SourceModule): string uses alloc {
       continue
     }
     if (token.kind == TokenKind.TokPunct && token.text == "{") {
-      if (bodyStarts[`${Int.toString(token.line)}:${Int.toString(token.column)}`] is Some(_)) {
+      if (Sets.has(bodyStarts, `${Int.toString(token.line)}:${Int.toString(token.column)}`)) {
         depth = 1
         Str.append(mutable builder, "{}\n")
         continue

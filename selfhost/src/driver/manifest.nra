@@ -10,6 +10,8 @@ import { quoteGo } from "narrac/syntax/parser"
 import { Fix } from "narrac/driver/fixes"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 export struct Binary {
   name: string
@@ -286,19 +288,19 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   if (name == "" && (!isWorkspace || hasPackage)) {
     return Err(createError(0, "E0414", "[package] needs a name"))
   }
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   for (const binary of Arrays.values(binaries)) {
     if (binary.name == "" || binary.entry == "") {
       return Err(
         createError(0, "E0415", "each [[binary]] needs a name and an entry such as \"cli.run\""),
       )
     }
-    if (seen[binary.name] is Some(_)) {
+    if (Sets.has(seen, binary.name)) {
       return Err(
         createError(0, "E0416", `two [[binary]] entries are named ${quoteGo(binary.name)}`),
       )
     }
-    seen[binary.name] = true
+    Sets.add(mutable seen, binary.name)
   }
   for (const group of Arrays.values([dependencies, overrides])) {
     const checked = checkDependencyNames(group, name)
@@ -369,7 +371,7 @@ function checkExportKeys(
   entries: Array<ExportEntry>,
   packageName: string,
 ): Result<bool, LoadError> uses alloc {
-  let keys: Map<string, bool> = Map {}
+  let keys: Set<string> = Sets.create()
   for (const entry of Arrays.values(entries)) {
     if (!isExportKey(entry.key, packageName)) {
       return Err(
@@ -380,10 +382,9 @@ function checkExportKeys(
         ),
       )
     }
-    if (keys[entry.key] is Some(_)) {
+    if (!Sets.add(mutable keys, entry.key)) {
       return Err(createError(entry.line, "E0472", `two exports are named ${quoteGo(entry.key)}`))
     }
-    keys[entry.key] = true
   }
   return Ok(true)
 }
@@ -392,7 +393,7 @@ function checkDependencyNames(
   group: Array<Dependency>,
   packageName: string,
 ): Result<bool, LoadError> uses alloc {
-  let names: Map<string, bool> = Map {}
+  let names: Set<string> = Sets.create()
   for (const dependency of Arrays.values(group)) {
     if (dependency.name == "std" || dependency.name == packageName) {
       return Err(
@@ -403,7 +404,7 @@ function checkDependencyNames(
         ),
       )
     }
-    if (names[dependency.name] is Some(_)) {
+    if (Sets.has(names, dependency.name)) {
       return Err(
         createError(
           dependency.line,
@@ -412,7 +413,7 @@ function checkDependencyNames(
         ),
       )
     }
-    names[dependency.name] = true
+    Sets.add(mutable names, dependency.name)
   }
   return Ok(true)
 }

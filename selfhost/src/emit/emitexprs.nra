@@ -84,6 +84,8 @@ import * as StdHelp from "narrac/std/stdemithelp"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import * as ParamDefaults from "narrac/check/paramdefaults"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 const NODE = "selfhost-emit-bodies"
 
@@ -1271,24 +1273,24 @@ function emitStructLiteral<W: EmitWalker>(
   const structType = copy(readNodeType(emitter, nodeId))
   if (structType is Type.TStruct(structIndex)) {
     let parts: Array<string> = []
-    let given: Map<string, bool> = Map {}
+    let given: Set<string> = Sets.create()
     if (emitter.inAsync) {
       emitAwaitedFields(walker, mutable emitter, fields, mutable parts, mutable given)
     }
     // The fields written in the literal, in source order.
     for (const field of Arrays.values(fields)) {
-      if (given[field.name] is Some(_)) {
+      if (Sets.has(given, field.name)) {
         continue
       }
       const code = EmitWalker.emitExpression(walker, mutable emitter, field.value)
       const fieldType = copy(readNodeType(emitter, getExpressionId(field.value)))
       const consumed = consume(mutable emitter, code.text, code.owned, fieldType)
       Arrays.push(mutable parts, `.f_${field.name} = ${consumed}`)
-      given[field.name] = true
+      Sets.add(mutable given, field.name)
     }
     // The rest take their default, which is emitted inside the default's body.
     for (const declared of Arrays.values(copy(emitter.checker.structs[structIndex].fields))) {
-      if (given[declared.name] is Some(_)) {
+      if (Sets.has(given, declared.name)) {
         continue
       }
       if (declared.default is Some(defaultValue)) {
@@ -1320,7 +1322,7 @@ function emitAwaitedFields<W: EmitWalker>(
   mutable emitter: Emitter,
   fields: Array<FieldInit>,
   mutable parts: Array<string>,
-  mutable given: Map<string, bool>,
+  mutable given: Set<string>,
 ) uses alloc {
   // In a task body every field is evaluated before any is consumed, so a value
   // computed before an await stays in the statement's frame across the wait.
@@ -1341,7 +1343,7 @@ function emitAwaitedFields<W: EmitWalker>(
     const fieldType = copy(readNodeType(emitter, getExpressionId(field.value)))
     const consumed = consume(mutable emitter, codes[index].text, codes[index].owned, fieldType)
     Arrays.push(mutable parts, `.f_${field.name} = ${consumed}`)
-    given[field.name] = true
+    Sets.add(mutable given, field.name)
   }
 }
 

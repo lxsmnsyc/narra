@@ -18,6 +18,8 @@ import {
   getExpressionPos,
 } from "narrac/check/check"
 import * as Arrays from "std/array"
+import * as Sets from "std/set"
+import { Set } from "std/set"
 
 // A handle type of the std thread modules: shared by identity, never Sendable
 // unless it says so, and never compared with `==`.
@@ -148,21 +150,20 @@ function isCell(checker: Checker, type: Type): bool {
 }
 
 export function isSendable(mutable checker: Checker, type: Type): bool uses alloc {
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   return findUnsendable(mutable checker, type, mutable seen).text == ""
 }
 
 function findUnsendable(
   mutable checker: Checker,
   type: Type,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): Unsendable uses alloc {
   // A type reached again through itself, as in `struct Tree { kids: Array<Tree> }`, adds nothing.
   const key = typeKey(type)
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return Unsendable { text: "", kind: "" }
   }
-  seen[key] = true
   const text = typeString(checker, type)
   match (type) {
     Type.TParam(param) => {
@@ -219,7 +220,7 @@ function findNominalUnsendable(
   mutable checker: Checker,
   type: Type,
   text: string,
-  mutable seen: Map<string, bool>,
+  mutable seen: Set<string>,
 ): Unsendable uses alloc {
   if (isCell(checker, type)) {
     return Unsendable { text, kind: "cell" }
@@ -273,7 +274,7 @@ export function checkSendable(
   site: string,
 ) uses alloc {
   // E1190 names the type, the part that is not Sendable and a way out.
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   const part = findUnsendable(mutable checker, type, mutable seen)
   if (part.text == "") {
     return
@@ -618,18 +619,13 @@ export function reportSendableWritten(mutable checker: Checker, pos: Pos, form: 
   )
 }
 
-function containsScope(
-  checker: Checker,
-  type: Type,
-  mutable seen: Map<string, bool>,
-): bool uses alloc {
+function containsScope(checker: Checker, type: Type, mutable seen: Set<string>): bool uses alloc {
   // A Scope at any depth, a function result included; a function parameter of
   // type Scope is allowed.
   const key = typeKey(type)
-  if (seen[key] is Some(_)) {
+  if (!Sets.add(mutable seen, key)) {
     return false
   }
-  seen[key] = true
   match (type) {
     Type.TFunc(_, result, _, _, _) => {
       return containsScope(checker, result, mutable seen)
@@ -685,7 +681,7 @@ function isFrameType(type: Type): bool {
 
 function anyScope(checker: Checker, types: Array<Type>): bool uses alloc {
   for (const type of Arrays.values(types)) {
-    let seen: Map<string, bool> = Map {}
+    let seen: Set<string> = Sets.create()
     if (containsScope(checker, type, mutable seen)) {
       return true
     }
@@ -706,7 +702,7 @@ function holdsScope(checker: Checker, type: Type): bool uses alloc {
   if (isScopeType(checker, type)) {
     return false
   }
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   return containsScope(checker, type, mutable seen)
 }
 
@@ -775,7 +771,7 @@ export function checkScopeValue(mutable checker: Checker, expression: Expr, type
   const pos = getExpressionPos(expression)
   const text = typeString(checker, type)
   if (type is Type.TFunc(_, result, _, _, _)) {
-    let seen: Map<string, bool> = Map {}
+    let seen: Set<string> = Sets.create()
     if (containsScope(checker, result, mutable seen)) {
       reportScopeReturned(mutable checker, pos, text)
     } else {
@@ -845,7 +841,7 @@ export function checkScopeFunction(
 ) uses alloc {
   // A declared result that holds a Scope, or a generator or async function
   // whose frame keeps a Scope parameter.
-  let seen: Map<string, bool> = Map {}
+  let seen: Set<string> = Sets.create()
   if (containsScope(checker, result, mutable seen)) {
     const text = typeString(checker, result)
     reportScopeReturned(mutable checker, declaration.pos, text)

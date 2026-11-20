@@ -1,7 +1,7 @@
 ---
 id: const-function-effects
 title: "A constant holding a function with effects"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-21

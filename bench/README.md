@@ -1,6 +1,6 @@
 # bench
 
-The same programs in Narra, Go, Rust, Zig and Odin, and a script that times them.
+The same programs in Narra, C, Go, Rust and Zig, and a script that times them.
 
 ```sh
 bench/run.sh            # all programs, 7 runs each
@@ -8,27 +8,27 @@ bench/run.sh -n 3 fib   # 3 runs, one program
 bench/run.sh compiler   # the compiler emitting its own C
 ```
 
-`run.sh` builds each program in release mode into `bench/build/` (ignored by git), runs it, and prints the median wall-clock seconds per language. It also checks that every language prints the same answer. If `go`, `rustc`, `zig`, `odin` or a C compiler is missing, that language is skipped and shown as `-`.
+`run.sh` builds each program in release mode into `bench/build/` (ignored by git), runs it, and prints the median wall-clock seconds per language. It also checks that every language prints the same answer. If `go`, `rustc`, `zig` or a C compiler is missing, that language is skipped and shown as `-`.
 
-Programs live in `bench/<name>/<name>.nra`, `.go` and `.rs`: `fib` (recursion), `sieve` and `matmul` (arrays), `strings` (string building), `interp` (enum and match), `particles` (structs in an array), `dot` (the dot product of two `Array<f32>` of 1,048,576 elements, 200 times; Narra uses an `F32x8` accumulator fed by `Simd.load` and `Simd.sum`, Go, Rust, Zig and Odin eight scalar accumulators added in the same order).
+Programs live in `bench/<name>/<name>.nra`, `.go` and `.rs`: `fib` (recursion), `sieve` and `matmul` (arrays), `strings` (string building), `interp` (enum and match), `particles` (structs in an array), `dot` (the dot product of two `Array<f32>` of 1,048,576 elements, 200 times; Narra uses an `F32x8` accumulator fed by `Simd.load` and `Simd.sum`, C, Go, Rust and Zig eight scalar accumulators added in the same order).
 
-The `compiler` row is not a program in five languages. It is the median wall-clock time of the release-built Narra compiler running `narrac emit selfhost` (it emits its own C; the output goes to `/dev/null`), plus the peak memory of one more run, read from `/usr/bin/time -l` (macOS) or `-v` (Linux) and shown as `n/a` when neither works. The Go, Rust, Zig and Odin columns are `-`. Run only this row with `bench/run.sh compiler`.
+The `compiler` row is not a program in five languages. It is the median wall-clock time of the release-built Narra compiler running `narrac emit selfhost` (it emits its own C; the output goes to `/dev/null`), plus the peak memory of one more run, read from `/usr/bin/time -l` (macOS) or `-v` (Linux) and shown as `n/a` when neither works. The C, Go, Rust and Zig columns are `-`. Run only this row with `bench/run.sh compiler`.
 
 Run it on a quiet machine. Results are in `BASELINE.md`.
 
-The Go, Rust, Zig and Odin programs are plain idiomatic code that mirror the Narra algorithm. Add a program by adding the five files and its name to the list in `run.sh`.
+The C, Go, Rust and Zig programs are plain idiomatic code that mirror the Narra algorithm. Add a program by adding the five files and its name to the list in `run.sh`.
 
 ## Build flags
 
 Every language builds in release mode, with the optimizer on and without extra tuning:
 
 - Narra: `narrac build -release`, which runs `cc -O2`.
+- C: `cc -O2 -std=c11`, the same C compiler and level Narra uses. Narra compiles to C, so this column is the speed Narra could reach; the gap is the cost of Narra's checks and memory management.
 - Go: `go build`, which always optimizes.
 - Rust: `rustc -C opt-level=3`.
 - Zig: `zig build-exe -O ReleaseFast`. ReleaseFast is the speed mode. It also drops bounds checks, which Go and Rust keep; ReleaseSafe would keep them but also checks overflow, which none of the others do.
-- Odin: `odin build <file> -file -o:speed`. `-o:speed` is Odin's highest ordinary optimization level; the default is `minimal`. No `-disable-assert` or `-no-bounds-check`, as Go and Rust keep bounds checks.
 
-Zig and Odin versions follow the Rust ones: Rust's `black_box` on the loop bounds becomes `std.mem.doNotOptimizeAway` in Zig and `intrinsics.volatile_load` in Odin, so the compiler cannot fold the whole program into a constant. The Odin versions have not been compiled or measured yet, because Odin is not installed on the development machine.
+Zig and C versions follow the Rust ones: Rust's `black_box` on the loop bounds becomes `std.mem.doNotOptimizeAway` in Zig and a `volatile` local in C, so the compiler cannot fold the whole program into a constant.
 
 ## Build time (not measured yet)
 

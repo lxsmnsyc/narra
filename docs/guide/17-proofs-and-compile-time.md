@@ -421,4 +421,233 @@ export function run(args: Array<string>): int {
 
 `N` does not prove a `requires` condition yet. Passing `N` to a function with `requires index >= 1` is an error, even when every copy has `N` above 0. Only `int` constant parameters exist, and enums and type aliases take none.
 
+## Values computed while compiling
+
+The proofs above run while the program compiles. The compiler can also compute values. A top-level `const` may call a function marked `@const`, and the compiler runs that call and keeps the result. The program starts with the value already built, and nothing runs for it at startup.
+
+Here is a table of the hours planned up to the end of each day, with 8 hours on each of the five weekdays:
+
+```narra
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+
+@const
+function plannedTotals(): Array<int> uses alloc {
+  let totals: Array<int> = []
+  let running = 0
+  for (const day of Ranges.upTo(7)) {
+    if (day < 5) {
+      running += 8
+    }
+    Arrays.push(mutable totals, running)
+  }
+  return totals
+}
+
+const PLANNED = plannedTotals()
+
+export function run(args: Array<string>): int {
+  print(Int.toString(PLANNED[2]))
+  print(Int.toString(PLANNED[6]))
+  print(Int.toString(Arrays.length(plannedTotals())))
+  return 0
+}
+```
+
+```text
+24
+40
+7
+```
+
+The call is written at the constant, so the program text shows where the work happens. Anywhere else, `plannedTotals()` is an ordinary function call and runs when the program does, as the last `print` shows. Only a function marked `@const` can be called from a constant. The compiler checks each `@const` function where it is written, so a mistake in one fails even when no constant uses it yet.
+
+An `@const` function has these limits:
+
+- **Its effects** are at most `alloc`, so it cannot print or read a file.
+- **Its parameters and result** are numbers, `bool`, `char`, `string`, `bytes`, arrays, maps, `FixedArray`, `Option`, `Result` and tuples. Structs, enums and distinct types made of these are fine too. A function type, `Cell`, `Ptr`, `Shared` and a generator are not allowed.
+- **Its calls** go to other `@const` functions, constructors, and the functions of number, text and collection modules (`std/string`, `std/array`, `std/map`, `std/int`, `std/range` and more). A function that takes a function is out. So is an arrow function, and so is another function of yours.
+- **Its math** leaves out `Math.sin`, `cos`, `tan`, `atan2`, `exp`, `log` and `pow`. The C library decides their last digits, and the compiler must give the same result as the program.
+
+A call outside the list is an error at the call:
+
+```narra error
+// error: 8:13: @const function paddedHours calls pad, which is not @const
+function pad(hours: int): int {
+  return hours + 1
+}
+
+@const
+function paddedHours(hours: int): int {
+  return pad(hours)
+}
+
+const PADDED = paddedHours(8)
+
+export function run(args: Array<string>): int {
+  return PADDED
+}
+```
+
+Mark `pad` with `@const` and the program compiles.
+
+A panic during the computation is a compile error at the constant, with the chain of calls under it. Here an index is out of range:
+
+```narra error
+// error: 7:19: constant BAD panicked while the compiler computed it: index 5 out of range for length 3
+@const
+function hourOn(week: Array<int>, day: int): int {
+  return week[day]
+}
+
+const BAD = hourOn([8, 8, 6], 5)
+
+export function run(args: Array<string>): int {
+  return BAD
+}
+```
+
+The computation is limited so that a compile cannot hang. One constant may run 10 million steps, where a step is one expression, statement or loop turn. It may build 64 MiB of values and nest 1000 calls. Passing a limit is an error that names the constant. A loop that adds up the numbers below 100 million stops with `constant ALL needs more than 10000000 evaluation steps`. Compute a value that large in a function at run time.
+
+### Patterns checked while compiling
+
+`Regexes.compile` ([chapter 13](13-standard-library.md#patterns-stdregex)) returns a `Result`, because the pattern may be wrong. A pattern written in the source is usually fixed text, and a mistake in it is a mistake in the program. `Regexes.checked(pattern)` is an `@const` function that compiles the pattern while the compiler runs. It returns a `Regex`, with no `Result` around it, and a bad pattern is a compile error:
+
+```narra
+import * as Regexes from "std/regex"
+
+const CLOCK = Regexes.checked("^(\\d\\d):(\\d\\d)$")
+
+function describeTime(text: string): string uses alloc {
+  if (Regexes.find(CLOCK, text) is Some(found)) {
+    if (Regexes.group(found, 1) is Some(hour)) {
+      return `hour ${hour}`
+    }
+  }
+  return "not a time"
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  print(describeTime("09:30"))
+  print(describeTime("9:30"))
+  return 0
+}
+```
+
+```text
+hour 09
+not a time
+```
+
+The compiled pattern is part of the program, so the program does not compile the pattern again. A pattern with a mistake stops the compile, and the message gives the place in the pattern:
+
+```narra error
+// error: 4:30: constant CLOCK panicked while the compiler computed it: bad pattern "(\d\d:(\d\d)" at 0: unclosed group
+import * as Regexes from "std/regex"
+
+const CLOCK = Regexes.checked("(\\d\\d:(\\d\\d)")
+
+export function run(args: Array<string>): int {
+  return 0
+}
+```
+
+`checked` is only for the value of a top-level `const`. Inside a function it would have to panic at run time for a bad pattern, so it is an error there. Use `Regexes.compile` and handle the `Err`:
+
+```narra error
+// error: 5:32: Regexes.checked can only be the value of a top-level const; use Regexes.compile
+import * as Regexes from "std/regex"
+
+function matchesClock(text: string): bool uses alloc {
+  const clock = Regexes.checked("^\\d\\d:\\d\\d$")
+  return Regexes.matches(clock, text)
+}
+
+export function run(args: Array<string>): int uses alloc {
+  if (matchesClock("09:30")) {
+    return 0
+  }
+  return 1
+}
+```
+
+### Tagged templates and `Template.raw`
+
+The pattern above doubles every backslash, because a string decodes `\\d` to `\d`. A tagged template avoids that. Write a name before the opening backtick of a template, and the compiler calls that function with the pieces. ``tag`a${x}b` `` is the call `tag(["a", "b"], [x])`. The first argument holds the text between the holes, always one more piece than there are values, with `""` for an empty piece. The second holds the values of the holes. The tag has two parameters, neither `mutable`, and the values must have one type. A tag can build any result:
+
+```narra
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+function hours(parts: Array<string>, values: Array<int>): string {
+  let builder = Str.builder()
+  for (const index of Ranges.upTo(Arrays.length(parts))) {
+    Str.append(mutable builder, parts[index])
+    if (index < Arrays.length(values)) {
+      Str.append(mutable builder, `${Int.toString(values[index])}h`)
+    }
+  }
+  return Str.build(builder)
+}
+
+export function run(args: Array<string>): int {
+  const start = 9
+  print(hours`from ${start} to ${start + 8}, break ${1}`)
+  print(hours`no holes`)
+  return 0
+}
+```
+
+```text
+from 9h to 17h, break 1h
+no holes
+```
+
+Each hole is checked against the type the tag takes, so a hole of another type is an error:
+
+```narra error
+// error: 10:22: value 1 of the tagged template is string, but the tag takes values of type int; convert it inside the ${}
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+function hours(parts: Array<string>, values: Array<int>): string {
+  return `${parts[0]}${Int.toString(Arrays.length(values))}`
+}
+
+export function run(args: Array<string>): int {
+  print(hours`from ${"nine"} to`)
+  return 0
+}
+```
+
+The tag must be on the same line as the backtick, and a template after `)`, `]` or a literal is an error.
+
+A tag can take `Raw` from `std/template` as its first parameter. Then the pieces keep their source text: `\d` is the two characters `\` and `d`, and no escape is decoded. `Raw.toArray(parts)` gives the pieces as an array of strings. `Template.raw` is a tag that joins the pieces and values as written. Its result is the text with no escape decoded, which is what a pattern needs:
+
+```narra
+import * as Regexes from "std/regex"
+import * as Template from "std/template"
+
+const CLOCK = Regexes.checked(Template.raw`^(\d\d):(\d\d)$`)
+const PLAIN = Template.raw`\d\d:\d\d`
+
+export function run(args: Array<string>): int uses io, alloc {
+  print(PLAIN)
+  print(Template.raw`tab\there`)
+  print(Show.show(Regexes.matches(CLOCK, "09:30")))
+  return 0
+}
+```
+
+```text
+\d\d:\d\d
+tab\there
+true
+```
+
+`Template.raw` is an `@const` function, so a constant can call it, and `Regexes.checked` can take its result. The compiler computes both while it compiles, and the pattern is written once, with single backslashes.
+
 Next: [18. Tools](18-tools.md).

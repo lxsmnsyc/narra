@@ -1,7 +1,7 @@
 ---
 id: compiler-std-sorts
 title: "The compiler uses std sort and char classes"
-status: todo
+status: done
 priority: should
 type: refactor
 story: batch-23

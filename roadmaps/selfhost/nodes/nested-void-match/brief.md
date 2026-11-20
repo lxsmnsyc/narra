@@ -1,7 +1,7 @@
 ---
 id: nested-void-match
 title: "A match with no value inside a match arm"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-22

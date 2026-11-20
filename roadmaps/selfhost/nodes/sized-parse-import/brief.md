@@ -1,7 +1,7 @@
 ---
 id: sized-parse-import
 title: "Sized parse without std/int fails in the C compiler"
-status: active
+status: done
 priority: could
 type: fix
 story: batch-21

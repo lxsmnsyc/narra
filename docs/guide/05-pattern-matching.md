@@ -149,6 +149,25 @@ export function run(args: Array<string>): int {
 }
 ```
 
+An arm that can never be taken is an error as well. Here `_` already matches every value, so the arm after it is dead code:
+
+```narra error
+// error: 5:5: this arm is unreachable: the arms before it already match every value it matches
+function sizeName(quantity: int): string {
+  return match (quantity) {
+    _ => "any"
+    0 => "none"
+  }
+}
+
+export function run(args: Array<string>): int {
+  print(sizeName(0))
+  return 0
+}
+```
+
+The same holds for a repeated literal or a repeated variant. A guarded arm covers nothing for this check, because its guard can be false. A pattern after it is fine. Put the specific arms first and the catch-all last.
+
 A struct pattern names the fields to test. A literal tests a field, and a name binds it:
 
 ```narra
@@ -183,6 +202,62 @@ napkin is free
 ```
 
 Fields you do not name are not tested. `{ name }` is short for `{ name: name }`: it binds the field `name` to a name `name`. Patterns nest as deep as the value does, so `Some(Command.Add(name, 1))` matches an `Option` that holds an `Add` of exactly one item.
+
+## Match an array
+
+The till splits a line into words, so the words are an `Array<string>`. An array pattern is written like an array literal, and it tests the length as well as the elements. `[]` matches an empty array, `[first]` an array of exactly one element, and `["pay", amount]` an array of exactly two whose first element is `"pay"`. Elements are patterns, so literals, names and `_` all work. To accept any number of elements after the first few, end the pattern with `...`:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+function describe(words: Array<string>): string {
+  return match (words) {
+    [] => "empty line"
+    ["pay", amount] => `pay ${amount}`
+    ["add", name, ..._] => `add ${name}`
+    [first, ...rest] => `${first} with ${Int.toString(Arrays.length(rest))} more`
+  }
+}
+
+export function run(args: Array<string>): int {
+  print(describe([]))
+  print(describe(["pay", "500"]))
+  print(describe(["add", "tea", "2"]))
+  print(describe(["dance", "a", "b"]))
+  return 0
+}
+```
+
+```text
+empty line
+pay 500
+add tea
+dance with 2 more
+```
+
+`..._` stands for "any further elements" and ignores them. `...rest` names them: `rest` is a new `Array` holding the remaining elements. The `...` part comes last, and a pattern can have only one. `["add", name, ..._]` matches three or more elements, `["add", name]` exactly two.
+
+The compiler checks that the arms cover every length, as it does for enums. If only `[]` and `[_, _, _, ..._]` are listed, an array of one or two elements has no arm, and the error names the missing patterns:
+
+```narra error
+// error: 3:10: match does not cover [_], [_, _]; add the cases or a `_` arm
+function describe(words: Array<string>): string {
+  return match (words) {
+    [] => "empty"
+    [_, _, _, ..._] => "long"
+  }
+}
+
+export function run(args: Array<string>): int {
+  print(describe([]))
+  return 0
+}
+```
+
+An array pattern also works with `is`, as in `if (words is ["pay", amount])`, and inside other patterns, as in `Some([first, ..._])`.
+
+A named rest copies the elements it keeps. That costs time in proportion to the number of elements, each time the pattern matches. A function that calls itself on `rest` for every element therefore does more and more copying as the array grows. For a long array, walk it with an index instead. `..._` copies nothing.
 
 ## Take a value apart
 
@@ -235,6 +310,44 @@ export function run(args: Array<string>): int {
   const item = Item { name: "tea", quantity: 1 }
   const { name, quantity: 1 } = item
   print(name)
+  return 0
+}
+```
+
+An `Array` has no fixed length, so a pattern that names elements cannot always match it. `const [a, b] = items` is an error, because `items` might hold one element or ten. The one array pattern that always matches is a lone rest, which makes a copy:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+export function run(args: Array<string>): int {
+  const items = [3, 4, 5]
+  const [...copy] = items
+  print(Int.toString(Arrays.length(copy)))
+  if (items is [first, ..._]) {
+    print(Int.toString(first))
+  }
+  const point: FixedArray<int, 3> = [1, 2, 3]
+  const [x, y, z] = point
+  print(Int.toString(x + y + z))
+  return 0
+}
+```
+
+```text
+3
+3
+6
+```
+
+To test the length and bind in one step, use `is` or `match`, as `items is [first, ..._]` does. A `FixedArray` has a length the compiler knows. A pattern of exactly that many elements always matches, and it takes the array apart like a tuple. On a `FixedArray` the rest must be `..._`, since a named rest would need a type with a length of its own.
+
+```narra error
+// error: 4:9: this pattern does not match every Array<int>; use match or `is` to test a value
+export function run(args: Array<string>): int {
+  const items = [3, 4, 5]
+  const [a, b] = items
+  print("x")
   return 0
 }
 ```
@@ -442,6 +555,117 @@ large order
 ```
 
 Both branches give a value of the same type. A value `if` needs its `else`, since without one there would be no value when the condition is false.
+
+## Calls: names, std functions, order
+
+Three more things about calls turn up in the till's code.
+
+A call can name its arguments, written like the fields of a struct literal. Chapter 3 used a name to skip a default. Names also make a call with several arguments of one type easy to read. They can come in any order, as long as the positional arguments come first:
+
+```narra
+import * as Int from "std/int"
+
+function label(name: string, priceCents: int, quantity: int = 1): string {
+  return `${Int.toString(quantity)} ${name} at ${Int.toString(priceCents)}`
+}
+
+export function run(args: Array<string>): int {
+  print(label("tea", 250))
+  print(label("tea", quantity: 3, priceCents: 250))
+  print(label(name: "cake", priceCents: 900))
+  return 0
+}
+```
+
+```text
+1 tea at 250
+3 tea at 250
+1 cake at 900
+```
+
+Every parameter is passed once, by position or by name. A `mutable` argument (chapter 9) keeps its word after the name: `fill(buffer: mutable slots, value: 7)`. A positional argument after a named one is an error:
+
+```narra error
+// error: 9:28: a positional argument cannot follow a named one; name it, or move it before the named arguments
+import * as Int from "std/int"
+
+function label(name: string, priceCents: int): string {
+  return `${name} at ${Int.toString(priceCents)}`
+}
+
+export function run(args: Array<string>): int {
+  print(label(name: "tea", 250))
+  return 0
+}
+```
+
+Names work when the callee is a declared function. A function held in a name, such as `const show = label`, takes its arguments by position only, and so do enum constructors and std functions. A parameter's name is part of what the function offers to its callers: renaming it breaks every call that uses the name.
+
+A function from the standard library is a value too, when its types do not change from call to call. `Int.toString` can be stored, passed and returned like your own functions:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+
+function formatAll(numbers: Array<int>, format: (int) => string): Array<string> {
+  let out: Array<string> = []
+  for (const number of numbers) {
+    Arrays.push(mutable out, format(number))
+  }
+  return out
+}
+
+export function run(args: Array<string>): int {
+  const format = Int.toString
+  print(format(42))
+  const words = formatAll([1, 2, 3], Int.toString)
+  print(Str.join(words, "+"))
+  return 0
+}
+```
+
+```text
+42
+1+2+3
+```
+
+Some std functions cannot be values. `Arrays.length` works on an array of any element type, so it has no single function type. The same goes for a function that takes a `mutable` parameter, such as `Arrays.push`, and for one that takes a function, such as `Arrays.map`. The compiler asks for an arrow function that calls them:
+
+```narra error
+// error: 5:23: Arrays.length cannot be used as a value: its parameter and result types depend on the call; wrap it in an arrow function, such as `(items) => Arrays.length(items)`
+import * as Arrays from "std/array"
+
+export function run(args: Array<string>): int {
+  const size = Arrays.length
+  return 0
+}
+```
+
+Last, the arguments of a call are evaluated from left to right, in the order they are written, also when they are named. This matters when an argument is a block that changes a `let` which an earlier argument reads. The earlier argument keeps the value it had when it was evaluated:
+
+```narra
+import * as Int from "std/int"
+
+function show(first: int, second: int) {
+  print(`${Int.toString(first)} then ${Int.toString(second)}`)
+}
+
+export function run(args: Array<string>): int {
+  let counter = 0
+  show(counter, {
+    counter = counter + 10
+    return counter
+  })
+  show(counter, 0)
+  return 0
+}
+```
+
+```text
+0 then 10
+10 then 0
+```
 
 ## The till
 

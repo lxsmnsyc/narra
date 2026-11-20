@@ -1,7 +1,7 @@
 ---
 id: std-text-more
 title: "Float parse and fixed digits, character classes, string trim and pad"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-22

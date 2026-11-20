@@ -43,3 +43,8 @@
 ## Size
 
 - Estimated M, actual M.
+
+## Review fixes
+
+- A local named like a module alias is no longer shown as the module (`describeModuleUse`, `collectImportHovers`); case `lsp/hover_shadow`.
+- A struct imported with `as` shows `struct Point as P`.

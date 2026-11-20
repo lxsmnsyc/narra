@@ -620,12 +620,6 @@ function collectImportHovers(
   mutable slots: Map<string, int>,
 ) uses alloc {
   collectImportNames(checker, effects, view, None, mutable hovers, mutable slots)
-  let aliases: Map<string, string> = Map {}
-  for (const declaration of Arrays.values(view.module.ast.imports)) {
-    if (declaration.alias != "") {
-      aliases[declaration.alias] = declaration.path
-    }
-  }
   // Each use of an alias, `Alias.member`, shows the module and the member. A member with no
   // text to show loses the hover its call gave. The sites also cover template parts.
   for (const site of Arrays.values(view.sites)) {
@@ -633,9 +627,12 @@ function collectImportHovers(
       continue
     }
     if (
-      site.expression is Some(Expr.FieldExpr(_, memberPos, Expr.Ident(_, aliasPos, alias), member))
+      site.expression is Some(
+        Expr.FieldExpr(_, memberPos, Expr.Ident(identId, aliasPos, alias), member),
+      )
     ) {
-      if (aliases[alias] is Some(path)) {
+      const path = findAliasUsePath(checker, view, identId, alias)
+      if (path != "") {
         putHover(mutable hovers, mutable slots, aliasPos, Str.charCount(alias), `module ${path}`)
         const text = describeMember(checker, effects, path, member)
         putHover(mutable hovers, mutable slots, memberPos, Str.charCount(member), text)
@@ -666,7 +663,7 @@ function collectStructHovers(
           mutable slots,
           pos,
           Str.charCount(typeName),
-          describeStructLiteral(checker, structIndex),
+          describeStructLiteral(checker, structIndex, typeName),
         )
       }
       for (const field of Arrays.values(fields)) {
@@ -693,8 +690,16 @@ function findStructLiteralIndex(checker: Checker, view: ModuleView, site: Site):
   return -1
 }
 
-function describeStructLiteral(checker: Checker, structIndex: int): string uses alloc {
-  return `struct ${typeString(checker, Type.TStruct(structIndex))}`
+function describeStructLiteral(
+  checker: Checker,
+  structIndex: int,
+  writtenName: string,
+): string uses alloc {
+  const declaredName = typeString(checker, Type.TStruct(structIndex))
+  if (writtenName != declaredName) {
+    return `struct ${declaredName} as ${writtenName}`
+  }
+  return `struct ${declaredName}`
 }
 
 function describeStructField(checker: Checker, structIndex: int, name: string): string uses alloc {
@@ -734,13 +739,24 @@ function findModuleAliasPath(view: ModuleView, name: string): string {
   return ""
 }
 
+function findAliasUsePath(checker: Checker, view: ModuleView, identId: int, name: string): string {
+  // A local with the alias's name hides the module.
+  const bodyIndex = findNodeBody(checker, view, identId)
+  if (bodyIndex >= 0) {
+    const body = checker.bodies[bodyIndex]
+    if (body.refs[findBodySlot(body, identId)] is Ref.Local(_)) {
+      return ""
+    }
+  }
+  return findModuleAliasPath(view, name)
+}
+
 function findQualifierHovers(
   checker: Checker,
   view: ModuleView,
   site: Site,
   enumIndex: int,
 ): Array<Hover> uses alloc {
-  // For `Alias.Enum.Variant` the tokens before the variant name: the enum, then the module.
   let found: Array<Hover> = []
   const index = findTokenIndex(view, site.start)
   if (index < 2) {
@@ -791,11 +807,9 @@ function describeModuleUse(
   view: ModuleView,
   site: Site,
 ): Option<string> uses alloc {
-  // A module alias, or `Alias.member` shown with the member's text; none when the member has
-  // nothing to show.
-  if (site.expression is Some(Expr.Ident(_, _, name))) {
+  if (site.expression is Some(Expr.Ident(identId, _, name))) {
     if (site.kind == SiteKind.ExpressionSite) {
-      const path = findModuleAliasPath(view, name)
+      const path = findAliasUsePath(checker, view, identId, name)
       if (path != "") {
         return Some(`module ${path}`)
       }
@@ -813,8 +827,9 @@ function describeModuleUse(
       target = Some(callTarget)
     }
   }
-  if (target is Some(Expr.Ident(_, _, alias))) {
-    const path = findModuleAliasPath(view, alias)
+  // `Alias.member` shows the member's text, nothing when the member has none.
+  if (target is Some(Expr.Ident(identId, _, alias))) {
+    const path = findAliasUsePath(checker, view, identId, alias)
     if (path != "") {
       const text = describeMember(checker, effects, path, site.name)
       if (text != "") {
@@ -837,7 +852,6 @@ function findDetachedHover(
   view: ModuleView,
   cursor: Pos,
 ): Option<Hover> uses alloc {
-  // Imports.
   let imports: Array<Hover> = []
   let importSlots: Map<string, int> = Map {}
   collectImportNames(checker, effects, view, Some(cursor), mutable imports, mutable importSlots)
@@ -1349,7 +1363,7 @@ function describeSite(
     if (site.kind == SiteKind.ExpressionSite && typeName != "") {
       const structIndex = findStructLiteralIndex(checker, view, site)
       if (structIndex >= 0) {
-        return Some(#[describeStructLiteral(checker, structIndex), []])
+        return Some(#[describeStructLiteral(checker, structIndex, typeName), []])
       }
     }
   }

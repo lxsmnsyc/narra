@@ -1,8 +1,7 @@
-// narrac query interface for a std module: the builtin functions come from
-// the registry, the Narra source of the module and of its std/ext part from
-// the embedded std text. A builtin whose signature the body checker computes
-// (check is a Check function name) has no types in the registry, so its
-// parameters print as `...`.
+// narrac query interface for a std module: the types a builtin module brings
+// into view (listStdTypes), the builtin functions of the registry with their
+// display names and signatures, then the Narra source of the module and of its
+// std/ext part from the embedded std text.
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
@@ -12,7 +11,7 @@ import { lex } from "narrac/syntax/lexer"
 import { parse } from "narrac/syntax/parser"
 import { extensionPath } from "narrac/driver/modules"
 import { Registry, StdFunc } from "narrac/std/builtins"
-import { stdRegistry } from "narrac/std/stdlib"
+import { listStdTypes, stdRegistry } from "narrac/std/stdlib"
 import { stdSourceFor } from "narrac/std/stdtext"
 import { SiteKind, collectSites } from "narrac/tools/querysites"
 import { InterfaceEntry, Location, writeInterface } from "narrac/tools/queryjson"
@@ -24,25 +23,49 @@ export function isStdModulePath(path: string): bool {
 }
 
 function writeBuiltinSignature(builtin: StdFunc): string uses alloc {
-  let parameters: Array<string> = []
-  if (builtin.check != "" && builtin.check != "fixed") {
-    Arrays.push(mutable parameters, "...")
-  }
-  for (const index of Ranges.upTo(Arrays.length(builtin.parameters))) {
-    let flag = ""
-    if (index < Arrays.length(builtin.mutables) && builtin.mutables[index]) {
-      flag = "mutable "
+  let text = `export function ${builtin.key}${builtin.signature}`
+  if (builtin.signature == "") {
+    // A builtin with a check function and no written signature has no parameter types.
+    let parameters: Array<string> = []
+    if (builtin.check != "" && builtin.check != "fixed") {
+      Arrays.push(mutable parameters, "...")
     }
-    Arrays.push(mutable parameters, `${flag}${builtin.parameters[index]}`)
-  }
-  let text = `export function ${builtin.key}(${Str.join(parameters, ", ")})`
-  if (builtin.result != "") {
-    text = `${text}: ${builtin.result}`
+    for (const index of Ranges.upTo(Arrays.length(builtin.parameters))) {
+      let flag = ""
+      if (index < Arrays.length(builtin.mutables) && builtin.mutables[index]) {
+        flag = "mutable "
+      }
+      let name = ""
+      if (index < Arrays.length(builtin.parameterNames)) {
+        name = `${builtin.parameterNames[index]}: `
+      }
+      Arrays.push(mutable parameters, `${flag}${name}${builtin.parameters[index]}`)
+    }
+    text = `${text}(${Str.join(parameters, ", ")})`
+    if (builtin.result != "") {
+      text = `${text}: ${builtin.result}`
+    }
   }
   if (Arrays.length(builtin.effects) > 0) {
     text = `${text} uses ${Str.join(builtin.effects, ", ")}`
   }
   return text
+}
+
+function listTypeEntries(path: string): Array<InterfaceEntry> uses alloc {
+  let entries: Array<InterfaceEntry> = []
+  for (const builtinType of Arrays.values(listStdTypes())) {
+    if (builtinType.module == path) {
+      Arrays.push(mutable entries, InterfaceEntry {
+        name: builtinType.name,
+        kind: "struct",
+        signature: `export ${builtinType.signature}`,
+        location: None,
+        functions: builtinType.functions,
+      })
+    }
+  }
+  return entries
 }
 
 function listBuiltinEntries(registry: Registry, path: string): Array<InterfaceEntry> uses alloc {
@@ -113,7 +136,10 @@ export function queryStdInterface(json: bool, path: string): Result<string, stri
   if (!hasModule && stdSourceFor(path) == "") {
     return Err(`unknown module "${path}"`)
   }
-  let entries = listBuiltinEntries(registry, path)
+  let entries = listTypeEntries(path)
+  for (const entry of Arrays.values(listBuiltinEntries(registry, path))) {
+    Arrays.push(mutable entries, entry)
+  }
   for (const part of Arrays.values([extension, path])) {
     if (part == "") {
       continue

@@ -1,0 +1,256 @@
+// The builtin_signatures case of the query suite: `narrac query --json interface`
+// on every public builtin std module (the modules `narrac builtins` names, without
+// std/internal). Each builtin function (location null) must name every parameter
+// and print no `(...)`; each builtin type must list functions its module has.
+import * as Arrays from "std/array"
+import * as Json from "std/json"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { Value } from "std/shape"
+import * as Common from "testrunner/context"
+import { Context } from "testrunner/context"
+import { splitString, substring } from "testrunner/textops"
+
+// The bytes the signature reader looks for.
+const OPEN_PAREN = 40
+const CLOSE_PAREN = 41
+const COMMA = 44
+const LESS = 60
+const EQUALS = 61
+const GREATER = 62
+const OPEN_BRACKET = 91
+const CLOSE_BRACKET = 93
+
+// A builtin read from the JSON answer.
+struct Builtin {
+  name: string
+  signature: string
+  functions: Array<string>
+}
+
+function containsString(items: Array<string>, wanted: string): bool {
+  for (const item of Arrays.values(items)) {
+    if (item == wanted) {
+      return true
+    }
+  }
+  return false
+}
+
+function listPublicModules(output: string): Array<string> uses alloc {
+  let modules: Array<string> = []
+  const prefix = "builtin module=\""
+  for (const line of Arrays.values(splitString(output, "\n"))) {
+    if (!Str.startsWith(line, prefix)) {
+      continue
+    }
+    const rest = Str.sliceFrom(line, Str.length(prefix))
+    if (Str.indexOf(rest, "\"") is Some(end)) {
+      const path = substring(rest, 0, end)
+      if (path != "" && !Str.startsWith(path, "std/internal/") && !containsString(modules, path)) {
+        Arrays.push(mutable modules, path)
+      }
+    }
+  }
+  return modules
+}
+
+function readText(fields: Map<string, Value>, key: string): string uses alloc {
+  if (fields[key] is Some(Value.Text(text))) {
+    return text
+  }
+  return ""
+}
+
+function readBuiltins(output: string): Result<#[Array<string>, Array<Builtin>], string> uses alloc {
+  const parsed = Json.parse(output)
+  if (parsed is Err(message)) {
+    return Err(`the answer is not JSON: ${message}`)
+  }
+  let names: Array<string> = []
+  let builtins: Array<Builtin> = []
+  if (parsed.value is Value.Record(answer)) {
+    if (answer["declarations"] is Some(Value.List(declarations))) {
+      for (const declaration of Arrays.values(declarations)) {
+        if (declaration is Value.Record(fields)) {
+          const name = readText(fields, "name")
+          Arrays.push(mutable names, name)
+          if (fields["location"] is Some(Value.Null)) {
+            let functions: Array<string> = []
+            if (fields["functions"] is Some(Value.List(items))) {
+              for (const item of Arrays.values(items)) {
+                if (item is Value.Text(text)) {
+                  Arrays.push(mutable functions, text)
+                }
+              }
+            }
+            Arrays.push(mutable builtins, Builtin {
+              name,
+              signature: readText(fields, "signature"),
+              functions,
+            })
+          }
+        }
+      }
+    }
+  }
+  return Ok(#[names, builtins])
+}
+
+function measureDepthChange(text: string, index: int): int {
+  const byte = Str.byteAt(text, index)
+  if (byte == OPEN_PAREN || byte == LESS || byte == OPEN_BRACKET) {
+    return 1
+  }
+  // The `>` of `=>` closes nothing.
+  if (byte == GREATER && index > 0 && Str.byteAt(text, index - 1) == EQUALS) {
+    return 0
+  }
+  if (byte == CLOSE_PAREN || byte == GREATER || byte == CLOSE_BRACKET) {
+    return -1
+  }
+  return 0
+}
+
+function findClosing(text: string, start: int): int {
+  let depth = 0
+  for (const index of Ranges.between(start, Str.length(text))) {
+    depth += measureDepthChange(text, index)
+    if (depth == 0) {
+      return index
+    }
+  }
+  return -1
+}
+
+function splitParameters(text: string): Array<string> uses alloc {
+  let parts: Array<string> = []
+  let depth = 0
+  let start = 0
+  for (const index of Ranges.upTo(Str.length(text))) {
+    depth += measureDepthChange(text, index)
+    if (depth == 0 && Str.byteAt(text, index) == COMMA) {
+      Arrays.push(mutable parts, Str.trim(substring(text, start, index)))
+      start = index + 1
+    }
+  }
+  const last = Str.trim(Str.sliceFrom(text, start))
+  if (last != "") {
+    Arrays.push(mutable parts, last)
+  }
+  return parts
+}
+
+function isNamedParameter(parameter: string): bool uses alloc {
+  let rest = parameter
+  for (const flag of Arrays.values(["mutable ", "escaping "])) {
+    if (Str.startsWith(rest, flag)) {
+      rest = Str.sliceFrom(rest, Str.length(flag))
+    }
+  }
+  if (Str.indexOf(rest, ": ") is Some(colon)) {
+    const name = substring(rest, 0, colon)
+    return name != "" &&
+      !Str.contains(name, " ") &&
+      !Str.contains(name, "<") &&
+      !Str.contains(name, "(")
+  }
+  return false
+}
+
+function checkSignature(signature: string): string uses alloc {
+  if (Str.contains(signature, "(...)")) {
+    return "prints (...)"
+  }
+  const prefix = "export function "
+  if (!Str.startsWith(signature, prefix)) {
+    return "does not start with `export function`"
+  }
+  let open = -1
+  if (Str.indexOf(signature, "(") is Some(paren)) {
+    open = paren
+  }
+  // Type parameters come before the parameter list.
+  if (Str.indexOf(signature, "<") is Some(angle)) {
+    if (open < 0 || angle < open) {
+      const closing = findClosing(signature, angle)
+      if (closing < 0) {
+        return "has an unclosed type parameter list"
+      }
+      if (Str.indexOf(Str.sliceFrom(signature, closing), "(") is Some(paren)) {
+        open = closing + paren
+      }
+    }
+  }
+  if (open < 0) {
+    return "has no parameter list"
+  }
+  const close = findClosing(signature, open)
+  if (close < 0) {
+    return "has an unclosed parameter list"
+  }
+  for (const parameter of Arrays.values(splitParameters(substring(signature, open + 1, close)))) {
+    if (!isNamedParameter(parameter)) {
+      return `has an unnamed parameter \`${parameter}\``
+    }
+  }
+  return ""
+}
+
+function checkModule(path: string, output: string): Array<string> uses alloc {
+  let problems: Array<string> = []
+  const read = readBuiltins(output)
+  if (read is Err(message)) {
+    Arrays.push(mutable problems, `${path}: ${message}`)
+    return problems
+  }
+  const #[names, builtins] = read.value
+  for (const builtin of Arrays.values(builtins)) {
+    if (Str.startsWith(builtin.signature, "export function")) {
+      const problem = checkSignature(builtin.signature)
+      if (problem != "") {
+        Arrays.push(mutable problems, `${path} ${builtin.name}: ${problem}: ${builtin.signature}`)
+      }
+      continue
+    }
+    // A builtin type lists functions of its module.
+    if (Arrays.length(builtin.functions) == 0) {
+      Arrays.push(mutable problems, `${path} ${builtin.name}: a builtin type lists no functions`)
+    }
+    for (const name of Arrays.values(builtin.functions)) {
+      if (!containsString(names, name)) {
+        Arrays.push(
+          mutable problems,
+          `${path} ${builtin.name}: lists ${name}, which ${path} does not have`,
+        )
+      }
+    }
+  }
+  return problems
+}
+
+export function runBuiltinSignatures(context: Context): Result<bool, string> uses io, alloc {
+  const listed = Common.runNarrac(context, ["builtins"])
+  if (listed.code != 0) {
+    return Err(`narrac builtins failed: ${listed.errorOutput}`)
+  }
+  let problems: Array<string> = []
+  const modules = listPublicModules(listed.output)
+  if (Arrays.length(modules) == 0) {
+    return Err("narrac builtins names no public module")
+  }
+  for (const path of Arrays.values(modules)) {
+    const ran = Common.runNarrac(context, ["query", "--json", "interface", path])
+    if (ran.code != 0) {
+      Arrays.push(mutable problems, `${path}: ${ran.errorOutput}`)
+      continue
+    }
+    for (const problem of Arrays.values(checkModule(path, ran.output))) {
+      Arrays.push(mutable problems, problem)
+    }
+  }
+  if (Arrays.length(problems) > 0) {
+    return Err(Str.join(problems, "\n"))
+  }
+  return Ok(true)
+}

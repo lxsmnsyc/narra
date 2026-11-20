@@ -1,7 +1,7 @@
 ---
 id: docs-release-pass
 title: "Docs fixes before the first release"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-20

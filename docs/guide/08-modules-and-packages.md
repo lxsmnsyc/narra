@@ -127,6 +127,7 @@ Collections and values:
 - `std/bytes`: a block of raw bytes.
 - `std/option`, `std/result`: functions for `Option` and `Result`.
 - `std/box`, `std/cell`: a value on the heap, and a shared value that changes on one thread.
+- `std/set`: a collection of distinct values.
 - `std/iterator`: lazy `map`, `filter`, `take` and other operators over generators.
 - `std/arena`: a pool of values that refer to each other by handle.
 - `std/hash`: hashing of any value, and a fixed FNV-1a hash of a string.

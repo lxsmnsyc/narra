@@ -230,6 +230,52 @@ error: unknown flag --lod; did you mean --loud?
 
 Long flags take two dashes and short flags one: `--times 3`, `--times=3`, `-n 3` and `-n3` are the same. Short switches can be bundled, so `-ab` is `-a -b`. `--` ends the flags, and a lone `-` is a positional. A command can have subcommands in `commands`: the first positional picks one, and `Args.commandPath` returns the names, such as `["narrac", "build"]`.
 
+## Distinct values: `std/set`
+
+A `Set` holds each value once and remembers the order in which the values were added. The items need the same trait as map keys, `Hashable`. A set is a value like an array: a copy is independent of the original.
+
+```narra
+import * as Sets from "std/set"
+import { Set } from "std/set"
+
+export function run(args: Array<string>): int uses io, alloc {
+  let mine: Set<string> = Sets.create()
+  Sets.add(mutable mine, "ada")
+  Sets.add(mutable mine, "grace")
+  const added = Sets.add(mutable mine, "ada")
+  print(`added again: ${Show.show(added)}, size: ${Show.show(Sets.size(mine))}`)
+
+  let yours: Set<string> = Sets.create()
+  Sets.add(mutable yours, "grace")
+  Sets.add(mutable yours, "linus")
+
+  for (const name of Sets.values(Sets.union(mine, yours))) {
+    print(`either: ${name}`)
+  }
+  for (const name of Sets.values(Sets.intersection(mine, yours))) {
+    print(`both: ${name}`)
+  }
+  for (const name of Sets.values(Sets.difference(mine, yours))) {
+    print(`only mine: ${name}`)
+  }
+  const removed = Sets.remove(mutable mine, "ada")
+  print(`removed: ${Show.show(removed)}, has ada: ${Show.show(Sets.has(mine, "ada"))}`)
+  return 0
+}
+```
+
+```text
+added again: false, size: 2
+either: ada
+either: grace
+either: linus
+both: grace
+only mine: ada
+removed: true, has ada: false
+```
+
+`add` and `remove` return whether the set changed. `values` returns an array, as `Maps.keys` does, so it works in a `for ... of` loop. `union`, `intersection` and `difference` return new sets and leave their arguments alone.
+
 ## Graphs: `std/arena`
 
 A graph with cycles cannot hold its nodes directly: a value that holds itself would never be freed. Keep the nodes in an `Arena` instead, and let each node name its neighbours with `Handle` values. A handle is a slot number and a generation, and it works as a map key.

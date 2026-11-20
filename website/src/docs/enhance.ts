@@ -103,6 +103,8 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
     }
   }
 
+  // The band that counts as "in view" starts under the sticky header.
+  const bandTop = 64;
   const observer = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
@@ -113,7 +115,8 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
           visible.delete(id);
         }
       }
-      // The first heading in view wins. With none in view, the last one above the view does.
+      // The first heading in the band wins. With none in it, the last one above the band does,
+      // including a heading that has just left the band and still sits under the header.
       for (const heading of headings) {
         if (visible.has(heading.id)) {
           mark(heading.id);
@@ -122,7 +125,7 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
       }
       let above = '';
       for (const heading of headings) {
-        if (heading.getBoundingClientRect().top < 0) {
+        if (heading.getBoundingClientRect().top < bandTop) {
           above = heading.id;
         }
       }
@@ -130,7 +133,7 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
         mark(above);
       }
     },
-    { rootMargin: '-64px 0px -55% 0px' },
+    { rootMargin: `-${bandTop}px 0px -55% 0px` },
   );
   for (const heading of headings) {
     observer.observe(heading);

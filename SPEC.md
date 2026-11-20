@@ -2,7 +2,7 @@
 
 This document defines the Narra language. Each section states the rules first, then shows an example. `DECISIONS.md` explains why each rule was chosen over the alternatives.
 
-File extension: `.nra`. Compiler command: `narra`.
+File extension: `.nra`. Compiler command: `narrac`.
 
 Code samples leave out the imports of `Array`, `Map`, `Range` and `Box` functions (section 3): a sample that calls `Arrays.push` assumes `import * as Arrays from "std/array"`.
 
@@ -44,8 +44,8 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
 
 - Blocks use `{ }`.
 - **No semicolons.** A line break ends a statement when the line could end there. A line that ends with an operator, `,`, `(`, `[` or `{` continues on the next line. A `;` is a compile error, except between the parentheses of a `for (init; condition; step)` loop (section 2, Control flow).
-- `narra fmt` defines the one valid layout. CI is expected to run `narra fmt --check`.
-- `narra fmt` reads a `[fmt]` table of `narra.toml` (the nearest one above the file). Keys, with their defaults:
+- `narrac fmt` defines the one valid layout. CI is expected to run `narrac fmt --check`.
+- `narrac fmt` reads a `[fmt]` table of `narra.toml` (the nearest one above the file). Keys, with their defaults:
   - `printWidth = 100`: the line width.
   - `tabWidth = 2`: spaces per indent level.
   - `useTabs = false`: indent with tabs.
@@ -98,7 +98,7 @@ The syntax follows TypeScript where the meaning is the same. Where Narra means s
   - A default is part of the function's interface, like a parameter name: changing it changes every call that leaves it out.
 - **No varargs.** Pass an array.
 - **Tail calls to the same function are loops.** A tail-position call from a function to itself compiles to a jump. The stack does not grow. This holds for every function. Other recursive calls use the stack, and stack overflow aborts the program.
-- **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narra query recursion MODULE` lists them.
+- **Recursion needs no keyword.** The compiler finds recursive functions from the call graph of each module. `narrac query recursion MODULE` lists them.
 
 ```narra
 function gcd(a: int, b: int): int {
@@ -408,7 +408,7 @@ Rules:
 - **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
 - **No import side effects.** Top-level declarations must be functions, types, traits or `const` constants. There is no top-level `let`.
 - **Constructors come with their enum and are always qualified.** Importing `Token` makes `Token.Word(x)` usable, in expressions and in patterns (D71). A bare `Word(x)` is a compile error whose fix writes `Token.Word(x)`. `Some`, `None`, `Ok` and `Err` are the exception: they are prelude names and stay bare. Constructors of different enums never clash, whatever their fields, and a user enum may have a constructor named `None` (`Maybe.None`); a bare `None` is always the prelude one. Two constructors with the same name in one enum are an error.
-- **`narra move old new`** moves a file and rewrites every import of it.
+- **`narrac move old new`** moves a file and rewrites every import of it.
 
 ## 4. Types
 
@@ -1474,7 +1474,7 @@ for (const n of both()) {
 - **Effects** (section 7, D78). An exported generator writes the effects of its body on its return type: `export function* lines(path: string): Generator<string> uses (io, alloc)`. A private one gets them inferred into its type. A body that uses an effect its declared type omits is a compile error.
 - **Calls of generator functions are not recursion.** A generator that calls itself, directly or through another generator, creates a new value, so D37 and tail loops do not apply.
 - **`Coroutine<In, Out>`** (D79) is a generator that also receives a value on each resume. It is a separate type from `Generator<T>`: declare it with `function*` and the return type `Coroutine<In, Out>`, as in `function* total(): Coroutine<int, int>`. Inside it, `const input = yield output` yields `output` and, when the coroutine is resumed, binds the value passed to `Co.send`. The `yield` with a value is valid only in a coroutine, and only as the initializer of a `const` or `let` that names one variable and has no type annotation; a plain `yield output` statement is also valid and drops the input. The input of the first resume is dropped, as in TypeScript, because no `yield` is waiting for it. `yield*` is not valid in a coroutine, and `for ... of` over a coroutine is a compile error (a loop has no input to send). A coroutine type carries effects like a generator type: `Coroutine<string, int> uses io`.
-- **`Co.resume` and `Co.send`** from `std/coroutine` (`import * as Co from "std/coroutine"`) run a generator or a coroutine to its next `yield`, changing `g` in place: `Co.resume(mutable g)` for a `Generator<T>` and `Co.send(mutable g, input)` for a `Coroutine<In, Out>`. No function is chosen by its argument count: `Co.resume` takes one argument and `Co.send` two, and a call with the other count is the usual wrong-argument-count error (D119). It returns a `Step<Out>`, an enum of the same module (`import { Step } from "std/coroutine"`) with the constructors `Step.Yielded(value)`, `Step.Done` and `Step.Panicked(message)`, always qualified (D71). `Step` derives `Show` and `Equatable`. A finished generator or coroutine answers `Step.Done` to every later resume or send. The call charges the effects carried on the type of `g` (D78), and `alloc` for the `Step`. A shared generator is copied before it resumes (the count above 1), as in `for ... of`. `Panicked` is only reported in test builds (`narra test`): a panic inside the coroutine then ends the coroutine and `Co.resume` returns `Step.Panicked(message)` with the bare message; what the coroutine held at that moment is not freed. In other builds a panic aborts the program.
+- **`Co.resume` and `Co.send`** from `std/coroutine` (`import * as Co from "std/coroutine"`) run a generator or a coroutine to its next `yield`, changing `g` in place: `Co.resume(mutable g)` for a `Generator<T>` and `Co.send(mutable g, input)` for a `Coroutine<In, Out>`. No function is chosen by its argument count: `Co.resume` takes one argument and `Co.send` two, and a call with the other count is the usual wrong-argument-count error (D119). It returns a `Step<Out>`, an enum of the same module (`import { Step } from "std/coroutine"`) with the constructors `Step.Yielded(value)`, `Step.Done` and `Step.Panicked(message)`, always qualified (D71). `Step` derives `Show` and `Equatable`. A finished generator or coroutine answers `Step.Done` to every later resume or send. The call charges the effects carried on the type of `g` (D78), and `alloc` for the `Step`. A shared generator is copied before it resumes (the count above 1), as in `for ... of`. `Panicked` is only reported in test builds (`narrac test`): a panic inside the coroutine then ends the coroutine and `Co.resume` returns `Step.Panicked(message)` with the bare message; what the coroutine held at that moment is not freed. In other builds a panic aborts the program.
 - **A generator is a value like any other.** Resuming one by hand requires a `mutable` argument. `for ... of` iterates over its own copy. `Generator<T>` has no `==`, no hashing and no `Show`.
 - **Only generator bodies become state machines.** A `yield` cannot cross a normal function call, so other functions compile as plain C functions.
 
@@ -1580,7 +1580,7 @@ const now = Shared.read(hits, (count) => count)
 - **`Atomic<T>`** (`std/atomic`) holds a `bool` or an integer type up to 64 bits (E1411 for any other `T`). It offers `Atomic.create`, `Atomic.load`, `Atomic.store`, `Atomic.exchange`, `Atomic.add` (integers only, E1412 on `Atomic<bool>`; it returns the old value and wraps like `+`) and `Atomic.compareExchange(atomic, expected, replacement)`, which returns `true` when it stored. Every operation is sequentially consistent.
 - `==`, `!=` and map keys on a `Shared` or an `Atomic` are a compile error (E1195), as on a `Cell`; compare the values instead.
 - **Identity types can form cycles** (D80, section 6 "Cycles"). A `Shared` whose value holds a handle to the same `Shared`, directly or through other identity objects, is never freed. `Async<T>` (Async functions below) and `Cell<T>` follow the same rule. The debug leak check reports the cycle; clear the slot before dropping the last outside handle, or use `std/arena`.
-- **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narra audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
+- **Deadlocks are possible** when callbacks nest locks in different orders. Nothing reports nested `Shared.update` calls yet; `narrac audit` lists only `unsafe` blocks and `@trusted` functions (section 9).
 - **A callback that reaches its own `Shared` stops the program** (D111). A call of `Shared.get`, `set`, `update` or `read` on a `Shared` whose lock its own thread holds, as in `Shared.read(cell, (v) => v + Shared.get(cell))`, ends the program with exit code 101 and a message that names the call, as a panic does, instead of waiting forever.
 
 ### Async functions
@@ -1778,7 +1778,7 @@ export enum Color {
 
 - **Callbacks from C.** A function marked `@export(C, "name")` gets a C-compatible symbol. Its parameters and result must be `@repr(C)` types, numbers or `Ptr<T>`.
 - **C strings.** `std/cstring` provides `CString`, a string with no zero byte, written with `import * as CStrings from "std/cstring"` and `import { CString } from "std/cstring"`. `CStrings.from(text): Option<CString>` is `None` when the text holds a zero byte. `CStrings.pointer(value): Ptr<u8>` is the address of its zero-terminated bytes for a C function that takes `const char*`; it is valid while the CString is alive and must not be written through. `CStrings.toString(value): string` gives the text back, and `CStrings.read(pointer): Result<string, string>` (`uses alloc, unsafe`) copies a zero-terminated string a C function returned, with `Err` for invalid UTF-8.
-- `narra audit [path]` lists every `unsafe` block and `@trusted` function in a package, one line each, sorted by file, line and column: `src/x.nra:12:3: unsafe block in function name` and `src/x.nra:4:1: @trusted function name`. A block in a test reads `in test name`, and a trait or implement block member is named with its trait or implementation: `@trusted function measure in implement Measure for Cells`, `unsafe block in function measure in trait Measure`. It reads the source only and exits 0; a package that does not load is an error.
+- `narrac audit [path]` lists every `unsafe` block and `@trusted` function in a package, one line each, sorted by file, line and column: `src/x.nra:12:3: unsafe block in function name` and `src/x.nra:4:1: @trusted function name`. A block in a test reads `in test name`, and a trait or implement block member is named with its trait or implementation: `@trusted function measure in implement Measure for Cells`, `unsafe block in function measure in trait Measure`. It reads the source only and exits 0; a package that does not load is an error.
 
 ## 10. Top-level declarations
 
@@ -1854,7 +1854,7 @@ export function configDir(): string uses io, alloc {
 - **`Build.os`, `Build.arch` and `Build.debug`** are compile-time constants. `std/build` also exports their types, the enums `Os` (`MacOS`, `Linux`, `Windows`, `Wasi`) and `Arch` (`Arm64`, `X86_64`, `Wasm32`). `Build.debug` is `false` in a `-release` build and `true` otherwise.
 - **The host is the target.** The compiler takes `Build.os` and `Build.arch` from the target the C compiler built the compiler itself for (its `Build.hostTarget()`), and only when the package imports `std/build`. A compiler can run on `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64`, `Linux-X86_64-musl`, `Linux-Arm64-musl` and `Windows-X86_64`; `Wasi-Wasm32` is a target only. The environment variable `NARRA_HOST_TARGET`, when set, names the target as `<os>-<arch>` in place of the host; it is the only input besides the host that sets the target. A host, or a `NARRA_HOST_TARGET`, with no supported target is a compile error at the module's import of `std/build`.
 - **`Build.hostTarget()`** returns `Option<Target>`, where `Target` is a struct of `os: Os` and `arch: Arch`: the target the C compiler builds the program for, read from its predefined macros (`__APPLE__`, `__linux__`, `__aarch64__`, `__x86_64__`) when the program runs. It is `None` for any other combination. It does not run `uname`.
-- **`narra emit` writes the C of a debug build.** The C of a release build comes from `narra build -release -emit-c file.c`.
+- **`narrac emit` writes the C of a debug build.** The C of a release build comes from `narrac build -release -emit-c file.c`.
 - **An `if` that tests only these constants is resolved at compile time.** The output contains no runtime check, only the matching branch, or nothing when no branch matches. The condition may combine the constants with `==`, `!=`, `is` (a variant without fields), `!`, `&&` and `||`, and each `else if` of a chain is resolved on its own. A condition that mixes the constants with any other value, or a `match` on them, is an ordinary runtime test.
 - **Every branch is type-checked on every build.** A Windows branch is checked when building for Linux, so branches for other platforms cannot break unnoticed. The effects of every branch count toward the function's effects, the dropped ones included, so a function has the same signature on every target.
 - **`@target(os = Os.MacOS)`** on its own line before a top-level function makes the function exist only on that target. It takes `os =` a variant of `Os`, `arch =` a variant of `Arch`, or both (`@target(os = Os.Linux, arch = Arch.Arm64)`), each once; a part it does not name matches every value. The enum is written the way the module imports it: `Os.MacOS` after `import { Os } from "std/build"`, `Build.Os.MacOS` through `import * as Build`. Narra functions and `extern { } from` blocks take `@target`; other declarations do not.
@@ -1889,10 +1889,10 @@ export function opener(): string {
 
   So a use is accepted on every target exactly when it sits inside a branch whose build condition holds only on targets where the function exists (`macOpener()` inside `if (Build.os == Os.MacOS)`), or inside a `@target` function with the same or a narrower target. An ordinary `if`, a `match` on `Build.os`, an early `return` and a condition on `Build.debug` alone guarantee nothing.
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
-- **`narra check` checks a debug build for the host; `narra check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
+- **`narrac check` checks a debug build for the host; `narrac check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
 - **The targets are one table of eight rows,** named `<Os>-<Arch>` or, for a Linux row that links musl, `<Os>-<Arch>-musl`: `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64`, `Linux-X86_64-musl`, `Linux-Arm64-musl`, `Windows-X86_64` and `Wasi-Wasm32`. `Os` has the variants `MacOS`, `Linux`, `Windows` and `Wasi`; `Arch` has `Arm64`, `X86_64` and `Wasm32`. `Build.os` and `Build.arch` do not tell musl from glibc.
-- **`Wasi-Wasm32` runs under a WASI preview 1 host such as `wasmtime run -W exceptions=y`.** The build passes `-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false` and links `-lsetjmp`, because the panic handler uses `setjmp`; the runtime defines the `__c_longjmp` exception tag that the wasm `setjmp` lowering needs. Programs read their arguments from `args_get` and write `/dev/stdout` and `/dev/stderr` to descriptors 1 and 2. The std items WASI cannot back are E0991 on this target, like a `@target` function that does not exist there: `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/async/net`, and `Terminal.columns`. A use inside an `if` that drops `Os.Wasi` (`if (Build.os != Os.Wasi)`) is accepted. Their signatures are the same on every target. The async loop on this target has timers and no descriptor waits: a turn with nothing ready sleeps until the nearest timer. `narra test --target Wasi-Wasm32` is not supported: `test` rejects `--target` on every row.
-- **`narra build --target <name>` and `narra check --target <name>` use another target's row** for the build conditions. `build` also passes `-target <triple>` to the C compiler, before its other flags, when the row is not the host's (the triple is the `zig cc -target` form, for example `x86_64-linux-musl`), so `CC` must be a cross compiler such as `zig cc`. An unknown name is E1600 and lists the names; `-sanitize` with a target other than the host is E1601. `narra targets` prints one line per row: the name and the triple.
+- **`Wasi-Wasm32` runs under a WASI preview 1 host such as `wasmtime run -W exceptions=y`.** The build passes `-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false` and links `-lsetjmp`, because the panic handler uses `setjmp`; the runtime defines the `__c_longjmp` exception tag that the wasm `setjmp` lowering needs. Programs read their arguments from `args_get` and write `/dev/stdout` and `/dev/stderr` to descriptors 1 and 2. The std items WASI cannot back are E0991 on this target, like a `@target` function that does not exist there: `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/async/net`, and `Terminal.columns`. A use inside an `if` that drops `Os.Wasi` (`if (Build.os != Os.Wasi)`) is accepted. Their signatures are the same on every target. The async loop on this target has timers and no descriptor waits: a turn with nothing ready sleeps until the nearest timer. `narrac test --target Wasi-Wasm32` is not supported: `test` rejects `--target` on every row.
+- **`narrac build --target <name>` and `narrac check --target <name>` use another target's row** for the build conditions. `build` also passes `-target <triple>` to the C compiler, before its other flags, when the row is not the host's (the triple is the `zig cc -target` form, for example `x86_64-linux-musl`), so `CC` must be a cross compiler such as `zig cc`. An unknown name is E1600 and lists the names; `-sanitize` with a target other than the host is E1601. `narrac targets` prints one line per row: the name and the triple.
 - **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
 ```narra
@@ -1908,19 +1908,19 @@ extern {
 
 ## 13. Tests and contracts
 
-- **`test "name" { ... }`** blocks sit next to the code. `narra test` runs them. They are removed from non-test builds.
+- **`test "name" { ... }`** blocks sit next to the code. `narrac test` runs them. They are removed from non-test builds.
 - **`std/test`** has assertions for test blocks. Its functions can be called only inside a `test` block, arrow functions inside it included; a call anywhere else is a compile error. The import itself may stay in a file that is also built as a program, because test blocks are not part of that build.
   - `Test.eq<T: Equatable & Show>(actual: T, expected: T)` panics with `expected <expected>, got <actual>` when the values differ. `Test.ne(actual, other)` panics with `expected a value other than <other>` when they are equal. Both values are written with `Show`, and the panic names the call's `file:line:col`.
   - `Test.panics(f: () => void)` calls `f` and panics unless `f` panics. `Test.panicsWith(f, message: string)` also needs the panic message to contain `message`.
   - `Test.golden(name: string, actual: string)` compares `actual` with the file `<name>.golden` in the package's `testdata/` directory (for a single file, in the file's own directory). It fails with `golden <name> differs at line N: expected "<line>", got "<line>"`, or when the file is missing. With the environment variable `NARRA_UPDATE_GOLDEN=1` it writes the file instead and passes. `name` may contain `/` but no path segment equal to `..`, and it is not empty. The missing-file message names `<name>.golden`, not the directory. When the test binary runs alone, the directory is `testdata/` relative to the working directory, unless `--golden-dir <dir>` is given. It declares `io`; test blocks may use any effect without declaring it.
   - A failed assertion is a panic that fails its test only.
-- **`narra test`** runs each test in its own process, in source order, and goes on after a failure. It prints one line per test to standard output: `ok - <name>`, or `FAIL - <name>: <message> (<file>:<line>:<col>)`. Output a test prints appears before its line. The last line is `N passed, M failed`. The exit code is 1 when a test failed, otherwise 0. A test that crashes or leaks memory in a debug build fails with the signal or exit code.
-  - `narra test -filter <text> file` runs only the tests whose name contains `<text>`.
-  - `narra test -time file` appends ` (N ms)` to each test line. Without it no timing is printed.
+- **`narrac test`** runs each test in its own process, in source order, and goes on after a failure. It prints one line per test to standard output: `ok - <name>`, or `FAIL - <name>: <message> (<file>:<line>:<col>)`. Output a test prints appears before its line. The last line is `N passed, M failed`. The exit code is 1 when a test failed, otherwise 0. A test that crashes or leaks memory in a debug build fails with the signal or exit code.
+  - `narrac test -filter <text> file` runs only the tests whose name contains `<text>`.
+  - `narrac test -time file` appends ` (N ms)` to each test line. Without it no timing is printed.
   - A filter that matches no test prints `no tests match "<text>"` and exits 1. A file with no tests at all prints `0 passed, 0 failed` and exits 0.
   - Every test has a time limit: 10 seconds, or `NARRA_TEST_TIMEOUT` (a positive number of seconds). A test that runs past it fails with `FAIL - <name>: timed out after N s` and the run goes on. A `Test.panics` closure gets the same limit, or the time left on the test's limit minus one second (at least one second), whichever is smaller, so its own timeout message comes first.
   - With `NARRA_CHECK_LEAKS` set (debug builds of the project's own tests), a test that leaks fails with `leaked N allocations`.
-  - The test binary reads `--filter <text>`, `--time` and `--golden-dir <dir>` (one or two dashes) from its own arguments, so it can be run directly. `narra test` passes the golden directory itself, so the generated C holds no path. Other arguments are an error (exit 2), and so is an option without its value. Flags may also follow the file name.
+  - The test binary reads `--filter <text>`, `--time` and `--golden-dir <dir>` (one or two dashes) from its own arguments, so it can be run directly. `narrac test` passes the golden directory itself, so the generated C holds no path. Other arguments are an error (exit 2), and so is an option without its value. Flags may also follow the file name.
   - `f` runs in a child process, so nothing it changes or allocates reaches the test. Output it prints appears in order. `Test.panics` and `Test.panicsWith` therefore need a POSIX system (`fork`). A closure that runs past the timeout (10 seconds, or `NARRA_TEST_TIMEOUT`) fails.
 
 <!-- context
@@ -2005,7 +2005,7 @@ function firstSlot(items: Array<int>): int {
 
 ### Diagnostics
 
-`narra check --json` prints one JSON object per diagnostic:
+`narrac check --json` prints one JSON object per diagnostic:
 
 ```json
 {
@@ -2020,7 +2020,7 @@ function firstSlot(items: Array<int>): int {
 }
 ```
 
-- Error codes are stable. `narra explain E0412` prints the rule and an example fix.
+- Error codes are stable. `narrac explain E0412` prints the rule and an example fix.
 - Fixes are exact edits that an agent can apply without rewriting them.
 - **TypeScript habits get a fix.** Each row of "Differences from TypeScript" (section 2) has a diagnostic, except the row on value copies (`const b = a`), which compiles. Its fix rewrites the TypeScript form into the Narra form. For example, `===` is rewritten to `==`, and `xs.push(v)` to `Arrays.push(mutable xs, v)`.
 
@@ -2028,19 +2028,19 @@ function firstSlot(items: Array<int>): int {
 
 | Command | Output |
 | --- | --- |
-| `narra query type-of FILE:LINE:COL` | The type and effects at a position |
-| `narra query def NAME` | Where a name is defined |
-| `narra query refs NAME` | Every use of an exported name |
-| `narra query callers FUNCTION` | Every function that calls it |
-| `narra query interface MODULE` | The module's exported signatures |
-| `narra query recursion MODULE` | The module's recursive functions |
-| `narra query hovers FILE` | The hover text of every name in a file, and its diagnostics |
+| `narrac query type-of FILE:LINE:COL` | The type and effects at a position |
+| `narrac query def NAME` | Where a name is defined |
+| `narrac query refs NAME` | Every use of an exported name |
+| `narrac query callers FUNCTION` | Every function that calls it |
+| `narrac query interface MODULE` | The module's exported signatures |
+| `narrac query recursion MODULE` | The module's recursive functions |
+| `narrac query hovers FILE` | The hover text of every name in a file, and its diagnostics |
 
 All query commands accept `--json`.
 
 ### Language server
 
-`narra lsp` is a Language Server Protocol server on stdin and stdout. It works with any LSP client.
+`narrac lsp` is a Language Server Protocol server on stdin and stdout. It works with any LSP client.
 
 - Messages use the LSP framing: a `Content-Length` header, other headers ignored, then the JSON body.
 - Lifecycle: `initialize`, `initialized`, `shutdown` and `exit`. `exit` ends the server with code 0 after `shutdown` and 1 before it. The end of the input without `exit` also ends it with code 1.
@@ -2052,9 +2052,9 @@ All query commands accept `--json`.
 
 ### Speed target
 
-`narra check` on an unchanged package with one edited file returns in under 100 ms.
+`narrac check` on an unchanged package with one edited file returns in under 100 ms.
 
-## 15. Packages (sketch)
+## 15. Packages
 
 - **A package is a directory** with a `narra.toml` manifest and a `src/` directory.
 - **The package name is the import path prefix.** Package `json` exposes `src/parse.nra` as `"json/parse"`.
@@ -2077,13 +2077,13 @@ search = ["/opt/homebrew/lib"]
 
 ```
 
-- **`narra build --target <name>` builds for another target** (section 12). `narra targets` lists the names and their C compiler triples.
+- **`narrac build --target <name>` builds for another target** (section 12). `narrac targets` lists the names and their C compiler triples.
 - **Entry points are set in `narra.toml`.** Each `[[binary]]` names the binary and its entry function as `"module.function"`. A package with no `[[binary]]` is a library.
 - **The entry function** has the signature `export function run(args: Array<string>): int`, or `export async function run(args: Array<string>): int`. The result is the process exit code; for an async entry, the value of its `Async<int>`. It has every effect. Tasks still running when it finishes are cancelled (section 8).
 - **`[link]`** has one key, `search`: directories `cc` searches for libraries (`-L`), relative to the package directory unless absolute. The libraries come from the `from` of extern blocks (section 9); any other key in `[link]` is E1000.
 - **Version selection is minimal version selection,** as in Go. Each dependency resolves to the highest version that some package in the graph requires as its minimum. The result is the same on every machine and needs no solver.
 - **One version per package** in a build. A major version change is a new package name, such as `json2`.
-- **`narra.lock`** records the commit hash and content hash of every dependency. `narra build` fails when a fetched dependency does not match its hash.
+- **`narra.lock`** records the commit hash and content hash of every dependency. `narrac build` fails when a fetched dependency does not match its hash.
 - **`[dependencies]`** holds one inline table per dependency: `name = { git = "...", version = "1.2.0" }`. `git` is a URL or a local path; `version` is the minimum version as `MAJOR.MINOR.PATCH`, and its tag is `v` plus the version. `[package] version` has the same form. The name is the import path prefix and follows the rules of a package name.
 - **`narra.lock` shape.** A TOML file with a comment line, then one `[[package]]` table per dependency, sorted by name, with the keys `name`, `git`, `version` (the selected version), `tag` (the git tag the version was fetched from: `v<version>`, or `<name>/v<version>` in a repository that tags by package), `commit` (the full commit hash of the tag) and `content` (the git tree hash of that commit), in that order. The reader checks that `name` is a package name, `git` is not empty, `version` is `MAJOR.MINOR.PATCH` with each part in the range of `int`, `tag` is one of the two tags of the version, and `commit` and `content` are 40 or 64 lowercase hex digits. A value may hold the escapes `\n`, `\t`, `\r`, `\"`, `\\` and `\uXXXX`, and the writer escapes every control character. The tag is what lets a build use the cached checkout of exactly that tag again: a checkout of another tag of the same repository is never taken for it, and the `narra.toml` of a checkout must name the package that asked for it (E0453).
 - **Manifest and lock errors:** E0430 a dependency without `git` or `version`; E0431 a version that is not `MAJOR.MINOR.PATCH`; E0432 an unknown or repeated key in a dependency; E0433 a dependency named `std` or like the package; E0434 two dependencies with one name; E0435 a dependency that is not a valid inline table, such as one with a trailing comma; E0436 an invalid dependency name; E0437 a malformed `narra.lock` line or a value that is not well formed; E0438 a lock entry with an unknown, missing or repeated key, or a tag that is not the tag of its version; E0439 two lock entries with one name.

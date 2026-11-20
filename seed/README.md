@@ -12,7 +12,28 @@ Run `sh selfhost/bootstrap.sh`. It does three things:
 2. The first compiler compiles the source in `selfhost/`. This gives a second compiler.
 3. The second compiler compiles `selfhost/` again. The C from step 2 and from step 3 must be the same. If they differ, the script fails.
 
+The stages are:
+
+- **Stage 0.** The C compiler builds `seed/narrac.c`.
+- **Stage 1.** That compiler turns the Narra source of the compiler, in `selfhost/`, into C, and the C compiler builds it.
+- **Stage 2.** The new compiler turns the same source into C again.
+
+The script prints a line that starts with `ok:` when stage 1 and stage 2 emit identical C. Two compilers, built in different ways, turned the same source into the same C. So the new compiler compiles itself the way the old one did. If the two outputs differ, the script runs one more stage and compares again. It fails only if that comparison also differs. `seed is current` means `seed/narrac.c` matches the source. When the source is newer, the script prints a note instead. The note is not an error, and the build still works.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The build finished and the check passed. |
+| 1 | The check failed: the two compilers turned the source into different C. |
+| 2 | Wrong usage, such as more than one folder name. |
+| other | A step failed, for example `127` when the C compiler is not found. The line above the error names the step. |
+
 Set `CC` to pick another C compiler. CC must name a single program: it is not split into words, so `CC="ccache cc"` does not work. Use a wrapper script instead.
+
+## Testing on Linux
+
+`sh scripts/linux-check.sh` runs the repository's tests on Linux in a container. It needs Docker. `sh scripts/test.sh` runs them on the host.
 
 ## The seed rule
 

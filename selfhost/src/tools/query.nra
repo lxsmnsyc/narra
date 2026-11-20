@@ -404,12 +404,6 @@ function collectHovers(
 ): Array<Hover> uses alloc {
   let hovers: Array<Hover> = []
   let slots: Map<string, int> = Map {}
-  let tokenIndexes: Map<string, int> = Map {}
-  let tokenIndex = 0
-  for (const token of Arrays.values(view.tokens)) {
-    tokenIndexes[`${Int.toString(token.line)}:${Int.toString(token.column)}`] = tokenIndex
-    tokenIndex++
-  }
   for (const site of Arrays.values(view.sites)) {
     // Only named places on one line; a later site at the same place is the innermost.
     if (site.name == "" || site.kind == SiteKind.LabelSite || site.start.line != site.end.line) {
@@ -427,24 +421,14 @@ function collectHovers(
         length,
         describeVariant(checker, enumIndex, variantIndex),
       )
-      const key = `${Int.toString(site.start.line)}:${Int.toString(site.start.column)}`
-      if (tokenIndexes[key] is Some(index)) {
-        let dotText = ""
-        let before = view.tokens[0]
-        if (index >= 2) {
-          dotText = view.tokens[index - 1].text
-          before = view.tokens[index - 2]
-        }
-        if (dotText == "." && before.kind == TokenKind.TokIdent) {
-          const start = Pos { line: before.line, column: before.column }
-          putHover(
-            mutable hovers,
-            mutable slots,
-            start,
-            Str.charCount(before.text),
-            `enum ${before.text}`,
-          )
-        }
+      for (const qualifier of Arrays.values(findQualifierHovers(checker, view, site, enumIndex))) {
+        putHover(
+          mutable hovers,
+          mutable slots,
+          Pos { line: qualifier.line, column: qualifier.column },
+          qualifier.length,
+          qualifier.text,
+        )
       }
       continue
     }
@@ -585,18 +569,18 @@ function findBuiltinCallee(checker: Checker, view: ModuleView, name: string): st
   return describeBuiltin(checker, "", name)
 }
 
-function collectImportHovers(
-  mutable checker: Checker,
-  mutable effects: EffectState,
+function collectImportNames(
+  checker: Checker,
+  effects: EffectState,
   view: ModuleView,
+  cursor: Option<Pos>,
   mutable hovers: Array<Hover>,
   mutable slots: Map<string, int>,
 ) uses alloc {
-  // The aliases of `import * as Alias`, and each imported name.
-  let aliases: Map<string, string> = Map {}
+  // The aliases of `import * as Alias`, and each imported name with the local name it gets.
+  // With a cursor, only the names on its line are described.
   for (const declaration of Arrays.values(view.module.ast.imports)) {
     if (declaration.alias != "") {
-      aliases[declaration.alias] = declaration.path
       putHover(
         mutable hovers,
         mutable slots,
@@ -606,10 +590,36 @@ function collectImportHovers(
       )
     }
     for (const imported of Arrays.values(declaration.names)) {
+      if (cursor is Some(at)) {
+        if (at.line != imported.pos.line) {
+          continue
+        }
+      }
       const text = describeMember(checker, effects, declaration.path, imported.name)
       putHover(mutable hovers, mutable slots, imported.pos, Str.charCount(imported.name), text)
+      // `name as local`: the local name follows the `as`.
+      const tokenIndex = findTokenIndex(view, imported.pos)
+      if (imported.local != imported.name && tokenIndex >= 0) {
+        if (tokenIndex + 2 < Arrays.length(view.tokens)) {
+          const localToken = view.tokens[tokenIndex + 2]
+          if (localToken.text == imported.local) {
+            const localPos = Pos { line: localToken.line, column: localToken.column }
+            putHover(mutable hovers, mutable slots, localPos, Str.charCount(imported.local), text)
+          }
+        }
+      }
     }
   }
+}
+
+function collectImportHovers(
+  mutable checker: Checker,
+  mutable effects: EffectState,
+  view: ModuleView,
+  mutable hovers: Array<Hover>,
+  mutable slots: Map<string, int>,
+) uses alloc {
+  collectImportNames(checker, effects, view, None, mutable hovers, mutable slots)
   // Each use of an alias, `Alias.member`, shows the module and the member. A member with no
   // text to show loses the hover its call gave. The sites also cover template parts.
   for (const site of Arrays.values(view.sites)) {
@@ -617,9 +627,12 @@ function collectImportHovers(
       continue
     }
     if (
-      site.expression is Some(Expr.FieldExpr(_, memberPos, Expr.Ident(_, aliasPos, alias), member))
+      site.expression is Some(
+        Expr.FieldExpr(_, memberPos, Expr.Ident(identId, aliasPos, alias), member),
+      )
     ) {
-      if (aliases[alias] is Some(path)) {
+      const path = findAliasUsePath(checker, view, identId, alias)
+      if (path != "") {
         putHover(mutable hovers, mutable slots, aliasPos, Str.charCount(alias), `module ${path}`)
         const text = describeMember(checker, effects, path, member)
         putHover(mutable hovers, mutable slots, memberPos, Str.charCount(member), text)
@@ -640,32 +653,253 @@ function collectStructHovers(
       continue
     }
     if (site.expression is Some(Expr.StructLit(_, pos, typeName, _, fields, _))) {
-      const bodyIndex = findNodeBody(checker, view, site.nodeId)
-      if (bodyIndex < 0) {
+      const structIndex = findStructLiteralIndex(checker, view, site)
+      if (structIndex < 0) {
         continue
       }
-      const body = checker.bodies[bodyIndex]
-      const literalType = body.types[findBodySlot(body, site.nodeId)]
-      if (literalType is Some(Type.TStruct(structIndex))) {
-        if (typeName != "") {
-          const text = `struct ${typeString(checker, Type.TStruct(structIndex))}`
-          putHover(mutable hovers, mutable slots, pos, Str.charCount(typeName), text)
+      if (typeName != "") {
+        putHover(
+          mutable hovers,
+          mutable slots,
+          pos,
+          Str.charCount(typeName),
+          describeStructLiteral(checker, structIndex, typeName),
+        )
+      }
+      for (const field of Arrays.values(fields)) {
+        // A shorthand field is also a use of the local of that name, which answers.
+        if (!field.isShorthand) {
+          const text = describeStructField(checker, structIndex, field.name)
+          putHover(mutable hovers, mutable slots, field.pos, Str.charCount(field.name), text)
         }
-        for (const field of Arrays.values(fields)) {
-          // A shorthand field is also a use of the local of that name, which answers.
-          if (field.isShorthand) {
-            continue
+      }
+    }
+  }
+}
+
+function findStructLiteralIndex(checker: Checker, view: ModuleView, site: Site): int {
+  const bodyIndex = findNodeBody(checker, view, site.nodeId)
+  if (bodyIndex < 0) {
+    return -1
+  }
+  const body = checker.bodies[bodyIndex]
+  const literalType = body.types[findBodySlot(body, site.nodeId)]
+  if (literalType is Some(Type.TStruct(structIndex))) {
+    return structIndex
+  }
+  return -1
+}
+
+function describeStructLiteral(
+  checker: Checker,
+  structIndex: int,
+  writtenName: string,
+): string uses alloc {
+  const declaredName = typeString(checker, Type.TStruct(structIndex))
+  if (writtenName != declaredName) {
+    return `struct ${declaredName} as ${writtenName}`
+  }
+  return `struct ${declaredName}`
+}
+
+function describeStructField(checker: Checker, structIndex: int, name: string): string uses alloc {
+  for (const declared of Arrays.values(checker.structs[structIndex].fields)) {
+    if (declared.name == name) {
+      return `${name}: ${typeString(checker, declared.fieldType)}`
+    }
+  }
+  return ""
+}
+
+function findTokenIndex(view: ModuleView, pos: Pos): int {
+  // The tokens are in source order.
+  let low = 0
+  let high = Arrays.length(view.tokens)
+  while (low < high) {
+    const middle = (low + high) / 2
+    const token = view.tokens[middle]
+    if (token.line == pos.line && token.column == pos.column) {
+      return middle
+    }
+    if (token.line < pos.line || (token.line == pos.line && token.column < pos.column)) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return -1
+}
+
+function findModuleAliasPath(view: ModuleView, name: string): string {
+  for (const declaration of Arrays.values(view.module.ast.imports)) {
+    if (declaration.alias == name) {
+      return declaration.path
+    }
+  }
+  return ""
+}
+
+function findAliasUsePath(checker: Checker, view: ModuleView, identId: int, name: string): string {
+  // A local with the alias's name hides the module.
+  const bodyIndex = findNodeBody(checker, view, identId)
+  if (bodyIndex >= 0) {
+    const body = checker.bodies[bodyIndex]
+    if (body.refs[findBodySlot(body, identId)] is Ref.Local(_)) {
+      return ""
+    }
+  }
+  return findModuleAliasPath(view, name)
+}
+
+function findQualifierHovers(
+  checker: Checker,
+  view: ModuleView,
+  site: Site,
+  enumIndex: int,
+): Array<Hover> uses alloc {
+  let found: Array<Hover> = []
+  const index = findTokenIndex(view, site.start)
+  if (index < 2) {
+    return found
+  }
+  const enumToken = view.tokens[index - 2]
+  if (view.tokens[index - 1].text != "." || enumToken.kind != TokenKind.TokIdent) {
+    return found
+  }
+  // The declared name, and the name the source wrote when it differs.
+  const info = checker.enums[enumIndex]
+  let declaredName = info.name
+  if (info.generic >= 0) {
+    declaredName = checker.generics[info.generic].name
+  }
+  let enumText = `enum ${declaredName}`
+  if (enumToken.text != declaredName) {
+    enumText = `${enumText} as ${enumToken.text}`
+  }
+  Arrays.push(mutable found, Hover {
+    line: enumToken.line,
+    column: enumToken.column,
+    length: Str.charCount(enumToken.text),
+    text: enumText,
+  })
+  if (
+    index >= 4 &&
+      view.tokens[index - 3].text == "." &&
+      view.tokens[index - 4].kind == TokenKind.TokIdent
+  ) {
+    const moduleToken = view.tokens[index - 4]
+    const path = findModuleAliasPath(view, moduleToken.text)
+    if (path != "") {
+      Arrays.push(mutable found, Hover {
+        line: moduleToken.line,
+        column: moduleToken.column,
+        length: Str.charCount(moduleToken.text),
+        text: `module ${path}`,
+      })
+    }
+  }
+  return found
+}
+
+function describeModuleUse(
+  checker: Checker,
+  effects: EffectState,
+  view: ModuleView,
+  site: Site,
+): Option<string> uses alloc {
+  if (site.expression is Some(Expr.Ident(identId, _, name))) {
+    if (site.kind == SiteKind.ExpressionSite) {
+      const path = findAliasUsePath(checker, view, identId, name)
+      if (path != "") {
+        return Some(`module ${path}`)
+      }
+    }
+    return None
+  }
+  let target: Option<Expr> = None
+  if (site.expression is Some(Expr.FieldExpr(_, _, fieldTarget, _))) {
+    if (site.kind == SiteKind.ExpressionSite) {
+      target = Some(fieldTarget)
+    }
+  }
+  if (site.expression is Some(Expr.CallExpr(_, _, Expr.FieldExpr(_, _, callTarget, _), _, _))) {
+    if (site.kind == SiteKind.CalleeSite) {
+      target = Some(callTarget)
+    }
+  }
+  // `Alias.member` shows the member's text, nothing when the member has none.
+  if (target is Some(Expr.Ident(identId, _, alias))) {
+    const path = findAliasUsePath(checker, view, identId, alias)
+    if (path != "") {
+      const text = describeMember(checker, effects, path, site.name)
+      if (text != "") {
+        return Some(text)
+      }
+    }
+  }
+  return None
+}
+
+function isHoverAt(hover: Hover, cursor: Pos): bool {
+  return (hover.line == cursor.line &&
+    cursor.column >= hover.column &&
+    cursor.column < hover.column + hover.length)
+}
+
+function findDetachedHover(
+  checker: Checker,
+  effects: EffectState,
+  view: ModuleView,
+  cursor: Pos,
+): Option<Hover> uses alloc {
+  let imports: Array<Hover> = []
+  let importSlots: Map<string, int> = Map {}
+  collectImportNames(checker, effects, view, Some(cursor), mutable imports, mutable importSlots)
+  for (const hover of Arrays.values(imports)) {
+    if (isHoverAt(hover, cursor)) {
+      return Some(hover)
+    }
+  }
+  for (const site of Arrays.values(view.sites)) {
+    // The qualifiers of a variant are written before it, on its line.
+    if (site.name != "" && site.start.line == cursor.line && isBefore(cursor, site.start)) {
+      const ref = findSiteRef(checker, view, site)
+      if (ref is Ref.Constructor(enumIndex, _)) {
+        for (const qualifier of Arrays.values(
+          findQualifierHovers(checker, view, site, enumIndex),
+        )) {
+          if (isHoverAt(qualifier, cursor)) {
+            return Some(qualifier)
           }
-          for (const declared of Arrays.values(checker.structs[structIndex].fields)) {
-            if (declared.name == field.name) {
-              const text = `${field.name}: ${typeString(checker, declared.fieldType)}`
-              putHover(mutable hovers, mutable slots, field.pos, Str.charCount(field.name), text)
+        }
+      }
+    }
+    // The fields of a struct literal.
+    if (site.kind == SiteKind.ExpressionSite) {
+      if (site.expression is Some(Expr.StructLit(_, _, _, _, fields, _))) {
+        for (const field of Arrays.values(fields)) {
+          const fieldHover = Hover {
+            line: field.pos.line,
+            column: field.pos.column,
+            length: Str.charCount(field.name),
+            text: "",
+          }
+          if (!field.isShorthand && isHoverAt(fieldHover, cursor)) {
+            const structIndex = findStructLiteralIndex(checker, view, site)
+            if (structIndex >= 0) {
+              return Some(Hover {
+                line: fieldHover.line,
+                column: fieldHover.column,
+                length: fieldHover.length,
+                text: describeStructField(checker, structIndex, field.name),
+              })
             }
           }
         }
       }
     }
   }
+  return None
 }
 
 function isHoverBefore(left: Hover, right: Hover): bool {
@@ -842,20 +1076,14 @@ export function buildViews(
     if (Str.startsWith(module.path, "std/")) {
       continue
     }
-    const filePath = `${package.directory}/${module.file}`
     let text = ""
     // A file whose path is a key of overrides is read from the map, as Modules.loadWith reads
     // it.
-    if (overrides[filePath] is Some(open)) {
+    if (overrides[module.source] is Some(open)) {
       text = open
     } else {
-      const read = Fs.readText(filePath)
+      const read = Fs.readText(module.source)
       if (read is Err(message)) {
-        // A module of a dependency has a file below the dependency's name, not below this
-        // package, so it has no text here unless overrides holds it.
-        if (!package.single && !Str.startsWith(module.file, "src/")) {
-          continue
-        }
         return Err(message)
       }
       text = read.value
@@ -1111,6 +1339,10 @@ function describeSite(
   if (site.kind == SiteKind.DeclarationSite) {
     return describeDeclaration(checker, effects, view, site)
   }
+  // A module alias, or a member reached through one.
+  if (describeModuleUse(checker, effects, view, site) is Some(moduleText)) {
+    return Some(#[moduleText, []])
+  }
   // Without effectsKnown the effects of expressions are left out.
   const bodyIndex = findNodeBody(checker, view, site.nodeId)
   if (bodyIndex < 0) {
@@ -1120,6 +1352,21 @@ function describeSite(
   const slot = findBodySlot(body, site.nodeId)
   const ref = body.refs[slot]
   const nodeType = body.types[slot]
+  // A variant shows its fields.
+  if (ref is Ref.Constructor(enumIndex, variantIndex)) {
+    if (site.name != "") {
+      return Some(#[describeVariant(checker, enumIndex, variantIndex), []])
+    }
+  }
+  // A struct literal shows its struct at the type name.
+  if (site.expression is Some(Expr.StructLit(_, _, typeName, _, _, _))) {
+    if (site.kind == SiteKind.ExpressionSite && typeName != "") {
+      const structIndex = findStructLiteralIndex(checker, view, site)
+      if (structIndex >= 0) {
+        return Some(#[describeStructLiteral(checker, structIndex, typeName), []])
+      }
+    }
+  }
   match (site.kind) {
     SiteKind.ExpressionSite => {
       if (nodeType is Some(found)) {
@@ -1309,6 +1556,18 @@ export function findTypeAt(
 ): TypeAt from view uses alloc {
   // Without effectsKnown (the effect pass did not run) the effects of expressions are left
   // out.
+  // Names that are no site: imports, struct fields, the qualifiers of a variant.
+  if (findDetachedHover(checker, effects, view, cursor) is Some(hover)) {
+    return TypeAt.Found(TypeAnswer {
+      location: Location {
+        file: view.file,
+        start: Pos { line: hover.line, column: hover.column },
+        end: Pos { line: hover.line, column: hover.column + hover.length },
+      },
+      typeText: hover.text,
+      effects: [],
+    })
+  }
   // Sites are listed outer first: try the last one that covers the cursor.
   for (let index = Arrays.length(view.sites) - 1; index >= 0; index--) {
     const site = view.sites[index]

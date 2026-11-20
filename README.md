@@ -1,14 +1,24 @@
 # Narra
 
-Narra is a draft design for a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C.
+## Install
+
+On macOS and Linux:
+
+```sh
+curl -fsSL https://github.com/lxsmnsyc/narra/releases/latest/download/install.sh | sh
+```
+
+On Windows, other systems and building from source, see [docs/install.md](docs/install.md). The language guide is in `docs/guide/`.
+
+## What Narra is
+
+Narra is a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C.
 
 The name comes from the narra, the national tree of the Philippines, a hardwood known for lasting a long time.
 
-Status: specification draft. The compiler, `narrac`, is written in Narra (`selfhost/`). The checked-in C file `seed/narrac.c` builds it with `cc` alone: `sh selfhost/bootstrap.sh`. `sh scripts/test.sh` runs the test suites. There is no Go compiler.
+Status: a first prerelease is coming. The language is not released yet, so syntax and standard library can still change. The compiler, `narrac`, is written in Narra (`selfhost/`).
 
-To install `narrac` with one command, or to build it from source, follow [docs/install.md](docs/install.md).
-
-To have a coding agent write Narra with `narrac`, add the skill in [skills/narra](skills/narra/SKILL.md) to Claude Code: `/plugin marketplace add lxsmnsyc/narra`, then `/plugin install narra@narra`.
+To have a coding agent write Narra with `narrac`, add the skill in [skills/narra](skills/narra/SKILL.md) to Claude Code: `/plugin marketplace add lxsmnsyc/narra`, then `/plugin install narra@narra`. In a trial of 10 tasks, an agent passed 19 of 20 runs with the skill and 15 of 20 without. See the [results](skills/narra/evals/results.md).
 
 ## Goals
 
@@ -25,6 +35,14 @@ To have a coding agent write Narra with `narrac`, add the skill in [skills/narra
 - `DECISIONS.md` lists the design decisions, with the alternatives that were rejected and why.
 - `selfhost/` holds the compiler, `seed/` the C seed that builds it, `testdata/` the test samples and `std/src/` the standard modules written in Narra.
 - `compiler/README.md` lists what the compiler supports.
+
+## Working on the compiler
+
+The checked-in C file `seed/narrac.c` builds the compiler with `cc` alone: `sh selfhost/bootstrap.sh`. `sh scripts/test.sh` runs the test suites. [seed/README.md](seed/README.md) explains the seed. There is no Go compiler.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ## Prior art
 

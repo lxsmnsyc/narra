@@ -357,7 +357,7 @@ The caller decides when to style. `Terminal.useColor(Stream.Stderr)` answers for
 
 ## Patterns: `std/regex`
 
-`std/regex` finds text that matches a pattern. The syntax is JavaScript's, without back references (`\1`) and lookaround (`(?=...)`): those can take exponential time, and this engine runs in time linear in the text. Flags go inside the pattern: `(?i)` ignores the case of ASCII letters, `(?m)` makes `^` and `$` match at each line, and `(?s)` lets `.` match a line break.
+`std/regex` finds text that matches a pattern. The syntax is the common one of `\d`, `[a-z]`, `(...)`, `*`, `+` and `?`, without back references (`\1`) and lookaround (`(?=...)`): those can take exponential time, and this engine runs in time linear in the text. Flags go inside the pattern: `(?i)` ignores the case of ASCII letters, `(?m)` makes `^` and `$` match at each line, and `(?s)` lets `.` match a line break.
 
 `Regexes.compile` returns the compiled pattern or a `RegexError` with the byte offset of the mistake, and `Regexes.formatError` writes it as `<position>: <reason>`. `find` returns the first `Match`, `findAll` is a generator over every match, and `group` and `namedGroup` read the groups. Offsets are byte offsets, as `Str.indexOf` returns them:
 
@@ -429,7 +429,7 @@ true
 6
 ```
 
-Each cluster from `Unicode.graphemes` is a slice of the text, so the loop copies nothing. `toUpperCase` and `toLowerCase` use the full mappings, where one letter can become two (`ß` is `SS`), and a capital sigma at the end of a word lowers to `ς`. They take no locale, like `toUpperCase()` in JavaScript. To compare two texts without case, compare their `foldCase` results.
+Each cluster from `Unicode.graphemes` is a slice of the text, so the loop copies nothing. `toUpperCase` and `toLowerCase` use the full mappings, where one letter can become two (`ß` is `SS`), and a capital sigma at the end of a word lowers to `ς`. They take no locale: the result does not depend on the language of the user. To compare two texts without case, compare their `foldCase` results.
 
 `displayWidth` counts the columns a terminal gives the text: wide and fullwidth characters, such as Chinese, Japanese and Korean, and emoji take 2, combining marks and zero width characters take none, and the rest take 1. It works per cluster, so a flag or a family emoji is 2 columns. A tool can pad a table column with it where `Str.length` would count bytes. It counts the bytes of escape codes too, so pass styled text through `Terminal.stripStyles` first: `Unicode.displayWidth(Terminal.stripStyles(text))`.
 

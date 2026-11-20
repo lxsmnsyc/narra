@@ -6,7 +6,7 @@ A test compiles and runs every program in the guide. Each one works with the com
 
 ## Chapters
 
-1. [Getting started](01-getting-started.md): build the compiler, run a first program, read an error, split a program into a package.
+1. [Getting started](01-getting-started.md): install the compiler, run a first program, read an error, split a program into a package.
 2. [Values and types](02-values-and-types.md): `const` and `let`, numbers, strings and templates, `bool` and `if`, arrays, maps, tuples.
 3. [Functions and closures](03-functions-and-closures.md): functions, recursion, functions as values, arrow functions, generics, closures and `escaping`.
 4. [Structs and enums](04-structs-and-enums.md): structs, copies and spread updates, enums and `match`, recursive data and `Box`, distinct and opaque types.
@@ -50,7 +50,6 @@ Save a sample to a file and run it with `narrac run file.nra` to try your own ch
 
 The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
-- Workspaces of several packages.
 - Functions that C programs can call, and `@layout` for structs shared with C.
 
 Some features are built but not taught in the guide yet:

@@ -31,6 +31,9 @@ depends_on:
   - on: curl-installer
     kind: hard
     why: the release must carry the installers
+  - on: batch-20
+    kind: hard
+    why: pre-release fixes and the docs review land before the tag (maintainer, 2026-11-19)
 ---
 # First release tag
 

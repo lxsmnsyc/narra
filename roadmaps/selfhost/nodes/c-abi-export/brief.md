@@ -2,7 +2,7 @@
 id: c-abi-export
 title: "Shared and static library output with a C header"
 status: todo
-priority: could
+priority: later
 type: feature
 story:
 early: false

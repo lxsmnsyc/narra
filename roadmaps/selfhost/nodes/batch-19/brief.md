@@ -1,7 +1,7 @@
 ---
 id: batch-19
 title: "Batch 19: workspaces"
-status: active
+status: done
 priority: could
 type: story
 story: 

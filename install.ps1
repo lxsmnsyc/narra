@@ -138,4 +138,4 @@ if ($env:NARRA_NO_PATH -ne '1') {
     Write-Host "install: added $installDir to your PATH"
   }
 }
-Write-Host 'install: open a new terminal, then run: narrac targets'
+Write-Host 'install: open a new terminal, then run: narrac --version'

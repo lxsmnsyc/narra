@@ -14,6 +14,9 @@
 # --dry-run changes nothing: this script never uploads. The release workflow uploads.
 # The archive holds narra-<version>-<name>/narrac (narrac.exe on Windows). The std library
 # is built into narrac, so the archive has no std/ folder.
+# narrac --version prints <version>: the script builds the release binary from a copy of
+# selfhost/ whose selfhost/src/driver/version.nra holds the version. The seed and bootstrap
+# builds keep dev.
 # <name> is <os>-<arch> or <os>-<arch>-musl, in lower case: macos-arm64, macos-x86_64,
 # linux-x86_64, linux-arm64, linux-x86_64-musl, linux-arm64-musl, windows-x86_64.
 # NARRA_DIST picks the output folder (default: dist/ in the repository).
@@ -43,6 +46,15 @@ check_archive() {
   mkdir -p "$check_dir/unpack" "$check_dir/sample"
   tar -C "$check_dir/unpack" -xzf "$archive_path"
   check_binary=$(ls "$check_dir"/unpack/*/narrac)
+  # NARRA_EXPECT_VERSION, when set, is the version the binary must print.
+  if [ -n "${NARRA_EXPECT_VERSION:-}" ]; then
+    # shellcheck disable=SC2086
+    got_version=$(${NARRA_RUN_PREFIX:-} "$check_binary" --version)
+    if [ "$got_version" != "$NARRA_EXPECT_VERSION" ]; then
+      echo "release-build: narrac --version printed $got_version, want $NARRA_EXPECT_VERSION" >&2
+      exit 1
+    fi
+  fi
   # The archive holds the compiler alone: the std library is built into it.
   check_content=$(ls "$check_dir"/unpack/*)
   if [ "$check_content" != narrac ]; then
@@ -165,14 +177,30 @@ case "$target" in
   Linux-X86_64 | Linux-Arm64) zig_row=yes ;;
 esac
 
+# A copy of selfhost/ with the version stamped in, so the release binary reports it.
+stamped=$work/stamped
+mkdir -p "$stamped"
+cp -R "$root/selfhost/." "$stamped/"
+sed "s/^export const VERSION = \"dev\"\$/export const VERSION = \"$version\"/" "$root/selfhost/src/driver/version.nra" > "$stamped/src/driver/version.nra"
+if cmp -s "$root/selfhost/src/driver/version.nra" "$stamped/src/driver/version.nra"; then
+  echo "release-build: selfhost/src/driver/version.nra has no VERSION line to stamp" >&2
+  exit 1
+fi
+
 if [ "$target" = "$host_row" ]; then
-  built=$work/compiler/narrac
   if [ "${NARRA_RELEASE_SKIP_TESTS:-}" = 1 ]; then
     echo "release-build: NARRA_RELEASE_SKIP_TESTS=1, skipping sh scripts/test.sh"
   else
     echo "release-build: run the test suites"
     NARRAC="$work/compiler/narrac" sh "$root/scripts/test.sh"
   fi
+fi
+if [ "$target" = "$host_row" ] && [ "$zig_row" = no ]; then
+  # The compiler of the fixed point check builds the stamped copy with the native cc.
+  echo "release-build: build the release binary for $target"
+  built=$work/release/$binary_name
+  mkdir -p "$work/release"
+  "$work/compiler/narrac" build -release -o "$built" "$stamped"
 fi
 if [ "$target" != "$host_row" ] || [ "$zig_row" = yes ]; then
   # A cross build: the compiler of this machine builds selfhost for the row with zig cc.
@@ -202,7 +230,7 @@ WRAPPER
   chmod +x "$work/zigcc"
   built=$work/cross/$binary_name
   mkdir -p "$work/cross"
-  CC="$work/zigcc" "$work/compiler/narrac" build -release --target "$target" -o "$built" "$root/selfhost"
+  CC="$work/zigcc" "$work/compiler/narrac" build -release --target "$target" -o "$built" "$stamped"
 fi
 
 # Pack the binary. COPYFILE_DISABLE stops macOS tar from adding
@@ -243,7 +271,7 @@ elif [ "$extension" = zip ]; then
   echo "release-build: a zip archive is run on Windows by the release workflow"
 else
   echo "release-build: check the archive"
-  NARRA_RUN_PREFIX=$run_prefix sh "$0" --check-archive "$dist/$archive"
+  NARRA_EXPECT_VERSION=$version NARRA_RUN_PREFIX=$run_prefix sh "$0" --check-archive "$dist/$archive"
 fi
 
 echo "release-build: ok"

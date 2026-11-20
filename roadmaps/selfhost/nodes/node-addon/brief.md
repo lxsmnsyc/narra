@@ -2,7 +2,7 @@
 id: node-addon
 title: "Node-API glue and the .node output"
 status: todo
-priority: could
+priority: later
 type: feature
 story:
 early: false

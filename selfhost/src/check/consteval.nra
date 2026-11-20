@@ -49,6 +49,8 @@ import * as Str from "std/string"
 import * as Char from "std/char"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
+import * as Json from "std/json"
+import { Value } from "std/shape"
 import * as ParamDefaults from "narrac/check/paramdefaults"
 import { StdOutcome, wrapInteger, callStdFunction, compareScalars } from "narrac/check/conststd"
 
@@ -926,6 +928,63 @@ function parseIntegerText(text: string): int uses alloc {
 }
 
 function parseFloatText(text: string): Option<f64> uses alloc {
+  // Short literals round once in exact arithmetic; the rest go to the C library reader.
+  if (parseShortFloatText(text) is Some(value)) {
+    return Some(value)
+  }
+  return parseLongFloatText(text)
+}
+
+function parseLongFloatText(text: string): Option<f64> uses alloc {
+  // Rewrite the literal as digits and a power of ten, which is a JSON number
+  // that the reader rounds correctly, as C does.
+  const cleaned = Str.replace(text, "_", "")
+  let mantissaText = cleaned
+  let power = 0
+  const markerIndex = findExponentMarker(cleaned)
+  if (markerIndex >= 0) {
+    if (Str.slice(cleaned, 0, markerIndex) is Some(beforeMarker)) {
+      mantissaText = beforeMarker
+    }
+    const written = Str.replace(Str.sliceFrom(cleaned, markerIndex + 1), "+", "")
+    if (Int.parse(written, 10) is Ok(parsedPower)) {
+      power = parsedPower
+    } else {
+      return None
+    }
+  }
+  const pointIndex = Str.indexOf(mantissaText, ".")
+  let fractionDigits = 0
+  if (pointIndex is Some(foundIndex)) {
+    fractionDigits = Str.length(mantissaText) - foundIndex - 1
+  }
+  let digits = Str.replace(mantissaText, ".", "")
+  while (Str.startsWith(digits, "0")) {
+    digits = Str.sliceFrom(digits, 1)
+  }
+  if (Str.length(digits) == 0) {
+    return Some(0.0)
+  }
+  if (Json.parse(`${digits}e${Int.toString(power - fractionDigits)}`) is Ok(Value.Float(value))) {
+    // An overflow reads as infinity, which no literal means.
+    if (value - value == 0.0) {
+      return Some(value)
+    }
+  }
+  return None
+}
+
+function findExponentMarker(text: string): int {
+  for (const index of Ranges.upTo(Str.length(text))) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 101 || byte == 69) {
+      return index
+    }
+  }
+  return -1
+}
+
+function parseShortFloatText(text: string): Option<f64> uses alloc {
   // A decimal literal whose digits fit in 53 bits and whose power of ten is at
   // most 22 is one exact product or quotient, so it rounds once, like C does.
   let mantissa = 0

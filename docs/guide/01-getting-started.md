@@ -1,18 +1,20 @@
 # 1. Getting started
 
-In this chapter you build the compiler, run a first program and fix your first compile error. Then you turn the program into a project with two files.
+In this chapter you install the compiler, run a first program and fix your first compile error. Then you turn the program into a project with two files.
 
-## Build the compiler
+## Install the compiler
 
-Narra programs compile to C, and a C compiler turns that C into an executable. You need a C compiler (`cc`, `clang` or `gcc`) and `git`:
+Narra programs compile to C, and a C compiler turns that C into an executable. Keep a C compiler (`cc`, `clang` or `gcc`) installed. On macOS and Linux, run this in a terminal:
 
 ```sh
-git clone https://github.com/lxsmnsyc/narra
-cd narra
-sh selfhost/bootstrap.sh out
+curl -fsSL https://github.com/lxsmnsyc/narra/releases/latest/download/install.sh | sh
 ```
 
-This leaves the compiler, `narrac`, in `narra/out`. The rest of the guide types `narrac` from any folder, so put it on your `PATH`. The [installation guide](../install.md) shows how, and explains the build output.
+On Windows, and for other systems and building from source, see the [installation guide](../install.md). Open a new terminal, then check that your shell finds the compiler, `narrac`:
+
+```sh
+narrac --version
+```
 
 ## Say hello
 

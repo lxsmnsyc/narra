@@ -2,7 +2,7 @@
 id: c-export-functions
 title: "C-callable Narra functions: @export(C)"
 status: todo
-priority: could
+priority: later
 type: feature
 story:
 early: false

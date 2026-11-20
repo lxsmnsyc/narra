@@ -537,20 +537,20 @@ export function run(args: Array<string>): int uses io, alloc {
   const spent = Time.elapsed(start)
 
   print(`sum: ${Int.toString(total)}`)
-  print(`time measured: ${yesNo(Time.asNanoseconds(spent) >= 0)}`)
   print(`one second is ${Int.toString(Time.asMilliseconds(Time.seconds(1)))} ms`)
 
+  // A later reading of the monotonic clock is never earlier, so the span to it covers the loop.
   const later = Time.now()
-  print(`between is not negative: ${yesNo(Time.asNanoseconds(Time.between(start, later)) >= 0)}`)
+  const covered = Time.asNanoseconds(Time.between(start, later)) >= Time.asNanoseconds(spent)
+  print(`the later span covers the loop: ${yesNo(covered)}`)
   return 0
 }
 ```
 
 ```text
 sum: 500500
-time measured: yes
 one second is 1000 ms
-between is not negative: yes
+the later span covers the loop: yes
 ```
 
 `Time.between(earlier, later)` needs no clock, so it has no `io`. A real program prints the measured time. The sample checks it instead, so that its output stays the same on every run.

@@ -144,7 +144,7 @@ A call through a trait (chapter 7) sees only the trait's signature. So a functio
 
 ## C types
 
-An `extern` function takes and returns numbers, `bool` and pointers (`Ptr<T>`, below), or returns nothing. C uses integers of several sizes, and so does Narra. `i8`, `i16` and `i32` hold whole numbers of 8, 16 and 32 bits, and `int` (also written `i64`) has 64. `u8`, `u16`, `u32` and `u64` hold numbers that are never negative. Each size has a module, such as `std/i32`, with `toString` and conversions. `Int.from(value)` turns a smaller number into an `int`, and `Int.wrap(value)` turns a `u64` into an `int` by keeping its 64 bits.
+An `extern` function takes and returns numbers, `bool` and pointers (`Ptr<T>`, below), or returns nothing. C uses integers of several sizes, and so does Narra. `i8`, `i16` and `i32` hold whole numbers of 8, 16 and 32 bits, and `int` (also written `i64`) has 64. `u8`, `u16`, `u32` and `u64` hold numbers that are never negative. Each size has a module, such as `std/i32` (imported as `I32`) and `std/u8` (`U8`), with `toString` and conversions. `Int.from(value)` turns a smaller number into an `int`, and `Int.wrap(value)` turns a `u64` into an `int` by keeping its 64 bits.
 
 Each Narra type stands for one C type:
 
@@ -175,7 +175,7 @@ export function run(args: Array<string>): int {
 Each function links to the C function of its own name. When that name is taken in your module, or reads badly, give the C name with `@extern` on the line before it:
 
 ```narra
-import * as Int from "std/int"
+import * as I32 from "std/i32"
 
 extern {
   @extern("abs")
@@ -184,7 +184,7 @@ extern {
 
 export function run(args: Array<string>): int {
   unsafe {
-    print(Int.toString(Int.from(absolute(-5))))
+    print(I32.toString(absolute(-5)))
   }
   return 0
 }
@@ -198,17 +198,17 @@ C functions that take a variable number of arguments, such as `printf`, cannot b
 
 ## C strings
 
-A C function that takes text wants a pointer to bytes that end with a zero byte. A Narra string has no zero at its end, and it may hold a zero in the middle, which C would read as the end. `std/cstring` has `CString`, a string that holds no zero byte. The examples import it as `import * as Cstrings from "std/cstring"`:
+A C function that takes text wants a pointer to bytes that end with a zero byte. A Narra string has no zero at its end, and it may hold a zero in the middle, which C would read as the end. `std/cstring` has `CString`, a string that holds no zero byte. The examples import it as `import * as CStrings from "std/cstring"`:
 
-- `Cstrings.from(text)` returns `Some` with a `CString`, or `None` when `text` holds a zero byte.
-- `Cstrings.pointer(value)` is the `Ptr<u8>` to pass for `char*` or `const char*`. It is valid while the `CString` is, and C must not write through it.
-- `Cstrings.toString(value)` gives the text back.
-- `Cstrings.read(pointer)` copies a zero-terminated string that a C function returned into a Narra string. It reads memory through a pointer, so it is unsafe, and it returns `Err` when the bytes are not valid UTF-8.
+- `CStrings.from(text)` returns `Some` with a `CString`, or `None` when `text` holds a zero byte.
+- `CStrings.pointer(value)` is the `Ptr<u8>` to pass for `char*` or `const char*`. It is valid while the `CString` is, and C must not write through it.
+- `CStrings.toString(value)` gives the text back.
+- `CStrings.read(pointer)` copies a zero-terminated string that a C function returned into a Narra string. It reads memory through a pointer, so it is unsafe, and it returns `Err` when the bytes are not valid UTF-8.
 
 The C library's `strtol` reads a number from text in any base, and `strerror` returns the message for an error code:
 
 ```narra
-import * as Cstrings from "std/cstring"
+import * as CStrings from "std/cstring"
 import * as Int from "std/int"
 import * as Ptr from "std/ptr"
 
@@ -219,10 +219,10 @@ extern {
 
 @trusted
 function parseHex(text: string): Option<int> {
-  if (Cstrings.from(text) is Some(input)) {
+  if (CStrings.from(text) is Some(input)) {
     let value = 0
     unsafe {
-      value = strtol(Cstrings.pointer(input), Ptr.null(), 16)
+      value = strtol(CStrings.pointer(input), Ptr.null(), 16)
     }
     return Some(value)
   }
@@ -233,7 +233,7 @@ function parseHex(text: string): Option<int> {
 function describeError(code: i32): string uses alloc {
   let message = ""
   unsafe {
-    if (Cstrings.read(strerror(code)) is Ok(text)) {
+    if (CStrings.read(strerror(code)) is Ok(text)) {
       message = text
     }
   }
@@ -337,7 +337,7 @@ export function run(args: Array<string>): int {
 Memory a C function allocates goes back through the C library's own `free`, declared in an `extern` block like any other function. `Ptr.free` frees only what `Ptr.alloc` returned. Here `strdup` copies a string into memory it allocates. The program writes a new first letter into the copy before reading it back:
 
 ```narra
-import * as Cstrings from "std/cstring"
+import * as CStrings from "std/cstring"
 import * as Ptr from "std/ptr"
 
 extern {
@@ -348,13 +348,13 @@ extern {
 @trusted
 function withJ(text: string): string uses alloc {
   let result = ""
-  if (Cstrings.from(text) is Some(input)) {
+  if (CStrings.from(text) is Some(input)) {
     unsafe {
-      const copied = strdup(Cstrings.pointer(input))
+      const copied = strdup(CStrings.pointer(input))
       if (!Ptr.isNull(copied)) {
         // 74 is the byte of the letter J.
         Ptr.write(copied, 74)
-        if (Cstrings.read(copied) is Ok(changed)) {
+        if (CStrings.read(copied) is Ok(changed)) {
           result = changed
         }
         free(copied)
@@ -374,7 +374,7 @@ export function run(args: Array<string>): int {
 Jello
 ```
 
-The program writes through `copied`, never through `Cstrings.pointer(input)`, because the bytes of a `CString` must not change.
+The program writes through `copied`, never through `CStrings.pointer(input)`, because the bytes of a `CString` must not change.
 
 ## Linking a library
 
@@ -430,7 +430,7 @@ export function run(args: Array<string>): int {
 Some libraries exist on one operating system only. `@target` before an `extern` block declares its functions, and links its library, only when building for that system. Every call must then sit inside a branch that holds only there, as [chapter 19](19-building-for-other-systems.md) explains for `@target` functions:
 
 ```narra
-import * as Int from "std/int"
+import * as U64 from "std/u64"
 import * as Build from "std/build"
 import { Os } from "std/build"
 
@@ -442,7 +442,7 @@ extern {
 export function run(args: Array<string>): int {
   if (Build.os == Os.Windows) {
     unsafe {
-      print(`up for ${Int.toString(Int.wrap(GetTickCount64()))} ms`)
+      print(`up for ${U64.toString(GetTickCount64())} ms`)
     }
   } else {
     print("not Windows, so kernel32 is not linked")

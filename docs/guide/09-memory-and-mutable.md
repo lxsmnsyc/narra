@@ -743,9 +743,7 @@ A count can only reach zero if no value points back at itself. For the values in
 A `Cell` is the exception, because every handle names the same slot. A closure stored in a `Cell` that it also captures forms a loop. The slot holds the closure, and the closure holds the slot. Neither count reaches zero, so the memory is never freed. The compiler accepts the program, and there is no collector to find the loop later:
 
 ```narra fragment
-type Handler = () => int
-
-const handler: Cell<Option<Handler>> = Cells.create(None)
+const handler: Cell<Option<() => int>> = Cells.create(None)
 Cells.set(handler, Some(() => {
   if (Cells.get(handler) is Some(_)) {
     return 1
@@ -769,10 +767,8 @@ import * as Cells from "std/cell"
 import { Cell } from "std/cell"
 import * as Int from "std/int"
 
-type Handler = () => int
-
 export function run(args: Array<string>): int {
-  const handler: Cell<Option<Handler>> = Cells.create(None)
+  const handler: Cell<Option<() => int>> = Cells.create(None)
   Cells.set(handler, Some(() => {
     if (Cells.get(handler) is Some(_)) {
       return 1

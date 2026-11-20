@@ -583,7 +583,31 @@ export function run(args: Array<string>): int {
 1 cake at 900
 ```
 
-Every parameter is passed once, by position or by name. A `mutable` argument (chapter 9) keeps its word after the name: `fill(buffer: mutable slots, value: 7)`. A positional argument after a named one is an error:
+Every parameter is passed once, by position or by name. A `mutable` argument (chapter 9) keeps its word after the name:
+
+```narra
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+
+function fill(mutable buffer: Array<int>, value: int) {
+  for (let index = 0; index < Arrays.length(buffer); index++) {
+    buffer[index] = value
+  }
+}
+
+export function run(args: Array<string>): int {
+  let slots = [0, 0, 0]
+  fill(buffer: mutable slots, value: 7)
+  print(`${Int.toString(slots[0])} ${Int.toString(slots[1])} ${Int.toString(slots[2])}`)
+  return 0
+}
+```
+
+```text
+7 7 7
+```
+
+A positional argument after a named one is an error:
 
 ```narra error
 // error: 9:28: a positional argument cannot follow a named one; name it, or move it before the named arguments

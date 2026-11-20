@@ -31,6 +31,9 @@ depends_on:
   - on: curl-installer
     kind: hard
     why: the release must carry the installers
+  - on: batch-22
+    kind: hard
+    why: one form per std API, clean samples and std gaps before the tag (maintainer, 2026-11-20)
   - on: batch-21
     kind: hard
     why: the docs must teach the crucial concepts before the release (maintainer, 2026-11-20)

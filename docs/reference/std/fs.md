@@ -100,6 +100,8 @@ export function removeDirAll(path: string): Result<bool, string> uses io, alloc
 
 Effects: `io`, `alloc`.
 
+Details: removes a folder and everything in it without following links; Ok(false) when missing; refuses an empty path, a root and a path ending in . or ..; stops at the first entry it cannot remove, names it and leaves the rest; crosses mount points as rm -rf does; WASI holds one descriptor per folder level.
+
 ### removeFile
 
 ```narra fragment

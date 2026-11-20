@@ -95,6 +95,19 @@ export function run(args: Array<string>): int uses io, alloc {
   }
   reportBool("removeDirAll on a link", Fs.removeDirAll(`${base}/fileLink`), base)
   reportBool("removeDirAll on a file", Fs.removeDirAll(moved), base)
+
+  // A trailing slash on a link to a folder still names the link.
+  const target = `${base}/target`
+  const _target = Fs.createDirAll(`${target}/inner`)
+  const _targetFile = Fs.writeText(`${target}/inner/kept.txt`, "kept")
+  const folderLink = Process.run("ln", ["-s", target, `${base}/folderLink`])
+  if (folderLink is Err(message)) {
+    print(`ln failed: ${message}`)
+  }
+  reportBool("removeDirAll on link/", Fs.removeDirAll(`${base}/folderLink/`), base)
+  reportBool("removeDirAll on link//", Fs.removeDirAll(`${base}/folderLink//`), base)
+  print(`link target survives: ${yesNo(Fs.exists(`${target}/inner/kept.txt`))}`)
+  print(`link survives: ${yesNo(Fs.exists(`${base}/folderLink`))}`)
   reportBool("removeDirAll tree", Fs.removeDirAll(`${base}/tree`), base)
   print(`tree exists: ${yesNo(Fs.exists(`${base}/tree`))}`)
   print(`outside survives: ${yesNo(Fs.exists(`${outside}/kept.txt`))}`)
@@ -133,6 +146,22 @@ export function run(args: Array<string>): int uses io, alloc {
     lockedCorrect = !enforced && removed
   }
   print(`removeDirAll in a locked folder reports it: ${yesNo(lockedCorrect)}`)
+
+  // The removal stops at the first entry it cannot remove and names it.
+  const named = `${base}/named`
+  const _namedFolder = Fs.createDirAll(`${named}/sealed`)
+  const _namedFile = Fs.writeText(`${named}/sealed/file.txt`, "x")
+  const _seal = Process.run("chmod", ["555", `${named}/sealed`])
+  const namedResult = Fs.removeDirAll(`${named}/`)
+  const _unseal = Process.run("chmod", ["755", `${named}/sealed`])
+  let namedCorrect = false
+  if (namedResult is Err(message)) {
+    namedCorrect = enforced && message == `${named}/sealed/file.txt: Permission denied`
+  } else if (namedResult is Ok(removed)) {
+    namedCorrect = !enforced && removed
+  }
+  print(`removeDirAll names the entry it stopped at: ${yesNo(namedCorrect)}`)
+  print(`rest stays: ${yesNo(!enforced || Fs.exists(`${named}/sealed/file.txt`))}`)
 
   // A tree deeper than the default descriptor limit of macOS (256).
   let deep = `${base}/deep`

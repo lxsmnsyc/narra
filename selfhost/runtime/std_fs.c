@@ -409,24 +409,72 @@ static bool narra_fs_is_separator(char c) {
   return c == '/' || (NARRA_PATH_WINDOWS && c == '\\');
 }
 
+// Skips the separators at index, then one name, and returns where the name ends.
+static int64_t narra_fs_skip_name(const char* path, int64_t index, int64_t end) {
+  while (index < end && narra_fs_is_separator(path[index])) index++;
+  while (index < end && !narra_fs_is_separator(path[index])) index++;
+  return index;
+}
+
 // Why removing the tree at path is refused, or NULL when it is allowed. An
-// empty path, a root folder (a drive root on Windows) and a path whose last
-// part is "." or ".." would remove more than the caller named.
-static const char* narra_fs_remove_all_refusal(lstr* path) {
-  if (path->len == 0) return "refusing to remove an empty path";
-  int64_t end = path->len;
-  while (end > 0 && narra_fs_is_separator(path->data[end - 1])) end--;
+// empty path, a root and a path whose last part is "." or ".." would remove
+// more than the caller named. A root is "/" on POSIX systems; on Windows it is
+// "\", a drive ("C:", "C:\"), a share ("\\server\share", "\\?\UNC\server\share")
+// or a device ("\\?\C:\", "\\.\C:"), and the path needs a name after it.
+// *kept is the length of the path without trailing separators, and on Windows
+// (outside "\\?\" and "\\.\" paths) without the trailing dots and spaces that
+// Win32 drops from the last part. The removal uses that much of the path, so
+// "link/" names the link and not the folder it points to.
+static const char* narra_fs_remove_all_refusal(const char* path, int64_t length, int64_t* kept) {
+  if (length == 0) return "refusing to remove an empty path";
+  int64_t end = length;
+  while (end > 0 && narra_fs_is_separator(path[end - 1])) end--;
   if (end == 0) return "refusing to remove the root folder";
-  bool has_drive = NARRA_PATH_WINDOWS && end >= 2 && path->data[1] == ':';
-  if (has_drive && end == 2) return "refusing to remove the root of a drive";
-  int64_t start = end;
-  while (start > 0 && !narra_fs_is_separator(path->data[start - 1])) start--;
-  if (has_drive && start == 0) start = 2;
-  int64_t length = end - start;
-  const char* last = path->data + start;
-  if ((length == 1 && last[0] == '.') || (length == 2 && last[0] == '.' && last[1] == '.')) {
-    return "refusing to remove a path that ends in . or ..";
+  int64_t root = 0;
+  bool literal = true;
+  const char* root_refusal = "refusing to remove the root folder";
+  if (NARRA_PATH_WINDOWS) {
+    literal = false;
+    bool two_separators = end >= 2 && narra_fs_is_separator(path[0]) && narra_fs_is_separator(path[1]);
+    if (two_separators && end >= 3 && (path[2] == '?' || path[2] == '.') && (end == 3 || narra_fs_is_separator(path[3]))) {
+      // A device path is not normalized: its first name is the device or
+      // "UNC", which a server and a share follow.
+      literal = true;
+      root_refusal = "refusing to remove the root of a device or share";
+      int64_t device_start = end == 3 ? 3 : 4;
+      while (device_start < end && narra_fs_is_separator(path[device_start])) device_start++;
+      root = narra_fs_skip_name(path, device_start, end);
+      const char* device = path + device_start;
+      bool is_unc = root - device_start == 3 && (device[0] | 0x20) == 'u' && (device[1] | 0x20) == 'n' && (device[2] | 0x20) == 'c';
+      if (is_unc) root = narra_fs_skip_name(path, narra_fs_skip_name(path, root, end), end);
+    } else if (two_separators) {
+      root_refusal = "refusing to remove the root of a share";
+      root = narra_fs_skip_name(path, narra_fs_skip_name(path, 2, end), end);
+    } else if (end >= 2 && path[1] == ':') {
+      root_refusal = "refusing to remove the root of a drive";
+      root = 2;
+    }
   }
+  if (root >= end) return root_refusal;
+  int64_t start = end;
+  while (start > root && !narra_fs_is_separator(path[start - 1])) start--;
+  int64_t name_length = end - start;
+  const char* last = path + start;
+  if (literal) {
+    if ((name_length == 1 && last[0] == '.') || (name_length == 2 && last[0] == '.' && last[1] == '.')) {
+      return "refusing to remove a path that ends in . or ..";
+    }
+  } else {
+    // Win32 drops trailing dots and spaces, so ".. " is "..", and a last part
+    // made only of them names the folder above or the one before it.
+    bool only_dots = true;
+    for (int64_t i = 0; i < name_length; i++) {
+      if (last[i] != '.' && last[i] != ' ') only_dots = false;
+    }
+    if (only_dots) return "refusing to remove a path that ends in . or ..";
+    while (path[end - 1] == '.' || path[end - 1] == ' ') end--;
+  }
+  *kept = end;
   return NULL;
 }
 
@@ -441,23 +489,32 @@ static void narra_fs_windows_writable(const char* path, DWORD attributes) {
   if ((attributes & FILE_ATTRIBUTE_READONLY) != 0) SetFileAttributesA(path, attributes & ~FILE_ATTRIBUTE_READONLY);
 }
 
-// Removes the folder at path and everything in it. A link or junction inside
-// it is removed as a link and never followed. Every name in a folder is read
-// before the walk goes deeper, so one search handle is open at a time.
-static bool narra_fs_remove_tree(const char* path, DWORD attributes, DWORD* code) {
+// Records the first entry the walk failed on, for the message.
+static void narra_fs_windows_failed_at(char** failed, const char* path) {
+  if (!*failed) *failed = _strdup(path);
+}
+
+// Removes the folder at path, a full path shorter than MAX_PATH, and
+// everything in it. A link or junction inside it is removed as a link and
+// never followed. Every name in a folder is read before the walk goes deeper,
+// so one search handle is open at a time. The ANSI calls take at most
+// MAX_PATH characters, so an entry with a longer path fails with
+// ERROR_FILENAME_EXCED_RANGE. *failed gets the path of the entry that failed.
+static bool narra_fs_remove_tree(const char* path, DWORD attributes, DWORD* code, char** failed) {
   size_t base_length = strlen(path);
-  char* pattern = malloc(base_length + 3);
-  if (!pattern) {
-    *code = ERROR_NOT_ENOUGH_MEMORY;
+  if (base_length + 2 >= MAX_PATH) {
+    *code = ERROR_FILENAME_EXCED_RANGE;
+    narra_fs_windows_failed_at(failed, path);
     return false;
   }
+  char pattern[MAX_PATH];
   memcpy(pattern, path, base_length);
   memcpy(pattern + base_length, "\\*", 3);
   WIN32_FIND_DATAA found;
   HANDLE search = FindFirstFileA(pattern, &found);
-  free(pattern);
   if (search == INVALID_HANDLE_VALUE) {
     *code = GetLastError();
+    narra_fs_windows_failed_at(failed, path);
     return false;
   }
   narra_fs_tree_entry* entries = NULL;
@@ -478,10 +535,15 @@ static bool narra_fs_remove_tree(const char* path, DWORD attributes, DWORD* code
   } while (FindNextFileA(search, &found));
   if (failure == 0 && GetLastError() != ERROR_NO_MORE_FILES) failure = GetLastError();
   FindClose(search);
+  if (failure != 0) narra_fs_windows_failed_at(failed, path);
   for (size_t i = 0; i < count && failure == 0; i++) {
     size_t name_length = strlen(entries[i].name);
-    char* child = malloc(base_length + name_length + 2);
-    if (!child) { failure = ERROR_NOT_ENOUGH_MEMORY; break; }
+    char child[MAX_PATH];
+    if (base_length + 1 + name_length >= MAX_PATH) {
+      failure = ERROR_FILENAME_EXCED_RANGE;
+      narra_fs_windows_failed_at(failed, path);
+      break;
+    }
     memcpy(child, path, base_length);
     child[base_length] = '\\';
     memcpy(child + base_length + 1, entries[i].name, name_length + 1);
@@ -490,14 +552,16 @@ static bool narra_fs_remove_tree(const char* path, DWORD attributes, DWORD* code
     bool is_link = (child_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
     if (is_folder && !is_link) {
       DWORD child_code = ERROR_GEN_FAILURE;
-      if (!narra_fs_remove_tree(child, child_attributes, &child_code)) failure = child_code;
+      if (!narra_fs_remove_tree(child, child_attributes, &child_code, failed)) failure = child_code;
     } else {
       // A link to a folder or a junction is removed as a folder, its target untouched.
       narra_fs_windows_writable(child, child_attributes);
       BOOL removed = is_folder ? RemoveDirectoryA(child) : DeleteFileA(child);
-      if (!removed && GetLastError() != ERROR_FILE_NOT_FOUND) failure = GetLastError();
+      if (!removed && GetLastError() != ERROR_FILE_NOT_FOUND) {
+        failure = GetLastError();
+        narra_fs_windows_failed_at(failed, child);
+      }
     }
-    free(child);
   }
   for (size_t i = 0; i < count; i++) free(entries[i].name);
   free(entries);
@@ -508,6 +572,7 @@ static bool narra_fs_remove_tree(const char* path, DWORD attributes, DWORD* code
   narra_fs_windows_writable(path, attributes);
   if (!RemoveDirectoryA(path)) {
     *code = GetLastError();
+    narra_fs_windows_failed_at(failed, path);
     return false;
   }
   return true;
@@ -515,16 +580,44 @@ static bool narra_fs_remove_tree(const char* path, DWORD attributes, DWORD* code
 
 // Removes a folder with everything in it. *removed is false when the path was
 // not there. A link or junction inside the tree is removed as a link and never
-// followed; a path that names a file or a link fails.
+// followed; a path that names a file, a link or a junction fails, with or
+// without a trailing separator. The walk uses the full path, which must be
+// shorter than MAX_PATH, so a path too long for the ANSI calls is an error and
+// never looks missing. It stops at the first entry it cannot remove, names it
+// in the message, and leaves what remains.
 static bool narra_fs_remove_all(lstr* path, bool* removed, lstr** err) {
   *removed = false;
   if (!narra_io_no_nul(path, err)) return false;
-  const char* refusal = narra_fs_remove_all_refusal(path);
+  int64_t kept = 0;
+  const char* refusal = narra_fs_remove_all_refusal(path->data, path->len, &kept);
   if (refusal) {
     *err = path->len == 0 ? lstr_from_cstr(refusal) : narra_io_fail(path->data, path->len, refusal);
     return false;
   }
-  DWORD attributes = GetFileAttributesA(path->data);
+  char* target = malloc((size_t)kept + 1);
+  if (!target) {
+    *err = narra_io_fail(path->data, path->len, "out of memory");
+    return false;
+  }
+  memcpy(target, path->data, (size_t)kept);
+  target[kept] = 0;
+  char full[MAX_PATH];
+  DWORD full_length = GetFullPathNameA(target, MAX_PATH, full, NULL);
+  DWORD full_code = GetLastError();
+  free(target);
+  if (full_length == 0 || full_length >= MAX_PATH) {
+    *err = narra_fs_windows_fail(path, full_length == 0 ? full_code : ERROR_FILENAME_EXCED_RANGE);
+    return false;
+  }
+  // GetFullPathNameA resolves "." and ".." by name, so check what it made too.
+  int64_t full_kept = 0;
+  refusal = narra_fs_remove_all_refusal(full, (int64_t)full_length, &full_kept);
+  if (refusal) {
+    *err = narra_io_fail(path->data, path->len, refusal);
+    return false;
+  }
+  full[full_kept] = 0;
+  DWORD attributes = GetFileAttributesA(full);
   if (attributes == INVALID_FILE_ATTRIBUTES) {
     DWORD code = GetLastError();
     if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) return true;
@@ -536,8 +629,17 @@ static bool narra_fs_remove_all(lstr* path, bool* removed, lstr** err) {
     return false;
   }
   DWORD code = 0;
-  if (!narra_fs_remove_tree(path->data, attributes, &code)) {
-    *err = narra_fs_windows_fail(path, code);
+  char* failed = NULL;
+  if (!narra_fs_remove_tree(full, attributes, &code, &failed)) {
+    // Name the entry that failed by the caller's path and the part below it.
+    size_t failed_length = failed ? strlen(failed) : 0;
+    size_t below = failed_length > (size_t)full_kept ? failed_length - (size_t)full_kept : 0;
+    lstr* entry = lstr_new(path->len + (int64_t)below);
+    memcpy(entry->data, path->data, (size_t)path->len);
+    if (below > 0) memcpy(entry->data + path->len, failed + full_kept, below);
+    *err = narra_fs_windows_fail(entry, code);
+    lstr_release(entry);
+    free(failed);
     return false;
   }
   *removed = true;
@@ -635,45 +737,80 @@ static bool narra_fs_read_names(narra_fs_tree_level* level, const char** message
   return true;
 }
 
-// Removes the folder at path and everything in it, relative to open folder
-// descriptors so a link is never followed and no full path is built. Every
-// name in a folder is read before the walk goes deeper, and outside WASI the
-// parent is closed then and opened again through ".." on the way back, so the
-// walk holds at most three descriptors however deep the tree is. WASI keeps
-// one descriptor per level, because it refuses ".." through a descriptor.
-static bool narra_fs_remove_tree(const char* path, const struct stat* top, const char** message) {
-  int descriptor = narra_fs_open_folder(AT_FDCWD, path, top->st_dev, top->st_ino, message);
-  if (descriptor < 0) return false;
+// "<target>/<names down to the entry>: <message>". The first `levels` levels
+// add the name the walk is inside, then name, when given, follows.
+static lstr* narra_fs_tree_fail(const char* target, int64_t target_length, const narra_fs_tree_level* levels, size_t count, const char* name, const char* message) {
+  size_t length = (size_t)target_length;
+  for (size_t i = 0; i < count; i++) length += 1 + strlen(levels[i].names[levels[i].next - 1]);
+  if (name) length += 1 + strlen(name);
+  char* entry = malloc(length);
+  if (!entry) return narra_io_fail(target, target_length, message);
+  size_t at = (size_t)target_length;
+  memcpy(entry, target, at);
+  for (size_t i = 0; i <= count; i++) {
+    const char* part = i < count ? levels[i].names[levels[i].next - 1] : name;
+    if (!part) break;
+    size_t part_length = strlen(part);
+    entry[at++] = '/';
+    memcpy(entry + at, part, part_length);
+    at += part_length;
+  }
+  lstr* failure = narra_io_fail(entry, (int64_t)at, message);
+  free(entry);
+  return failure;
+}
+
+// Removes the folder name inside the open folder parent and everything in it,
+// relative to open folder descriptors so a link is never followed and no full
+// path is built. Every name in a folder is read before the walk goes deeper,
+// and outside WASI the parent is closed then and opened again through ".." on
+// the way back, so the walk holds at most three descriptors besides parent,
+// however deep the tree is. WASI keeps one descriptor per level, because it
+// refuses ".." through a descriptor. The walk stops at the first entry it
+// cannot remove and names it, below target, in the message.
+static bool narra_fs_remove_tree(int parent, const char* name, const struct stat* top, const char* target, int64_t target_length, lstr** err) {
+  const char* message = "out of memory";
+  int descriptor = narra_fs_open_folder(parent, name, top->st_dev, top->st_ino, &message);
+  if (descriptor < 0) {
+    *err = narra_io_fail(target, target_length, message);
+    return false;
+  }
   size_t capacity = 16, depth = 1;
   narra_fs_tree_level* levels = malloc(sizeof(narra_fs_tree_level) * capacity);
   if (!levels) {
     close(descriptor);
-    *message = "out of memory";
+    *err = narra_io_fail(target, target_length, message);
     return false;
   }
   levels[0].descriptor = descriptor;
   levels[0].device = top->st_dev;
   levels[0].inode = top->st_ino;
-  bool ok = narra_fs_read_names(&levels[0], message);
+  // The entry a failure names: the folder reached through the first
+  // failed_levels levels, then failed_name inside it when set.
+  size_t failed_levels = 0;
+  const char* failed_name = NULL;
+  bool ok = narra_fs_read_names(&levels[0], &message);
   while (ok && depth > 0) {
     narra_fs_tree_level* level = &levels[depth - 1];
     if (level->next < level->count) {
-      const char* name = level->names[level->next++];
+      const char* entry = level->names[level->next++];
+      failed_levels = depth - 1;
+      failed_name = entry;
       struct stat info;
-      if (fstatat(level->descriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+      if (fstatat(level->descriptor, entry, &info, AT_SYMLINK_NOFOLLOW) != 0) {
         if (errno == ENOENT) continue;
-        *message = strerror(errno);
+        message = strerror(errno);
         ok = false;
         break;
       }
       if (!S_ISDIR(info.st_mode)) {
-        if (unlinkat(level->descriptor, name, 0) != 0 && errno != ENOENT) {
-          *message = strerror(errno);
+        if (unlinkat(level->descriptor, entry, 0) != 0 && errno != ENOENT) {
+          message = strerror(errno);
           ok = false;
         }
         continue;
       }
-      int child = narra_fs_open_folder(level->descriptor, name, info.st_dev, info.st_ino, message);
+      int child = narra_fs_open_folder(level->descriptor, entry, info.st_dev, info.st_ino, &message);
       if (child < 0) {
         ok = false;
         break;
@@ -682,7 +819,7 @@ static bool narra_fs_remove_tree(const char* path, const struct stat* top, const
         narra_fs_tree_level* bigger = realloc(levels, sizeof(narra_fs_tree_level) * capacity * 2);
         if (!bigger) {
           close(child);
-          *message = "out of memory";
+          message = "out of memory";
           ok = false;
           break;
         }
@@ -694,7 +831,7 @@ static bool narra_fs_remove_tree(const char* path, const struct stat* top, const
       next->descriptor = child;
       next->device = info.st_dev;
       next->inode = info.st_ino;
-      if (!narra_fs_read_names(next, message)) {
+      if (!narra_fs_read_names(next, &message)) {
         close(child);
         ok = false;
         break;
@@ -717,21 +854,25 @@ static bool narra_fs_remove_tree(const char* path, const struct stat* top, const
       depth = 0;
       break;
     }
-    narra_fs_tree_level* parent = &levels[depth - 2];
-    if (parent->descriptor < 0) {
-      parent->descriptor = narra_fs_open_folder(level->descriptor, "..", parent->device, parent->inode, message);
+    narra_fs_tree_level* above = &levels[depth - 2];
+    if (above->descriptor < 0) {
+      above->descriptor = narra_fs_open_folder(level->descriptor, "..", above->device, above->inode, &message);
     }
     close(level->descriptor);
     depth--;
-    if (parent->descriptor < 0) {
+    failed_levels = depth - 1;
+    failed_name = NULL;
+    if (above->descriptor < 0) {
       ok = false;
       break;
     }
-    if (unlinkat(parent->descriptor, parent->names[parent->next - 1], AT_REMOVEDIR) != 0 && errno != ENOENT) {
-      *message = strerror(errno);
+    failed_levels = depth;
+    if (unlinkat(above->descriptor, above->names[above->next - 1], AT_REMOVEDIR) != 0 && errno != ENOENT) {
+      message = strerror(errno);
       ok = false;
     }
   }
+  if (!ok) *err = narra_fs_tree_fail(target, target_length, levels, failed_levels, failed_name, message);
   // After a failure, release what the levels still hold.
   for (size_t i = 0; i < depth; i++) {
     for (size_t j = 0; j < levels[i].count; j++) free(levels[i].names[j]);
@@ -740,8 +881,8 @@ static bool narra_fs_remove_tree(const char* path, const struct stat* top, const
   }
   free(levels);
   if (!ok) return false;
-  if (rmdir(path) != 0) {
-    *message = strerror(errno);
+  if (unlinkat(parent, name, AT_REMOVEDIR) != 0) {
+    *err = narra_io_fail(target, target_length, strerror(errno));
     return false;
   }
   return true;
@@ -749,32 +890,68 @@ static bool narra_fs_remove_tree(const char* path, const struct stat* top, const
 
 // Removes a folder with everything in it. *removed is false when the path was
 // not there. A symbolic link inside the tree is removed as a link and never
-// followed; a path that names a file or a link fails.
+// followed; a path that names a file or a link fails, with or without a
+// trailing "/". The folder above the last name is opened once and the walk and
+// the final removal use it, so the path is resolved once. When that folder may
+// be searched but not read, the path is used from the working folder instead.
+// The walk stops at the first entry it cannot remove, names it in the message,
+// and leaves what remains.
 static bool narra_fs_remove_all(lstr* path, bool* removed, lstr** err) {
   *removed = false;
   if (!narra_io_no_nul(path, err)) return false;
-  const char* refusal = narra_fs_remove_all_refusal(path);
+  int64_t kept = 0;
+  const char* refusal = narra_fs_remove_all_refusal(path->data, path->len, &kept);
   if (refusal) {
     *err = path->len == 0 ? lstr_from_cstr(refusal) : narra_io_fail(path->data, path->len, refusal);
     return false;
   }
+  // Without its trailing separators: lstat and openat follow a link named "link/".
+  char* target = malloc((size_t)kept + 1);
+  if (!target) {
+    *err = narra_io_fail(path->data, path->len, "out of memory");
+    return false;
+  }
+  memcpy(target, path->data, (size_t)kept);
+  target[kept] = 0;
+  int64_t name_start = kept;
+  while (name_start > 0 && target[name_start - 1] != '/') name_start--;
+  int parent = AT_FDCWD;
+  const char* name = target;
+  if (name_start > 0) {
+    int64_t parent_end = name_start;
+    while (parent_end > 1 && target[parent_end - 1] == '/') parent_end--;
+    char saved = target[parent_end];
+    target[parent_end] = 0;
+    parent = open(target, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int reason = errno;
+    target[parent_end] = saved;
+    if (parent >= 0) {
+      name = target + name_start;
+    } else if (reason == ENOENT) {
+      free(target);
+      return true;
+    } else if (reason == EACCES) {
+      parent = AT_FDCWD;
+    } else {
+      *err = narra_io_fail(path->data, path->len, strerror(reason));
+      free(target);
+      return false;
+    }
+  }
+  bool ok = false;
   struct stat info;
-  if (lstat(path->data, &info) != 0) {
-    if (errno == ENOENT) return true;
-    *err = narra_io_fail(path->data, path->len, strerror(errno));
-    return false;
-  }
-  if (!S_ISDIR(info.st_mode)) {
+  if (fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+    if (errno == ENOENT) ok = true;
+    else *err = narra_io_fail(path->data, path->len, strerror(errno));
+  } else if (!S_ISDIR(info.st_mode)) {
     *err = narra_io_fail(path->data, path->len, "Not a directory");
-    return false;
+  } else if (narra_fs_remove_tree(parent, name, &info, target, kept, err)) {
+    *removed = true;
+    ok = true;
   }
-  const char* message = "unknown failure";
-  if (!narra_fs_remove_tree(path->data, &info, &message)) {
-    *err = narra_io_fail(path->data, path->len, message);
-    return false;
-  }
-  *removed = true;
-  return true;
+  if (parent != AT_FDCWD) close(parent);
+  free(target);
+  return ok;
 }
 #endif
 

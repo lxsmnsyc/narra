@@ -26,6 +26,18 @@
 - New cases in `testdata/io_fs_more.nra`: a read-only file inside a tree, the empty path and `x/..`, `x/../`, `x/.` guards (the folder survives), a folder inside a locked parent (an `Err`, not `Ok(false)`; as root, where the permission is not enforced, the removal succeeds), a 300-level tree (above the macOS default of 256 descriptors). Error lines for rename and copy changed to the new rule.
 - Emitters: `emitTwoPaths(hasCount)` split into `emitCopyFile` and `emitRename`; `emitWriteTextCall` renamed `emitWriteWith`.
 
+## Second safety review fixes
+
+- Trailing slash (POSIX, high): `removeDirAll("lnk/")` on a link to a folder gave `Ok(true)` and removed the target, because `lstat` and `openat(O_NOFOLLOW)` follow a link when the path ends in `/`. The guard now returns the length of the path without trailing separators, and the removal uses that copy. Before (C harness on the old `std_fs.c`, scratch folder): `lnk/ -> Ok(true)`, target gone. After: `lnk`, `lnk/`, `lnk//` and the absolute `.../lnk/` give `Not a directory`, the target and its file survive. New cases in `testdata/io_fs_more.nra`: `link/` and `link//` to a folder inside the base.
+- Final removal (POSIX, low): the folder above the last name is opened once; `fstatat`, the first `openat` and the final `unlinkat(AT_REMOVEDIR)` are relative to it, so the path is resolved once. A parent that may be searched but not read (mode 0300) falls back to the path from the working folder; checked in a scratch folder.
+- Windows roots (high): the guard now refuses `\\server\share`, `\\server\share\`, `\\server`, `\\?\C:\`, `\\?\C:`, `\\.\C:\`, `\\?\`, `\\?\UNC\server\share` (any case of `UNC`) and `\\?\Volume{...}\`: a share needs a name after the share, a device path a name after the device. The earlier refusals stay. Checked with a host C test of the guard alone, built with `NARRA_PATH_WINDOWS=0` and `=1` under ASan and UBSan (61 strings, 55 checks for Windows and 18 for POSIX, 0 failures; kept outside the repo, there is no C unit test harness here).
+- Windows trailing characters (medium): outside `\\?\` and `\\.\` paths, a last part of only dots and spaces (`C:\a\.. `, `C:\a\...`, `junction\.`) is refused, and other trailing dots and spaces are dropped (`C:\a. \` is `C:\a`), as Win32 does. Trailing separators are dropped before `GetFileAttributesA`, so `junction\` is `Not a directory`. The walk runs on the `GetFullPathNameA` path, which goes through the guard again.
+- Windows long paths (low): a full path of `MAX_PATH` or more, the folder's own or an entry's, is an Err (`ERROR_FILENAME_EXCED_RANGE`), never `Ok(false)`. Documented in the guide and `compiler/README.md`. `\\?\` paths were not used for the walk: the ANSI calls stay limited to `MAX_PATH` without a long-path manifest.
+- Messages (low): the walk names the entry it stopped at: `<path>/sealed/file.txt: Permission denied` (POSIX builds it from the level names, Windows from the full path below the caller's). New case in `testdata/io_fs_more.nra`.
+- Docs (low): chapter 11 says the removal stops at the first entry it cannot remove and leaves the rest, crosses mount points as `rm -rf` does, keeps one folder open per level on WASI, and lists the Windows roots and the length limit. The `Fs.removeDirAll` row has a display `note`, so `docs/reference/std/fs.md` prints a `Details:` line with what it does and refuses.
+- WASI: built with `narrac build --target Wasi-Wasm32` (`CC` running `zig cc`) and run under `wasmtime --dir data::/work`: `lnk`, `lnk/`, `lnk//` and `file/` give `Not a directory` and the target survives; a tree with a link inside and a 40-level tree are removed; a missing path is `Ok(false)`; `t/..`, `x/../` and `/` are refused.
+- Windows: `narrac build --target Windows-X86_64` with `zig cc` compiles and links; the runtime alone builds with `-Wall -Wextra` for `x86_64-windows-gnu` without warnings. Not run.
+
 ## Deviations
 
 - `copyFile` returns the byte count and `appendText` returns the byte count, like `writeText`; `rename` and `removeDirAll` return `bool`, like the other folder functions.
@@ -52,7 +64,8 @@
 ## Verification
 
 - `sh scripts/test.sh --suite guide --suite programs --suite fmt-doc --suite sources --suite query --suite generated` (filters as noted): PASS.
-- Full `sh scripts/test.sh`: `PASS, 10827 cases in 448s`; after the review fixes `PASS, 10870 cases in 292s`.
+- Full `sh scripts/test.sh`: `PASS, 10827 cases in 448s`; after the review fixes `PASS, 10870 cases in 292s`; after the second safety review `PASS, 10895 cases in 367s`.
+- After the second safety review: `--suite programs --filter io_fs`, `--suite generated` and `--suite query` pass.
 - `pnpm --dir website build`: passes.
 
 ## Size

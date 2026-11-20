@@ -1,12 +1,13 @@
-// narrac query interface for a std module (SPEC.md section 14): the builtin
-// functions come from the registry, the Narra source of the module and of
-// its std/ext part from the embedded std text. A builtin whose signature the
-// body checker computes (check is a Check function name) has no types in
-// the registry, so its parameters print as `...`.
+// narrac query interface for a std module: the builtin functions come from
+// the registry, the Narra source of the module and of its std/ext part from
+// the embedded std text. A builtin whose signature the body checker computes
+// (check is a Check function name) has no types in the registry, so its
+// parameters print as `...`.
 import * as Str from "std/string"
 import * as Arrays from "std/array"
 import * as Maps from "std/map"
-import { Decl, File } from "narrac/syntax/ast"
+import * as Ranges from "std/range"
+import { File } from "narrac/syntax/ast"
 import { lex } from "narrac/syntax/lexer"
 import { parse } from "narrac/syntax/parser"
 import { extensionPath } from "narrac/driver/modules"
@@ -14,16 +15,9 @@ import { Registry, StdFunc } from "narrac/std/builtins"
 import { stdRegistry } from "narrac/std/stdlib"
 import { stdSourceFor } from "narrac/std/stdtext"
 import { SiteKind, collectSites } from "narrac/tools/querysites"
-import { Location, quoteJson, writeLocation } from "narrac/tools/queryjson"
+import { InterfaceEntry, Location, writeInterface } from "narrac/tools/queryjson"
 import * as Signature from "narrac/tools/querysignature"
 import { sortStrings } from "narrac/tools/querygraph"
-
-struct StdEntry {
-  name: string
-  kind: string
-  signature: string
-  location: Option<Location>
-}
 
 export function isStdModulePath(path: string): bool {
   return Str.startsWith(path, "std/")
@@ -34,7 +28,7 @@ function writeBuiltinSignature(builtin: StdFunc): string uses alloc {
   if (builtin.check != "" && builtin.check != "fixed") {
     Arrays.push(mutable parameters, "...")
   }
-  for (let index = 0; index < Arrays.length(builtin.parameters); index++) {
+  for (const index of Ranges.upTo(Arrays.length(builtin.parameters))) {
     let flag = ""
     if (index < Arrays.length(builtin.mutables) && builtin.mutables[index]) {
       flag = "mutable "
@@ -51,8 +45,8 @@ function writeBuiltinSignature(builtin: StdFunc): string uses alloc {
   return text
 }
 
-function listBuiltinEntries(registry: Registry, path: string): Array<StdEntry> uses alloc {
-  let entries: Array<StdEntry> = []
+function listBuiltinEntries(registry: Registry, path: string): Array<InterfaceEntry> uses alloc {
+  let entries: Array<InterfaceEntry> = []
   if (registry.modules[path] is Some(module)) {
     let names: Array<string> = []
     for (const name of Maps.keys(module.functions)) {
@@ -61,7 +55,7 @@ function listBuiltinEntries(registry: Registry, path: string): Array<StdEntry> u
     sortStrings(mutable names)
     for (const name of Arrays.values(names)) {
       if (module.functions[name] is Some(index)) {
-        Arrays.push(mutable entries, StdEntry {
+        Arrays.push(mutable entries, InterfaceEntry {
           name,
           kind: "function",
           signature: writeBuiltinSignature(registry.functions[index]),
@@ -73,62 +67,21 @@ function listBuiltinEntries(registry: Registry, path: string): Array<StdEntry> u
   return entries
 }
 
-function writeDeclarationSignature(declaration: Decl): string uses alloc {
-  return match (declaration) {
-    Decl.Func(funcDecl) => funcDecl.exported ? `export ${Signature.writeFunction(funcDecl)}` : ""
-    Decl.Const(constDecl) => {
-      if (!constDecl.exported) {
-        return ""
-      }
-      if (constDecl.type is Some(type)) {
-        return `export const ${constDecl.name}: ${Signature.writeType(type)}`
-      }
-      return `export const ${constDecl.name}`
-    }
-    Decl.Struct(structDecl) => (
-      structDecl.exported
-        ? `export ${Signature.writeStruct(structDecl)}`
-        : ""
-    )
-    Decl.Enum(enumDecl) => enumDecl.exported ? `export ${Signature.writeEnum(enumDecl)}` : ""
-    Decl.Trait(traitDecl) => traitDecl.exported ? `export ${Signature.writeTrait(traitDecl)}` : ""
-    Decl.Alias(aliasDecl) => aliasDecl.exported ? `export ${Signature.writeAlias(aliasDecl)}` : ""
-    Decl.Distinct(distinctDecl) => (
-      distinctDecl.exported
-        ? `export ${Signature.writeDistinct(distinctDecl)}`
-        : ""
-    )
-    _ => ""
-  }
-}
-
-function describeDeclarationKind(declaration: Decl): string {
-  return match (declaration) {
-    Decl.Func(_) => "function"
-    Decl.Const(_) => "const"
-    Decl.Struct(_) => "struct"
-    Decl.Enum(_) => "enum"
-    Decl.Distinct(_) => "distinct"
-    Decl.Alias(_) => "alias"
-    Decl.Trait(_) => "trait"
-    _ => ""
-  }
-}
-
-function listSourceEntries(path: string): Result<Array<StdEntry>, string> uses alloc {
-  let entries: Array<StdEntry> = []
+function listSourceEntries(path: string): Result<Array<InterfaceEntry>, string> uses alloc {
+  let entries: Array<InterfaceEntry> = []
   const text = stdSourceFor(path)
   if (text == "") {
     return Ok(entries)
   }
   const file = `std/src/${Str.replace(Str.sliceFrom(path, 4), "/", "__")}.nra`
-  const tokens = lex(text)
-  if (tokens is Err(_)) {
-    return Err(`std source ${path} does not lex`)
-  }
   const parsed = parse(text, 0)
   if (parsed is Err(diagnostic)) {
     return Err(`std source ${path}: ${diagnostic.message}`)
+  }
+  // The parse keeps no tokens, and the site index needs them.
+  const tokens = lex(text)
+  if (tokens is Err(_)) {
+    return Err(`std source ${path} does not lex`)
   }
   const ast: File = parsed.value.file
   for (const site of Arrays.values(collectSites(ast, tokens.value))) {
@@ -136,13 +89,13 @@ function listSourceEntries(path: string): Result<Array<StdEntry>, string> uses a
       continue
     }
     const declaration = ast.declarations[site.declaration]
-    const signature = writeDeclarationSignature(declaration)
+    const signature = Signature.writeDeclaration(declaration, "")
     if (signature == "") {
       continue
     }
-    Arrays.push(mutable entries, StdEntry {
+    Arrays.push(mutable entries, InterfaceEntry {
       name: site.name,
-      kind: describeDeclarationKind(declaration),
+      kind: Signature.describeDeclarationKind(declaration),
       signature,
       location: Some(Location { file, start: copy(site.start), end: copy(site.end) }),
     })
@@ -173,28 +126,5 @@ export function queryStdInterface(json: bool, path: string): Result<string, stri
       Arrays.push(mutable entries, entry)
     }
   }
-  let parts: Array<string> = []
-  for (const entry of Arrays.values(entries)) {
-    if (json) {
-      let locationText = "null"
-      if (entry.location is Some(location)) {
-        locationText = writeLocation(location)
-      }
-      Arrays.push(
-        mutable parts,
-        `{"name": ${quoteJson(entry.name)}, "kind": ${quoteJson(entry.kind)}, "signature": ${quoteJson(entry.signature)}, "location": ${locationText}}`,
-      )
-    } else {
-      Arrays.push(mutable parts, `${entry.signature}\n`)
-    }
-  }
-  if (json) {
-    return Ok(
-      `{"query": "interface", "module": ${quoteJson(path)}, "declarations": [${Str.join(parts, ", ")}]}\n`,
-    )
-  }
-  if (Arrays.length(parts) == 0) {
-    return Ok("(none)\n")
-  }
-  return Ok(Str.join(parts, ""))
+  return Ok(writeInterface(json, path, entries))
 }

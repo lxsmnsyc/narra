@@ -21,6 +21,16 @@ JSON shape (the shape of package modules, one extension):
 - Builtin signatures have no parameter names, since the registry has none: `export function join(string, string): string uses alloc`; a `mutable` parameter prints `mutable T`.
 - 135 builtins have a check function instead of a type list (`Array.push`, `Map.remove`, `Range.upTo`, the std/ptr and std/simd functions and the sized `from`/`tryFrom`/`wrap`). They print `(...)`, for example `export function push(...) uses alloc`. Their effects are kept. node std-reference must write these signatures by hand (SPEC.md section 3 has them).
 
+## Review fixes
+
+- The header comment of `querystd.nra` no longer cites a SPEC section.
+- One signature writer: `Signature.writeDeclaration(declaration, constType)` in `querysignature.nra`. `findSignature` in `query.nra` passes the const type the checker found; std source passes `""` (the written type, or none).
+- One output builder: `writeInterface(json, path, entries)` with `InterfaceEntry` in `queryjson.nra`, used by `queryInterface` and `queryStdInterface` (JSON wrapper, `(none)`, join).
+- One kind mapping: `Signature.describeDeclarationKind`, used by `listDeclarations` (which still turns an enum member into `variant`) and by the std source entries.
+- The parameter loop of `writeBuiltinSignature` is `for (const index of Ranges.upTo(...))`.
+- The second lex stays: `parse` returns no tokens and `collectSites` needs them (the package path in `buildViews` lexes the same way). It now runs after the parse, with a comment.
+- `query` suite unchanged: PASS, 17 cases; `lsp`: PASS, 25 cases.
+
 ## Deviations
 
 - Signatures of builtins are type-only and 135 are `(...)`; the registry holds nothing better. Not a change to the registry, to keep the node inside its owned paths.

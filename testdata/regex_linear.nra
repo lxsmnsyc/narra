@@ -1,9 +1,15 @@
 // std/regex: patterns that take exponential time in a backtracking engine
-// finish in linear time. The time is printed only as a pass or fail against a
-// one second bound, so the output is stable.
+// finish in linear time. Each pattern runs against a text of n and one of 2n,
+// and the case prints whether the time grew by at most 3 times. Linear time
+// grows by 2 times and a backtracking engine by far more. Load slows both runs
+// alike and each time is the best of several runs, so the output does not
+// depend on the speed of the machine.
 import * as Regexes from "std/regex"
 import * as Str from "std/string"
 import * as Time from "std/time"
+
+const ROUNDS = 5
+const ATTEMPTS = 4
 
 function repeatText(text: string, count: int): string uses alloc {
   if (Str.repeat(text, count) is Some(repeated)) {
@@ -12,30 +18,70 @@ function repeatText(text: string, count: int): string uses alloc {
   return ""
 }
 
-function check(name: string, pattern: string, text: string) uses io, alloc {
+function timeMatch(regex: Regexes.Regex, text: string): int uses io, alloc {
+  const started = Time.now()
+  Regexes.matches(regex, text)
+  return Time.elapsed(started).nanos
+}
+
+function growsLinearly(regex: Regexes.Regex, small: string, large: string): bool uses io, alloc {
+  let smallBest = 0
+  let largeBest = 0
+  // Alternate the sizes so a burst of load slows both alike.
+  for (let round = 0; round < ROUNDS; round += 1) {
+    const smallTime = timeMatch(regex, small)
+    const largeTime = timeMatch(regex, large)
+    if (round == 0 || smallTime < smallBest) {
+      smallBest = smallTime
+    }
+    if (round == 0 || largeTime < largeBest) {
+      largeBest = largeTime
+    }
+  }
+  return largeBest <= smallBest * 3
+}
+
+function check(name: string, pattern: string, small: string, large: string) uses io, alloc {
   const compiled = Regexes.compile(pattern)
   if (compiled is Err(error)) {
     print(`${name}: error ${error.reason}`)
     return
   }
-  const started = Time.now()
-  const found = Regexes.matches(compiled.value, text)
-  const elapsed = Time.elapsed(started)
   let answer = "no match"
-  if (found) {
+  if (Regexes.matches(compiled.value, large)) {
     answer = "match"
   }
-  let speed = "under 1 s"
-  if (elapsed.nanos > 1000000000) {
-    speed = "over 1 s"
+  // A slow stretch of the machine can spoil one attempt; a growth that is not
+  // linear fails every attempt.
+  let growth = "superlinear growth"
+  for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
+    if (growsLinearly(compiled.value, small, large)) {
+      growth = "linear growth"
+      break
+    }
   }
-  print(`${name}: ${answer}, ${speed}`)
+  print(`${name}: ${answer}, ${growth}`)
 }
 
 export function run(_args: Array<string>): int uses io, alloc {
-  check("(a*)*b against 10,000 a", "(a*)*b", repeatText("a", 10000))
-  check("(a|aa)*c against 5,000 a", "(a|aa)*c", repeatText("a", 5000))
-  check("(a+)+$ against 5,000 a and b", "(a+)+$", `${repeatText("a", 5000)}b`)
-  check("(x+x+)+y against 5,000 x", "(x+x+)+y", repeatText("x", 5000))
+  check("(a*)*b against 3,000 and 6,000 a", "(a*)*b", repeatText("a", 3000), repeatText("a", 6000))
+  check(
+    "(a|aa)*c against 3,000 and 6,000 a",
+    "(a|aa)*c",
+    repeatText("a", 3000),
+    repeatText("a", 6000),
+  )
+  check(
+    "(a+)+$ against 3,000 and 6,000 a, then b",
+    "(a+)+$",
+    `${repeatText("a", 3000)}b`,
+    `${repeatText("a", 6000)}b`,
+  )
+  check(
+    "(x+x+)+y against 3,000 and 6,000 x",
+    "(x+x+)+y",
+    repeatText("x", 3000),
+    repeatText("x", 6000),
+  )
   return 0
 }

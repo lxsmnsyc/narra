@@ -44,6 +44,8 @@
 //   build-targets/cross-list   `narrac targets` prints the eight rows
 //   build-targets/version   `narrac --version` prints dev for a build from the seed;
 //                      `--help` and `-h` print the usage on stdout
+//   build-targets/commands-page   every command and flag of `narrac --help` is in
+//                      docs/reference/commands.md
 //   audit/basic        `narrac audit` lists the unsafe blocks and @trusted
 //                      functions of testdata/audit/basic
 //   const-generics/distinct-instances   in the C of testdata/const_generics.nra,
@@ -61,6 +63,7 @@
 //   const-functions/deterministic   the same program emits byte-identical C twice
 import { splitString } from "testrunner/textops"
 import * as Arrays from "std/array"
+import * as Fs from "std/fs"
 import * as Int from "std/int"
 import * as Path from "std/path"
 import * as Ranges from "std/range"
@@ -158,6 +161,11 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     ),
     makeCase("build-targets/cross-list", Path.join(buildTargets, "cross_hello.nra"), "cross-list"),
     makeCase("build-targets/version", Path.join(buildTargets, "cross_hello.nra"), "version"),
+    makeCase(
+      "build-targets/commands-page",
+      Path.join(buildTargets, "cross_hello.nra"),
+      "commands-page",
+    ),
     makeCase("audit/basic", Path.join(Path.join(context.testdata, "audit"), "basic"), "audit"),
     makeCase(
       "const-generics/distinct-instances",
@@ -271,6 +279,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "version") {
     return checkVersion(context)
+  }
+  if (testCase.variant == "commands-page") {
+    return checkCommandsPage(context)
   }
   if (testCase.variant == "audit") {
     return checkAudit(context, testCase.path)
@@ -747,6 +758,49 @@ function checkVersion(context: Context): Result<bool, string> uses io, alloc {
     if (help.code != 0 || help.errorOutput != "" || !Str.startsWith(help.output, "usage:\n")) {
       return Err(`${flag} did not print the usage: ${Common.describeRun(help)}`)
     }
+  }
+  return Ok(true)
+}
+
+function checkCommandsPage(context: Context): Result<bool, string> uses io, alloc {
+  const help = Common.runNarrac(context, ["--help"])
+  if (help.code != 0) {
+    return Err(`--help failed: ${Common.describeRun(help)}`)
+  }
+  const page = Fs.readText(Path.join(context.repository, "docs/reference/commands.md"))
+  if (page is Err(message)) {
+    return Err(message)
+  }
+  let missing: Array<string> = []
+  let commandLines = 0
+  for (const line of Arrays.values(splitString(help.output, "\n"))) {
+    if (!Str.startsWith(line, "  narrac ")) {
+      continue
+    }
+    commandLines++
+    const cleaned = Str.replace(Str.replace(Str.replace(line, "[", " "), "]", " "), "|", " ")
+    let words: Array<string> = []
+    for (const word of Arrays.values(splitString(cleaned, " "))) {
+      if (word != "") {
+        Arrays.push(mutable words, word)
+      }
+    }
+    // words[0] is narrac and words[1] the command, or a flag such as --version.
+    const command = `narrac ${words[1]}`
+    if (!Str.contains(page.value, command)) {
+      Arrays.push(mutable missing, command)
+    }
+    for (const word of Arrays.values(words)) {
+      if (Str.startsWith(word, "-") && word != words[1] && !Str.contains(page.value, `\`${word}`)) {
+        Arrays.push(mutable missing, `${command} ${word}`)
+      }
+    }
+  }
+  if (commandLines < 10) {
+    return Err(`--help lists ${Int.toString(commandLines)} commands, want at least 10`)
+  }
+  if (Arrays.length(missing) > 0) {
+    return Err(`docs/reference/commands.md does not mention: ${Str.join(missing, ", ")}`)
   }
   return Ok(true)
 }

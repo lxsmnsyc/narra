@@ -415,20 +415,6 @@ Two options help when the server seems wrong. By default it checks again only th
 
 ## The commands
 
-| Command | What it does |
-| --- | --- |
-| `narrac build [-release] [-sanitize] [-target NAME] [-bin NAME] [-o PATH] [-emit-c FILE] PATH` | build the executables of a package or file |
-| `narrac run [-release] [-sanitize] [-bin NAME] [-stdin FILE] PATH [ARGS...]` | build and run, with the arguments for the program |
-| `narrac emit [--tests] [--bin NAME] PATH` | print the C of a debug build |
-| `narrac check [--json] [--all-targets] [--target NAME] PATH` | report errors without building |
-| `narrac explain CODE` | explain an error code |
-| `narrac apply-fix [--diagnostic N] [--fix M] PATH` | print a file with a fix applied |
-| `narrac fmt [--check] [PATH...]` | format files in place, or list the ones that are not formatted |
-| `narrac fmt --stdin` | format the standard input to the standard output |
-| `narrac query [--package DIR] [--json] QUESTION` | answer a question about a package |
-| `narrac test [-filter TEXT] [-time] [-release] [-sanitize] [-stdin FILE] PATH` | run the test blocks |
-| `narrac audit [PATH]` | list the `unsafe` blocks and `@trusted` functions |
-| `narrac targets` | list the systems `-target` accepts |
-| `narrac lsp [--full] [--trace]` | start the language server for an editor |
+`narrac` has these commands: `build`, `run` and `test` for programs, `check`, `explain` and `apply-fix` for errors, `fmt` for layout, `query` and `audit` for questions about a package, `emit` for the C code, `lsp` for editors and `targets` for the systems `-target` accepts. `narrac --help` prints them with their flags. The [commands reference](../reference/commands.md) lists every flag, exit code and environment variable.
 
 Next: [19. Building for other systems](19-building-for-other-systems.md).

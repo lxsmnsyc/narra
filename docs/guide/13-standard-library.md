@@ -268,7 +268,7 @@ second is there: false
 
 `std/toml` reads and writes TOML, the format of `narra.toml`. Like `std/json`, it works with the `Value` of `std/shape`: a table is a `Value.Record`, an array a `Value.List`, and numbers, strings and booleans are `Int`, `Float`, `Text` and `Bool`. Dates and times have no `Value` of their own, so they come back as `Text` holding the date as written.
 
-`Toml.decode` reads a document straight into a type that derives `Shape`. The struct's fields are the table's keys, and an array of tables (`[[binary]]`) is an `Array` of structs. A syntax error is placed at a line and a column. `Toml.encode` writes a value back, and `Toml.stringify` writes a `Value`:
+`Toml.decode` reads a document straight into a type that derives `Shape`, the trait that [chapter 7](07-traits.md#saving-and-loading-values) explains. The struct's fields are the table's keys, and an array of tables (`[[binary]]`) is an `Array` of structs. A syntax error is placed at a line and a column. `Toml.encode` writes a value back, and `Toml.stringify` writes a `Value`:
 
 ```narra
 import * as Toml from "std/toml"

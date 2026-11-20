@@ -2,7 +2,7 @@
 
 A shop sells books and songs. Both have a title and a price, and both need a line in the catalog, but they are different structs. A trait lets one function work with both. The trait names an operation, and each type supplies its own version. Generic code can then ask for "any type that has this operation".
 
-This chapter builds the catalog, then uses the traits that every type can have: printing, ordering, equality and hashing. It also shows traits on generic and distinct types, and an array that holds values of different types.
+This chapter builds the catalog, then uses the traits that every type can have: printing, ordering, equality and hashing. It also shows traits on generic and distinct types, and an array that holds values of different types. It ends with `Shape`, which saves values as JSON and loads them back.
 
 ## Giving two types the same operation
 
@@ -775,5 +775,183 @@ export function run(args: Array<string>): int {
 ```
 
 `==` and the hash of a distinct type always compare the base value, so you cannot write your own `implement Equatable` or `implement Hashable` for one.
+
+## Saving and loading values
+
+The shop must keep its books between runs, so the program writes them to text and reads them back. The trait `Shape` does the first half of the job. It converts a value to a `Value`, a tree of nulls, booleans, numbers, text, lists and records. The tree does not depend on a file format. `Shape` also converts a `Value` back to your type. A format module such as `std/json` turns the tree into text and text into a tree.
+
+Add `derives Shape` to a struct and the compiler writes both conversions. `Json.encode` writes any value that has `Shape`, and `Json.decode<Book>` reads text as a `Book`:
+
+```narra
+import * as Json from "std/json"
+
+struct Book derives Shape, Show {
+  title: string
+  author: string
+  cents: int
+  note: Option<string>
+  tags: Array<string>
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const book = Book {
+    title: "Dune",
+    author: "Herbert",
+    cents: 990,
+    note: None,
+    tags: ["novel", "space"],
+  }
+  const text = Json.encode(book)
+  print(text)
+  const copy = Json.decode<Book>(text)
+  if (copy is Ok(value)) {
+    print(Show.show(value))
+  }
+  const sparse = Json.decode<Book>(`{"title":"Emma","author":"Austen","cents":500,"tags":[],"extra":1}`)
+  if (sparse is Ok(value)) {
+    print(Show.show(value.note))
+  }
+  return 0
+}
+```
+
+```text
+{"title":"Dune","author":"Herbert","cents":990,"tags":["novel","space"]}
+Book { title: "Dune", author: "Herbert", cents: 990, note: None, tags: ["novel", "space"] }
+None
+```
+
+A struct becomes a JSON object with one key per field, in the order the struct declares them. The rules for the other direction are these:
+
+- An `Option` field that holds `None` is left out of the text. When the text has no such key, or has `null`, the field is `None`.
+- A key that the struct does not have is ignored, as `"extra"` is above.
+- A field with a default value, such as `year: int = 2000`, takes the default when the key is missing. Any other missing field is an error.
+
+`Json.decode` returns a `Result`. When the text is not valid JSON, or does not fit the type, the `Err` holds a message. For a mismatch the message starts with the path to the bad part, from the root of the document:
+
+```narra
+import * as Json from "std/json"
+
+struct Book derives Shape, Show {
+  title: string
+  cents: int
+  note: Option<string>
+  year: int = 2000
+}
+
+function report(text: string) uses io, alloc {
+  const result = Json.decode<Book>(text)
+  if (result is Err(message)) {
+    print(`error: ${message}`)
+  } else {
+    print(`ok: ${Json.encode(result.value)}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  report(`{"title":"Dune","cents":"990"}`)
+  report(`{"title":"Dune"}`)
+  report(`{"title":"Dune","cents":990`)
+  report(`{"title":"Dune","cents":990.5}`)
+  report(`[1]`)
+  report(`{"title":"Dune","cents":990}`)
+  return 0
+}
+```
+
+```text
+error: .cents: expected int, found Text
+error: .cents: missing field
+error: 1:28: unexpected end of input
+error: .cents: expected int, found Float
+error: expected Record, found List
+ok: {"title":"Dune","cents":990,"year":2000}
+```
+
+The third message is a syntax error and reads `<line>:<column>: <reason>`. The others name the path to the bad part. `.cents` is the key `cents` of the top object, and `.books[1]` would be the second item of the array under `books`. The kinds in the messages (`Text`, `Float`, `Record`, `List`) are the cases of `Value`. Decoding checks types strictly: an `int` field accepts a whole number and nothing else, so `990.5` and `"990"` are errors. An `f64` field accepts both `990` and `990.5`.
+
+An enum becomes an object with a `"type"` key that names the constructor, followed by the constructor's fields. It fails to decode when `"type"` is missing or names no constructor. Any type that has `Shape` can be a field, so structs, enums, arrays and maps with `string` keys nest as deep as you need:
+
+```narra
+import * as Json from "std/json"
+
+enum Item derives Shape, Show {
+  Book(title: string, cents: int)
+  Song(title: string, seconds: int)
+  Gift
+}
+
+struct Order derives Shape {
+  items: Array<Item>
+  prices: Map<string, int>
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const order = Order { items: [Item.Book("Dune", 990), Item.Gift], prices: Map { "Dune": 990 } }
+  print(Json.encode(order))
+  const bad = Json.decode<Item>(`{"type":"Film"}`)
+  if (bad is Err(message)) {
+    print(message)
+  }
+  return 0
+}
+```
+
+```text
+{"items":[{"type":"Book","title":"Dune","cents":990},{"type":"Gift"}],"prices":{"Dune":990}}
+.type: Item has no constructor "Film"
+```
+
+The compiler already provides `Shape` for `bool`, `int`, `f64`, `string`, `Array`, `Map<string, V>`, `Option` and tuples of two to four items, when their contents have it. A sized integer such as `i8` has no `Value` form, so a struct with such a field cannot derive `Shape`:
+
+```narra error
+// error: 2:21: cannot derive Shape for Book: field "stars" has type i8, which does not implement Shape: i8 has no Value form
+struct Book derives Shape {
+  title: string
+  stars: i8
+}
+
+export function run(args: Array<string>): int {
+  return 0
+}
+```
+
+You can also work with the tree yourself. `Json.parse` turns text into a `Value` without any type. This suits a document whose shape you do not know in advance. `Json.stringify` writes a `Value` back. To call `Shape` or name a case of `Value`, import them from `std/shape`. `derives Shape` itself needs no import:
+
+```narra
+import * as Json from "std/json"
+import { Shape, Value } from "std/shape"
+
+enum Item derives Shape, Show {
+  Book(title: string, cents: int)
+  Song(title: string, seconds: int)
+  Gift
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const tree = Json.parse(`{"a":[1,2.5,"x",null,true]}`)
+  if (tree is Ok(value)) {
+    print(Json.stringify(value))
+    if (value is Value.Record(_fields)) {
+      print("a record")
+    }
+  }
+  const direct = Shape.toValue(Item.Song("Blue", 215))
+  print(Json.stringify(direct))
+  if (Shape.fromValue<Item>(direct) is Ok(item)) {
+    print(Show.show(item))
+  }
+  return 0
+}
+```
+
+```text
+{"a":[1,2.5,"x",null,true]}
+a record
+{"type":"Song","title":"Blue","seconds":215}
+Song("Blue", 215)
+```
+
+`Json.encode(value)` is `Json.stringify(Shape.toValue(value))`, and `Json.decode<T>(text)` is `Json.parse` followed by `Shape.fromValue<T>`. [Chapter 13](13-standard-library.md#configuration-files-stdtoml) uses the same `Shape` to read TOML files into structs.
 
 Next: [8. Modules and packages](08-modules-and-packages.md).

@@ -174,6 +174,9 @@ function explainDifference(textmate: string, site: string, text: string): string
   if (textmate === 'identifier' && site === 'keyword' && (text === 'from' || text === 'typeof')) {
     return 'a keyword inside a type annotation';
   }
+  if (textmate === 'identifier' && site === 'keyword' && /^(for|while|const|let|of)$/.test(text)) {
+    return 'the loop after a label, which the TextMate grammar reads as a type annotation';
+  }
   if (textmate === 'identifier' && site === 'function') {
     return 'a call inside a type annotation';
   }

@@ -168,6 +168,125 @@ export function run(args: Array<string>): int {
 -9223372036854775808
 ```
 
+### Dividing by a name
+
+Division by zero has no answer, and Narra does not let a program reach it. The compiler accepts `/` and `%` on integers only when it can see that the divisor is not zero. A non-zero number written in the code is fine, which is why `totalCents / items` above compiled: `items` is a `const` set from `7`. A name that comes from somewhere else, such as a parameter, is not fine until you check it:
+
+```narra error
+// error: 3:23: the divisor must be a non-zero constant or a name checked against zero first; check the name first, as in `if (d != 0) { ... }`
+function average(totalCents: int, items: int): int {
+  return totalCents / items
+}
+
+export function run(args: Array<string>): int {
+  return average(10, 2)
+}
+```
+
+Check the name with `if`, and the compiler knows the answer inside the block. Any comparison that rules out zero works: `items != 0`, `items > 0`, `items >= 1` and the like. A check that ends the function early counts for the lines after it, and in `a && b` the check on the left counts for `b`:
+
+```narra
+import * as Int from "std/int"
+
+function share(totalCents: int, people: int): int {
+  if (people <= 0) {
+    return 0
+  }
+  return totalCents / people
+}
+
+function perItem(totalCents: int, items: int): int {
+  if (items != 0 && totalCents / items > 100) {
+    return totalCents / items
+  }
+  return 0
+}
+
+export function run(args: Array<string>): int {
+  print(Int.toString(share(900, 4)))
+  print(Int.toString(perItem(900, 3)))
+  return 0
+}
+```
+
+```text
+225
+300
+```
+
+A check proves a fact about a local name, and only until the name changes. Assigning to it ends the fact, with `=`, `+=` or `++`. So does passing it as `mutable`, and so does the start of a loop that does either. A field such as `order.items` or an array element is never narrowed, and neither is an expression such as `count - 1`. Copy the value into a local with `const`, then check the local:
+
+```narra error
+// error: 9:24: the divisor must be a non-zero constant or a name checked against zero first; copy it into a local first, then check the local
+struct Order {
+  items: int
+}
+
+export function run(args: Array<string>): int {
+  const order = Order { items: 3 }
+  if (order.items != 0) {
+    return 100 / order.items
+  }
+  return 0
+}
+```
+
+The same rule covers `%`, `/=` and `%=`. Float division needs no check. [Chapter 3](03-functions-and-closures.md) shows how a function can require a non-zero argument, so that its callers prove it.
+
+### Division when the divisor may be zero
+
+When you want "no result" as an answer, `Int.divmod` and `Int.floorDiv` take any divisor and return an `Option`: `None` for zero. `Int.divmod(a, b)` gives the quotient and remainder as a pair, truncating like `/` and `%`. `Int.floorDiv(a, b)` rounds toward negative infinity, so it differs from `/` on negative numbers:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  print(Int.toString(-7 / 2))
+  if (Int.floorDiv(-7, 2) is Some(rounded)) {
+    print(Int.toString(rounded))
+  }
+  if (Int.divmod(7, 2) is Some(#[quotient, remainder])) {
+    print(`${Int.toString(quotient)} remainder ${Int.toString(remainder)}`)
+  }
+  if (Int.divmod(7, 0) is None) {
+    print("no answer for 0")
+  }
+  return 0
+}
+```
+
+```text
+-3
+-4
+3 remainder 1
+no answer for 0
+```
+
+`Int.compare(a, b)` returns an `Ordering`: `Ordering.Less`, `Ordering.Equal` or `Ordering.Greater`.
+
+### Powers
+
+There is no power operator. `Math.powInt(base, exponent)` from `std/math` raises an `int` to a power, and `Math.pow(base, exponent)` does the same for `f64` values. `Math.powInt` returns an `Option<int>`, and a negative exponent gives `None`:
+
+```narra
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as Math from "std/math"
+
+export function run(args: Array<string>): int {
+  if (Math.powInt(2, 10) is Some(kilo)) {
+    print(Int.toString(kilo))
+  }
+  print(Float.toString(Math.pow(2.0, 0.5)))
+  return 0
+}
+```
+
+```text
+1024
+1.4142135623730951
+```
+
 ## Text
 
 The receipt needs lines of text. Build one item line, padded with dots:
@@ -205,6 +324,49 @@ export function run(args: Array<string>): int {
   print("tea" + "...")
   return 0
 }
+```
+
+To add to a string you already have, use `+=`. It is the one place `+` joins strings, and it is a statement like the other compound forms. `Str.concat(a, b)` joins two strings into a new one:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int {
+  let line = "tea"
+  line += " x "
+  line += Int.toString(3)
+  print(line)
+  print(Str.concat("total: ", "750"))
+  return 0
+}
+```
+
+```text
+tea x 3
+total: 750
+```
+
+To add many pieces in a loop, use a string builder instead. `Str.builder()` starts an empty one, `Str.append(mutable out, text)` and `Str.appendChar(mutable out, char)` add to it, and `Str.build(out)` gives the finished string:
+
+```narra
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+export function run(args: Array<string>): int {
+  const prices = [250, 320, 180]
+  let out = Str.builder()
+  for (const price of prices) {
+    Str.append(mutable out, Int.toString(price))
+    Str.appendChar(mutable out, ',')
+  }
+  print(Str.build(out))
+  return 0
+}
+```
+
+```text
+250,320,180,
 ```
 
 Text often arrives as one line you need to take apart. `Str.split` cuts a string at each separator and gives the pieces as an array. Arrays come later in this chapter. For now, `parts[0]` is the first piece and `parts[1]` the second:
@@ -317,6 +479,74 @@ export function run(args: Array<string>): int {
   if (count) {
     print("not empty")
   }
+  return 0
+}
+```
+
+When both cases are values, `condition ? a : b` picks one. Only the chosen side runs:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const totalCents = 1250
+  const label = totalCents >= 1000 ? "large" : "small"
+  print(`${label} ${Int.toString(totalCents)}`)
+  return 0
+}
+```
+
+```text
+large 1250
+```
+
+### Long lines
+
+A line break ends a statement when the line could end there. A line that ends with an operator, a `,` or an opening `(`, `[` or `{` goes on to the next line. You can break after `+` or inside a call:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const totalCents = 1250
+  const withTax = totalCents +
+    totalCents / 10
+  print(Int.toString(withTax))
+  return 0
+}
+```
+
+```text
+1375
+```
+
+A line that starts with `?` or `:` does not continue the line above, so a `? :` over several lines needs parentheses around it:
+
+```narra
+export function run(args: Array<string>): int {
+  const totalCents = 1250
+  const label = (totalCents >= 1000
+    ? "large"
+    : "small")
+  print(label)
+  return 0
+}
+```
+
+```text
+large
+```
+
+Without the parentheses the compiler stops and tells you to add them:
+
+```narra error
+// error: 5:5: a conditional expression that spans lines must be wrapped in parentheses, as in `(cond ? a : b)`
+export function run(args: Array<string>): int {
+  const totalCents = 1250
+  const label = totalCents >= 1000
+    ? "large"
+    : "small"
+  print(label)
   return 0
 }
 ```
@@ -455,6 +685,57 @@ paid items looked at: 2
 
 Both work in `while` loops too.
 
+### Count with a `for` header
+
+When a loop counts with a name of its own, use the C-style `for`. Its header holds the start, the condition and the step, separated by `;`. The name is a `let`, and the step is an assignment or a call, such as `day++`:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  for (let day = 1; day <= 3; day++) {
+    print(Int.toString(day))
+  }
+  return 0
+}
+```
+
+```text
+1
+2
+3
+```
+
+`continue` runs the step before it tests the condition again. `for (;;)` loops until a `break`. The `;` belongs to this header and is an error anywhere else.
+
+### Leave an outer loop
+
+`break` and `continue` act on the innermost loop. To act on an outer one, put a label before it, as in `outer: for ...`, and name it: `break outer` or `continue outer`. Here the search through rows skips the rest of the first row and stops at the first 4:
+
+```narra
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const rows = [[1, 2], [3, 4], [5, 6]]
+  outer: for (const row of rows) {
+    for (const cell of row) {
+      if (cell == 1) {
+        continue outer
+      }
+      if (cell == 4) {
+        break outer
+      }
+      print(Int.toString(cell))
+    }
+  }
+  return 0
+}
+```
+
+```text
+3
+```
+
 ### Arrays are values
 
 What happens to a copy when you change the original? Keep a snapshot of the prices, then add one:
@@ -490,6 +771,37 @@ export function run(args: Array<string>): int {
   return 0
 }
 ```
+
+### More array functions
+
+Two more functions from `std/array` return a new array and leave the old one alone. `Arrays.map(items, change)` applies a function to each element, and `Arrays.slice(items, start, end)` takes the elements from `start` up to, but not including, `end`. Like `Str.slice`, it returns `None` when a position is out of range:
+
+```narra
+import * as Int from "std/int"
+import * as Arrays from "std/array"
+
+export function run(args: Array<string>): int {
+  const prices = [250, 320, 180, 400]
+  const withTax = Arrays.map(prices, (price) => price + price / 10)
+  for (const price of withTax) {
+    print(Int.toString(price))
+  }
+  if (Arrays.slice(prices, 1, 3) is Some(middle)) {
+    print(Int.toString(Arrays.length(middle)))
+  }
+  return 0
+}
+```
+
+```text
+275
+352
+198
+440
+2
+```
+
+`Arrays.withCapacity(count)` makes an empty array with room for `count` elements, which saves growing it when you know the size in advance. `Arrays.values(items)` loops over the elements, as `for (const price of prices)` already does.
 
 ## Look up a value by name
 
@@ -560,6 +872,46 @@ tea is gone
 ```
 
 `Maps.remove` returns `true` when the key was there and `false` when it was not. An empty map has no entries to tell the compiler its types, so you write them: `Map<string, int> {}`.
+
+### Count with a map
+
+A common job is counting: how often does each item appear in a list of sales? You cannot write `counts[item] += 1`, because a key that is not there yet has no old value to add to:
+
+```narra error
+// error: 5:3: only variables, fields and array elements take a compound assignment
+export function run(args: Array<string>): int {
+  let counts = Map<string, int> {}
+  const item = "tea"
+  counts[item] += 1
+  return 0
+}
+```
+
+`Maps.update(mutable counts, key, initial, change)` sets the entry to `change(old)`, where `old` is the current value, or to `change(initial)` when the key is missing. With `initial` 0 and a `change` that adds 1, it counts:
+
+```narra
+import * as Int from "std/int"
+import * as Maps from "std/map"
+
+export function run(args: Array<string>): int {
+  const sales = ["tea", "coffee", "tea", "tea"]
+  let counts = Map<string, int> {}
+  for (const item of sales) {
+    Maps.update(mutable counts, item, 0, (count) => count + 1)
+  }
+  for (const #[item, count] of Maps.entries(counts)) {
+    print(`${item}: ${Int.toString(count)}`)
+  }
+  return 0
+}
+```
+
+```text
+tea: 3
+coffee: 1
+```
+
+`Maps.entries` gives each key with its value as a pair, in the order the keys were added.
 
 ## Group a few values
 

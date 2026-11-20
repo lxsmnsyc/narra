@@ -417,7 +417,7 @@ export function run(args: Array<string>): int {
 
 A single character in single quotes, such as `'é'`, is a `char`, not a `string`. `Str.fromChar` turns a `char` into a one-character string.
 
-Four more functions tidy text. `Str.trimStart` and `Str.trimEnd` remove white space from one end, `Str.padStart` and `Str.padEnd` grow a string to a width by repeating a `char`, and `Str.lastIndexOf` is `Str.indexOf` from the right. The width counts bytes, like `Str.length`, and the fill is added as whole characters, so a fill of two bytes never splits and a string already at the width comes back unchanged:
+Four more functions tidy text. `Str.trimStart` and `Str.trimEnd` remove white space from one end, `Str.padStart` and `Str.padEnd` grow a string to a width by repeating a `char`, and `Str.lastIndexOf` is `Str.indexOf` from the right. The width counts bytes, like `Str.length`, so `"café"` is five bytes wide and `Str.padStart("café", 7, '0')` gives `00café`. The fill is added as whole characters, so a fill of two bytes never splits, and a string already at the width comes back unchanged:
 
 ```narra
 import * as Int from "std/int"
@@ -427,6 +427,7 @@ export function run(args: Array<string>): int {
   print(`[${Str.trimStart("  42  ")}]`)
   print(`[${Str.trimEnd("  42  ")}]`)
   print(Str.padStart("42", 5, '0'))
+  print(Str.padStart("café", 7, '0'))
   print(`${Str.padEnd("name", 8, '.')}|`)
   if (Str.lastIndexOf("a/b/c", "/") is Some(index)) {
     print(Int.toString(index))
@@ -439,11 +440,12 @@ export function run(args: Array<string>): int {
 [42  ]
 [  42]
 00042
+00café
 name....|
 3
 ```
 
-`std/char` also tells what kind of character you have: `Char.isDigit`, `Char.isLetter`, `Char.isAlphanumeric`, `Char.isUpper`, `Char.isLower` and `Char.isWhitespace`. They cover ASCII only, so `'é'` is in none of them. `std/unicode` has the Unicode tables for case, grapheme clusters and width, but no letter classes.
+`std/char` also tells what kind of character you have: `Char.isDigit`, `Char.isLetter`, `Char.isAlphanumeric`, `Char.isUpper`, `Char.isLower` and `Char.isWhitespace`. They cover ASCII only: `Char.isLetter('é')` is `false`, and `'é'` is in none of the six. `std/unicode` has the Unicode tables for case, grapheme clusters and width, but no letter classes.
 
 ```narra
 import * as Char from "std/char"
@@ -1169,7 +1171,7 @@ Values from `1e-7` up to below `1e21` print in plain notation. Float division by
 
 ### Fixed decimals and reading a float
 
-`Float.toFixed(value, digits)` prints a float with exactly that many digits after the point, from 0 to 20. It rounds the way C's `%.*f` does, on the exact binary value, so `1.005` with two digits gives `1.00` (the stored number is just below `1.005`) and a tie such as `2.5` with no digits goes to the even neighbour, `2`. It returns `None` for a digit count outside 0 to 20. `Float.parse` is the other direction. Like `Int.parse` it returns a `Result`: digits with an optional sign, point and exponent, and nothing else (no spaces, `inf`, `nan` or hex), or an `Err` that says what is wrong.
+`Float.toFixed(value, digits)` prints a float with exactly that many digits after the point, from 0 to 20. It rounds the way C's `%.*f` does, on the exact binary value, so `1.005` with two digits gives `1.00` (the stored number is just below `1.005`) and a tie such as `2.5` with no digits goes to the even neighbour, `2`. It returns `None` for a digit count outside 0 to 20. `Float.parse` is the other direction. Like `Int.parse` it returns a `Result`: digits with an optional sign, point and exponent, and nothing else (no spaces, `inf`, `nan` or hex), or an `Err` that says what is wrong. A number too small to represent reads as `0.0`, while a number too large is an `Err`.
 
 ```narra
 import * as Float from "std/float"

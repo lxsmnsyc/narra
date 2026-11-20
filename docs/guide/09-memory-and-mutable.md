@@ -279,7 +279,8 @@ export function run(args: Array<string>): int {
 A spell swaps the positions of two players. With two local variables, `swapPositions(mutable hero, mutable rival)` works. The game keeps its players in an array, though, and passing two elements of it fails:
 
 ```narra error
-// error: 20:32: "players" is passed as mutable in this call, so no other argument can use it
+// error: 21:32: "players" is passed as mutable in this call, so no other argument can use it
+// error: 21:52: "players" is passed as mutable in this call, so no other argument can use it
 struct Position {
   x: int
   y: int
@@ -610,7 +611,9 @@ The fix is the same: copy it into a `const` (`const current = score.points`) and
 Sometimes a stored closure has to see a score that keeps changing. The game wants a scorer that is handed out and called later, once per kill. A `let` cannot be captured there:
 
 ```narra error
-// error: 5:5: a closure cannot capture "score" because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
+// error: 7:5: a closure cannot capture "score" because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
+// error: 7:13: a closure cannot capture "score" because it is declared with let
+// error: 8:12: a closure cannot capture "score" because it is declared with let
 function makeScorer(): (points: int) => int {
   let score = 0
   return (points) => {

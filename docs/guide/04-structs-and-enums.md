@@ -489,11 +489,11 @@ An alias is the same type as the one it names. A `Cart` is an `Array<string>`, a
 An alias can take type parameters. `Pair<T>` is a tuple of two values of the same type, and `Shelf<V>` is a map from names to `V`. Every use writes the type arguments, so `Pair` alone is an error:
 
 ```narra error
-// error: 5:17: type alias Pair takes 1 type arguments, found 0
+// error: 3:15: type alias Pair takes 1 type arguments, found 0
 type Pair<T> = #[T, T]
+type Prices = Pair
 
 export function run(args: Array<string>): int {
-  const prices: Pair = #[1, 2]
   return 0
 }
 ```
@@ -543,15 +543,15 @@ export function run(args: Array<string>): int {
 A top-level constant written without a type has the type of its value. The compiler does not know that type yet when it reads the signatures of the module. So `typeof` of such a constant in a signature, a field or an alias is an error:
 
 ```narra error
-// error: 4:31: the type of constant "STANDARD_DISCOUNT" is not known here; write it as `const STANDARD_DISCOUNT: Type = ...`
+// error: 5:10: the type of constant "STANDARD_DISCOUNT" is not known here; write it as `const STANDARD_DISCOUNT: Type = ...`
 const STANDARD_DISCOUNT = 50
 
-function applyDiscount(cents: typeof STANDARD_DISCOUNT): int {
-  return cents
+struct Price {
+  cents: typeof STANDARD_DISCOUNT
 }
 
 export function run(args: Array<string>): int {
-  return applyDiscount(STANDARD_DISCOUNT)
+  return 0
 }
 ```
 

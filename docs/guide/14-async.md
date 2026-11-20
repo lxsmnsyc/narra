@@ -299,7 +299,8 @@ home took 5 ms, then news took 5 ms
 An async arrow or block may run long after the code that wrote it has moved on. So it captures values the way a stored closure does ([chapter 3](03-functions-and-closures.md)). It gets a copy of each name it uses when the task starts, and it cannot capture a `let`:
 
 ```narra error
-// error: 5:5: an async arrow or block cannot capture "fetched", which is declared with let
+// error: 6:5: an async arrow or block cannot capture "fetched", which is declared with let
+// error: 7:12: an async arrow or block cannot capture "fetched", which is declared with let
 export async function run(args: Array<string>): int {
   let fetched = 0
   const counting = async {

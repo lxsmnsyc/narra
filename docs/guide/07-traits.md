@@ -174,6 +174,7 @@ struct Ticket {
 }
 
 function printCatalog<T: Label>(heading: string, items: Array<T>) {
+  print(heading)
   for (const item of items) {
     print(Label.label(item))
   }
@@ -455,7 +456,8 @@ Compare the fields you care about instead, such as `first.title == second.title`
 A map finds a key by its hash, a number worked out from the key's contents. The trait behind it is `Hashable`, and the compiler implements it for every type without a function or a float inside. A map key needs both `Equatable` and `Hashable`. A decimal number cannot be a key, because two results of a calculation that print the same can differ in the last bit:
 
 ```narra error
-// error: 7:14: Weight cannot be a map key: float keys are not allowed
+// error: 8:14: Weight cannot be a map key: float keys are not allowed
+// error: 8:33: Weight cannot be a map key: float keys are not allowed
 struct Weight {
   kilograms: f64
 }
@@ -566,7 +568,7 @@ Song { title: "Blue", seconds: 30 }
 No argument says which version to call, so the call names the type: `Placeholder.placeholder<Book>("Dune")`. When the expected type says it, as in `const song: Song = ...`, you can leave it out. In the generic `placeholders`, `<T>` passes on whichever type the caller chose. Without a type, the call is an error:
 
 ```narra error
-// error: 17:39: Placeholder.placeholder has Self only in its result; name the type, as in Placeholder.placeholder<Type>(...)
+// error: 17:26: Placeholder.placeholder has Self only in its result; name the type, as in Placeholder.placeholder<Type>(...)
 trait Placeholder {
   function placeholder(title: string): Self
 }
@@ -582,8 +584,7 @@ implement Placeholder for Book {
 }
 
 export function run(args: Array<string>): int {
-  const book = Placeholder.placeholder("Dune")
-  print(book.title)
+  Placeholder.placeholder("Dune")
   return 0
 }
 ```

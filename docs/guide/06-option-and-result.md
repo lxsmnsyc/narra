@@ -257,7 +257,8 @@ Both versions of `readNumber` do the same thing. The helpers suit short chains t
 When an arrow function passed to these helpers returns a bare `None` or `Err(...)`, the compiler cannot work out the missing type. It asks for an annotation:
 
 ```narra error
-// error: 6:50: cannot tell the type of None here; add a type annotation
+// error: 7:50: cannot tell the type of None here; add a type annotation
+// error: 7:38: expected (int) => Option<U>, found (int) => void; the argument does not fit the generic parameter
 import * as Options from "std/option"
 
 export function run(args: Array<string>): int {

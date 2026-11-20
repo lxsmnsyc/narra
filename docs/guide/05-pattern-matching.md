@@ -466,13 +466,18 @@ export function run(args: Array<string>): int {
 An `is` that binds names must be the whole condition of its `if`. On the other side of an `&&`, the names would not exist. The message also mentions the conditional expression, `? :`, which comes at the end of this chapter:
 
 ```narra error
-// error: 4:13: an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression
+// error: 5:13: an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression
+// error: 5:41: unknown name "quantity"
 export function run(args: Array<string>): int {
   const found: Option<int> = Some(12)
-  if (found is Some(quantity) && quantity >= 10) {
+  if (found is Some(quantity) && isBulk(quantity)) {
     print("bulk")
   }
   return 0
+}
+
+function isBulk(quantity: int): bool {
+  return quantity >= 10
 }
 ```
 

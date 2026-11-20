@@ -94,7 +94,8 @@ The C-style `for (let i = 0; i < n; i++)` loop works as in TypeScript. To walk a
 TypeScript has one `number`. Narra has two number types: `int` for whole numbers and `f64` for decimals. The TypeScript name is an error:
 
 ```narra error
-// error: 2:24: there is no `number`; use `int` or `f64`
+// error: 3:24: there is no `number`; use `int` or `f64`
+// error: 3:33: there is no `number`; use `int` or `f64`
 function double(value: number): number {
   return value * 2
 }
@@ -515,8 +516,11 @@ The error moves up by hand: test, return the `Err`, and read the value on the ne
 A TypeScript promise or return value can be dropped without a word. A `Result` that is dropped is a compile error. `const _ = save(text)` drops it on purpose, where TypeScript would write `void save(text)` ([chapter 6](06-option-and-result.md#a-result-must-be-used)):
 
 ```narra error
-// error: 7:3: this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`
+// error: 10:3: this call returns a Result that is not checked; handle it, or discard it with `const _ = ...`
 function save(text: string): Result<int, string> {
+  if (text == "") {
+    return Err("empty")
+  }
   return Ok(1)
 }
 
@@ -539,16 +543,19 @@ function double(value: int) {
 }
 
 export function run(args: Array<string>): int {
-  return double(0)
+  double(0)
+  return 0
 }
 ```
 
 A parameter can have a default, as in TypeScript, but the default must be a constant: `depth: int = 0` works, `depth: int = start()` does not ([chapter 3](03-functions-and-closures.md#arguments-a-caller-may-leave-out)). There is no `name?: T`; write `name: Option<T> = None`, and the caller passes `Some(3)`. There are no rest parameters or overloads. Each function has one list of parameters, and two functions in a module cannot share a name. Give each version its own name:
 
 ```narra error
-// error: 5:1: function "describe" is declared twice
+// error: 7:1: function "describe" is declared twice
+import * as Int from "std/int"
+
 function describe(cents: int): string {
-  return "a price"
+  return Int.toString(cents)
 }
 function describe(name: string): string {
   return name
@@ -615,7 +622,9 @@ function makeCounter() {
 ```
 
 ```narra error
-// error: 5:5: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
+// error: 7:5: a closure cannot capture "count" because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
+// error: 7:13: a closure cannot capture "count" because it is declared with let
+// error: 8:12: a closure cannot capture "count" because it is declared with let
 function makeCounter(): () => int {
   let count = 0
   return () => {
@@ -697,7 +706,8 @@ A `mutable` parameter reaches the contents of a value, so its type must have con
 A function parameter can be called while the function runs, and nothing more. To return it, store it or capture it in a closure that outlives the call, mark it `escaping`. TypeScript has no such marker, since every function value there may be kept ([chapter 3](03-functions-and-closures.md#make-new-functions-from-old-ones)):
 
 ```narra error
-// error: 3:21: a closure cannot capture parameter "rule" because it is not escaping; declare it as `escaping rule`
+// error: 4:21: a closure cannot capture parameter "rule" because it is not escaping; declare it as `escaping rule`
+// error: 4:26: a closure cannot capture parameter "rule" because it is not escaping
 function twice(rule: (cents: int) => int): (cents: int) => int {
   return (cents) => rule(rule(cents))
 }
@@ -823,13 +833,15 @@ export function run(args: Array<string>): int {
 A trait is narrower than an interface. It holds only functions, and a type lists all of its traits where it is declared, with `implements` or `derives` ([chapter 7](07-traits.md#giving-two-types-the-same-operation)). Typing is not structural: a struct has a trait only when it lists it, even when a function of the right shape exists:
 
 ```narra error
-// error: 13:13: Ticket does not implement Label, which show needs for type parameter T
+// error: 15:13: Ticket does not implement Label, which show needs for type parameter T
+import * as Int from "std/int"
+
 trait Label {
   function label(item: Self): string
 }
 struct Ticket { seat: int }
 function label(item: Ticket): string {
-  return "ticket"
+  return Int.toString(item.seat)
 }
 function show<T: Label>(item: T): string {
   return Label.label(item)
@@ -843,7 +855,7 @@ export function run(args: Array<string>): int {
 A trait function is called through the trait, as `Label.label(book)`, where TypeScript writes `book.label()`. The method form is the same error as `items.push`:
 
 ```narra error
-// error: 14:14: there are no method calls; call a module function such as Module.label(value, ...) (value has type Book)
+// error: 14:8: there are no method calls; call a module function such as Module.label(value, ...) (value has type Book)
 trait Label {
   function label(item: Self): string
 }
@@ -856,7 +868,7 @@ implement Label for Book {
 
 export function run(args: Array<string>): int {
   const book = Book { title: "Dune" }
-  print(book.label())
+  book.label()
   return 0
 }
 ```

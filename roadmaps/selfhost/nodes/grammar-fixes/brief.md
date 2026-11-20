@@ -1,7 +1,7 @@
 ---
 id: grammar-fixes
 title: "TextMate grammar: labels and function types in type arguments"
-status: todo
+status: active
 priority: could
 type: fix
 story: batch-21
@@ -27,6 +27,8 @@ owns:
 shared:
   - website/scripts/check-grammar.ts
   - docs/guide/09-memory-and-mutable.md
+  - docs/guide/16-unsafe-code-and-c.md
+  - website/src/highlight/**
 reserves: []
 provides: []
 depends_on: []
@@ -40,9 +42,11 @@ The website build checks the TextMate grammar (`editors/textmate`) against the c
 - A label before a loop (`outer: for (...)`) is read as a type annotation. guide-basics-gaps added it to the known-differences list in `explainDifference` instead of fixing it.
 - A function type inside nested type arguments (`Cell<Option<() => int>>`) fails the build; chapter 9 uses `type Handler = () => int` to avoid it.
 
-Fix both in the grammar, remove the known-difference entry, and let chapter 9 write the type directly if that reads better (keep the alias if it reads better as it is). Editors that use the grammar get the fix too.
+- Names the site highlighter (`website/src/highlight/narra.ts`) and the TextMate grammar color differently, found by guide-c-interop: `I32`, `U8`, `U64` (site: constant, TextMate: class name) and `CStrings`, `CString` (site: class name, TextMate: identifier). Chapter 16 imports `std/cstring` as `Cstrings`, never writes `CString`, and avoids `std/i32` and `std/u8` because of it.
+
+Fix all of them so the grammar and the site agree with the compiler's tokens, remove the known-difference entry, let chapter 9 write the type directly if that reads better (keep the alias if it reads better as it is), and change chapter 16 back to the spec's names (`CStrings`, `CString`, and the sized-integer modules where they read better). Editors that use the grammar get the fix too.
 
 ## Acceptance
 
-- [ ] Both cases highlight like the compiler's tokens; the known-difference entry for labels is gone.
+- [ ] Every case above highlights like the compiler's tokens; the known-difference entry for labels is gone.
 - [ ] `pnpm --dir website build` passes.

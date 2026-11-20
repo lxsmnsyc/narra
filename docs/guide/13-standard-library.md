@@ -4,7 +4,7 @@ The earlier chapters used a few standard modules along the way: `std/int`, `std/
 
 ## Iterators: `std/iterator`
 
-A generator, written `function*`, gives values one at a time, and a `for ... of` loop asks it for the next one only when it needs it. `std/iterator` holds the usual operations over generators:
+`std/iterator` holds the usual operations over generators, the `function*` values of [chapter 12](12-generators.md):
 
 ```narra
 import * as Iterators from "std/iterator"
@@ -156,7 +156,7 @@ by hand one
 by hand two
 ```
 
-The second loop starts from `"one"` again, and runs the generator's work a second time. To take a few values and go on from there, resume the generator yourself with `Co.resume(mutable source)`: it moves `source` itself, and each resume goes on where the last one stopped.
+The second loop starts from `"one"` again, and runs the generator's work a second time. To take a few values and go on from there, resume the generator yourself with `Co.resume(mutable source)` ([chapter 12](12-generators.md#resume-a-generator-by-hand)). It moves `source` itself, and each resume goes on where the last one stopped.
 
 ### Effects
 

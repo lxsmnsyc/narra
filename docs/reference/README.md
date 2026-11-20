@@ -4,6 +4,6 @@ Pages to look things up in. To learn Narra from the start, read the [guide](../g
 
 - Std: every public module of the standard library, with the signature and effects of each export. Coming.
 - Commands: every `narrac` command and flag, with exit codes and environment variables. Coming.
-- `narra.toml`: every table and key, its type and default. Coming.
+- [`narra.toml`](narra-toml.md): every table and key, its type and default, and the error code for a wrong value.
 - Errors: every diagnostic code with its message and explanation. Coming.
 - [Spec](../../SPEC.md): the language specification, rule by rule.

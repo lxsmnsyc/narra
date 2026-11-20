@@ -21,7 +21,7 @@ struct narra_task {
   // Set when the task that started this one was cancelled then: a suspending
   // std call of this task returns Err(AsyncError.Cancelled) at once.
   bool started_cancelled;
-  // Set on the task of a suspending std function (std/async/time) once it
+  // Set on the task of a suspending std function (Time.sleep) once it
   // waits in the loop: a cancel of the task awaiting it reaches its wait.
   bool forwards_cancel;
   // Set on the task of Async.all: a cancel of it stops there and does not

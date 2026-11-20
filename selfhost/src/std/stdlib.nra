@@ -2,18 +2,27 @@
 // std modules (the prelude first). The rows of each module are in std<module>.nra
 // beside its checks and emitters; this file registers them and resolves the type
 // texts of the rows.
-import { StdFunc, Registry, newRegistry, register } from "narrac/std/builtins"
+import {
+  StdFunc,
+  StdType,
+  Registry,
+  newRegistry,
+  register,
+  registerType,
+} from "narrac/std/builtins"
 import { Checker, typeString } from "narrac/check/check"
 import { stdType } from "narrac/std/stdtypes"
 import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Str from "std/string"
 import { PRELUDE_FUNCS } from "narrac/std/stdprelude"
 import { INT_FUNCS } from "narrac/std/stdint"
 import { FLOAT_FUNCS } from "narrac/std/stdfloat"
-import { STRING_FUNCS } from "narrac/std/stdstring"
+import { STRING_FUNCS, listStringTypes } from "narrac/std/stdstring"
 import { ARRAY_FUNCS } from "narrac/std/stdarray"
 import { BOX_FUNCS } from "narrac/std/stdbox"
-import { POINTER_FUNCS } from "narrac/std/stdptr"
-import { SIMD_FUNCS } from "narrac/std/stdsimd"
+import { POINTER_FUNCS, listPointerTypes } from "narrac/std/stdptr"
+import { SIMD_FUNCS, listSimdTypes } from "narrac/std/stdsimd"
 import { CHAR_FUNCS } from "narrac/std/stdchar"
 import { CELL_FUNCS } from "narrac/std/stdcell"
 import { COROUTINE_FUNCS } from "narrac/std/stdcoroutine"
@@ -54,6 +63,7 @@ import { THREAD_FUNCS, INTERNAL_THREAD_FUNCS } from "narrac/std/stdthread"
 import { ITERATOR_FUNCS } from "narrac/std/stditerator"
 import { ARGS_FUNCS } from "narrac/std/stdargs"
 import { ARENA_FUNCS } from "narrac/std/stdarena"
+import { SET_FUNCS } from "narrac/std/stdset"
 import { TOML_FUNCS } from "narrac/std/stdtoml"
 import { TERMINAL_FUNCS } from "narrac/std/stdterminal"
 import { REGEX_FUNCS } from "narrac/std/stdregex"
@@ -72,6 +82,12 @@ const TEMPLATE_FUNCS: Array<StdFunc> = [
 function registerAll(mutable registry: Registry, table: Array<StdFunc>) uses alloc {
   for (const builtin of Arrays.values(table)) {
     register(mutable registry, builtin)
+  }
+}
+
+function registerTypes(mutable registry: Registry, types: Array<StdType>) uses alloc {
+  for (const builtinType of Arrays.values(types)) {
+    registerType(mutable registry, builtinType)
   }
 }
 
@@ -131,11 +147,40 @@ export function stdRegistry(): Registry uses alloc {
   registerAll(mutable registry, ITERATOR_FUNCS)
   registerAll(mutable registry, ARGS_FUNCS)
   registerAll(mutable registry, ARENA_FUNCS)
+  registerAll(mutable registry, SET_FUNCS)
   registerAll(mutable registry, TOML_FUNCS)
   registerAll(mutable registry, TERMINAL_FUNCS)
   registerAll(mutable registry, REGEX_FUNCS)
   registerAll(mutable registry, UNICODE_FUNCS)
+  // A module that brings a type into view without source registers it after its functions.
+  registerTypes(mutable registry, listStringTypes())
+  registerTypes(mutable registry, listPointerTypes())
+  registerTypes(mutable registry, listSimdTypes())
   return registry
+}
+
+export function listDisplayProblems(registry: Registry): Array<string> uses alloc {
+  // `narrac builtins` prints the lines, and the query suite fails on them: every public row
+  // shows named parameters in `narrac query interface`.
+  let problems: Array<string> = []
+  for (const builtin of Arrays.values(registry.functions)) {
+    if (Str.startsWith(builtin.module, "std/internal/")) {
+      continue
+    }
+    const hasCheck = builtin.check != "" && builtin.check != "fixed"
+    if (hasCheck && builtin.signature == "") {
+      Arrays.push(mutable problems, `display ${builtin.name}: a check function and no signature`)
+    }
+    const nameCount = Arrays.length(builtin.parameterNames)
+    const parameterCount = Arrays.length(builtin.parameters)
+    if (builtin.signature == "" && nameCount != parameterCount) {
+      Arrays.push(
+        mutable problems,
+        `display ${builtin.name}: ${Int.toString(nameCount)} parameter names for ${Int.toString(parameterCount)} parameters`,
+      )
+    }
+  }
+  return problems
 }
 
 export function typeProblems(mutable checker: Checker): Array<string> uses alloc {

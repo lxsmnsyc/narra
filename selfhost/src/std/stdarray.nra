@@ -8,16 +8,33 @@ import * as Arrays from "std/array"
 import { checkExpression, checkExclusive, checkMutableArgument } from "narrac/check/exprs"
 import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/std/stdcheckhelp"
 
+// values and entries give no array a program can keep.
+const LOOP_SOURCE_NOTE = "only as the source of a for ... of loop"
+
 export const ARRAY_FUNCS: Array<StdFunc> = [
-  StdFunc { name: "Array.entries", module: "std/array", key: "entries", check: "checkArrayLength" },
+  StdFunc {
+    name: "Array.entries",
+    module: "std/array",
+    key: "entries",
+    check: "checkArrayLength",
+    signature: "<T>(items: Array<T>): Array<#[int, T]>",
+    note: LOOP_SOURCE_NOTE,
+  },
   StdFunc {
     name: "Array.filled",
     module: "std/array",
     key: "filled",
     effects: ["alloc"],
     check: "checkArrayFilled",
+    signature: "<T>(value: T, count: int): Option<Array<T>>",
   },
-  StdFunc { name: "Array.length", module: "std/array", key: "length", check: "checkArrayLength" },
+  StdFunc {
+    name: "Array.length",
+    module: "std/array",
+    key: "length",
+    check: "checkArrayLength",
+    signature: "<T>(items: Array<T>): int",
+  },
   StdFunc {
     name: "Array.push",
     module: "std/array",
@@ -25,6 +42,15 @@ export const ARRAY_FUNCS: Array<StdFunc> = [
     mutables: [true, false],
     effects: ["alloc"],
     check: "checkArrayPush",
+    signature: "<T>(mutable items: Array<T>, item: T)",
+  },
+  StdFunc {
+    name: "Array.truncate",
+    module: "std/array",
+    key: "truncate",
+    mutables: [true, false],
+    check: "checkArrayTruncate",
+    signature: "<T>(mutable items: Array<T>, length: int)",
   },
   StdFunc {
     name: "Array.withCapacity",
@@ -32,8 +58,16 @@ export const ARRAY_FUNCS: Array<StdFunc> = [
     key: "withCapacity",
     effects: ["alloc"],
     check: "checkArrayWithCapacity",
+    signature: "<T>(count: int): Array<T>",
   },
-  StdFunc { name: "Array.values", module: "std/array", key: "values", check: "checkArrayLength" },
+  StdFunc {
+    name: "Array.values",
+    module: "std/array",
+    key: "values",
+    check: "checkArrayLength",
+    signature: "<T>(items: Array<T>): Array<T>",
+    note: LOOP_SOURCE_NOTE,
+  },
 ]
 
 function checkArrayLength<W: Walker>(
@@ -100,6 +134,36 @@ function checkArrayPush<W: Walker>(
     return Type.TVoid
   }
   const message = `Array.push needs an array, found ${typeString(checker, found)}`
+  reportError(mutable checker, pos, "E0906", message)
+  return Type.TVoid
+}
+
+function checkArrayTruncate<W: Walker>(
+  mutable checker: Checker,
+  walker: W,
+  pos: Pos,
+  arguments: Array<Arg>,
+  name: string,
+): Type uses alloc {
+  if (!checkArgumentCount(mutable checker, walker, pos, arguments, name, 2)) {
+    return Type.TVoid
+  }
+  if (!arguments[0].isMutable) {
+    reportError(
+      mutable checker,
+      pos,
+      "E0905",
+      "Array.truncate changes the array; write Array.truncate(mutable items, length)",
+    )
+  }
+  const found = checkExpression(mutable checker, walker, arguments[0].value, None)
+  if (found is Type.TArray(_)) {
+    checkMutableArgument(mutable checker, arguments[0].value)
+    checkArgumentAgainst(mutable checker, walker, arguments[1].value, Type.TInt)
+    checkExclusive(mutable checker, arguments, [0])
+    return Type.TVoid
+  }
+  const message = `Array.truncate needs an array, found ${typeString(checker, found)}`
   reportError(mutable checker, pos, "E0906", message)
   return Type.TVoid
 }
@@ -174,6 +238,9 @@ export function checkArrayCall<W: Walker>(
   }
   if (kind == "checkArrayPush") {
     return checkArrayPush(mutable checker, walker, pos, arguments, name)
+  }
+  if (kind == "checkArrayTruncate") {
+    return checkArrayTruncate(mutable checker, walker, pos, arguments, name)
   }
   if (kind == "checkArrayFilled") {
     return copy(checkArrayFilled(mutable checker, walker, pos, arguments, name, want))

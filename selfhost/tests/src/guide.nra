@@ -3,8 +3,9 @@
 //   narra           is a program; the `text` block right after it holds its
 //                   stdout. It runs in debug (sanitizers, leak check) and
 //                   release mode.
-//   narra error     must not compile; its first line is `// error: TEXT` and
-//                   `narrac check` must report TEXT.
+//   narra error     must not compile; its first lines are `// error: TEXT`, one
+//                   per diagnostic, and `narrac check` must report each TEXT and
+//                   no other diagnostic.
 //   narra fragment  is not run.
 //   narra file PACKAGE PATH
 //                   is one file of a multi-file package. Blocks with the same
@@ -123,7 +124,10 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
     return Err(Str.sliceFrom(testCase.variant, 7))
   }
   // The name is FILE:LINE or FILE:LINE/MODE.
-  const colon = lastIndexOf(testCase.name, ":")
+  let colon = -1
+  if (Str.lastIndexOf(testCase.name, ":") is Some(found)) {
+    colon = found
+  }
   let lineText = Str.sliceFrom(testCase.name, colon + 1)
   const slash = Str.indexOf(lineText, "/")
   if (slash is Some(position)) {
@@ -147,16 +151,6 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
     }
   }
   return Err(`no sample at line ${lineText}`)
-}
-
-function lastIndexOf(text: string, piece: string): int uses alloc {
-  let found = -1
-  for (let position = 0; position + Str.length(piece) <= Str.length(text); position++) {
-    if (substring(text, position, position + Str.length(piece)) == piece) {
-      found = position
-    }
-  }
-  return found
 }
 
 function runSample(
@@ -241,18 +235,49 @@ function runErrorSample(
   sample: Sample,
   path: string,
 ): Result<bool, string> uses io, alloc {
-  const first = splitString(sample.code, "\n")[0]
-  if (!Str.startsWith(first, "// error:")) {
+  // Step 1: the leading `// error:` lines are the diagnostics the sample expects.
+  let wanted: Array<string> = []
+  for (const line of Arrays.values(splitString(sample.code, "\n"))) {
+    if (!Str.startsWith(line, "// error:")) {
+      break
+    }
+    Arrays.push(mutable wanted, Str.trim(Str.sliceFrom(line, 9)))
+  }
+  if (Arrays.length(wanted) == 0) {
     return Err("an error sample starts with a `// error:` comment")
   }
-  const want = Str.trim(Str.sliceFrom(first, 9))
   const result = Common.runNarrac(context, ["check", path])
   if (result.code == 0) {
-    return Err(`expected an error containing "${want}"`)
+    return Err(`expected an error containing "${wanted[0]}"`)
   }
   const message = Str.replace(result.errorOutput, "sample.nra:", "")
-  if (!Str.contains(message, want)) {
-    return Err(`want error containing "${want}", got:\n${result.errorOutput}`)
+  // Step 2: every expected diagnostic is printed.
+  for (const want of Arrays.values(wanted)) {
+    if (!Str.contains(message, want)) {
+      return Err(`want error containing "${want}", got:\n${result.errorOutput}`)
+    }
+  }
+  // Step 3: every printed diagnostic is expected, so a sample shows no unrelated one. A note
+  // belongs to the diagnostic before it.
+  let unexpected: Array<string> = []
+  for (const line of Arrays.values(splitString(result.errorOutput, "\n"))) {
+    if (!Str.startsWith(line, "sample.nra:") || Str.contains(line, ": note: ")) {
+      continue
+    }
+    let expected = false
+    for (const want of Arrays.values(wanted)) {
+      if (Str.contains(line, want)) {
+        expected = true
+      }
+    }
+    if (!expected) {
+      Arrays.push(mutable unexpected, line)
+    }
+  }
+  if (Arrays.length(unexpected) > 0) {
+    return Err(
+      `unexpected diagnostics:\n${Str.join(unexpected, "\n")}\nadd a \`// error:\` line for each, or fix the sample so it is gone`,
+    )
   }
   return Ok(true)
 }

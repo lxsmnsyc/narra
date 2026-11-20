@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds every benchmark program in Narra, Go and Rust in release mode, runs each
+# Builds every benchmark program in Narra, Go, Rust, Zig and Odin in release mode, runs each
 # several times and prints a table of median wall-clock seconds.
 #
 # Usage: bench/run.sh [-n RUNS] [program ...]
@@ -28,10 +28,14 @@ mkdir -p "$build"
 have_narra=1
 have_go=1
 have_rust=1
+have_zig=1
+have_odin=1
 
 command -v cc >/dev/null 2>&1 || { echo "note: no C compiler found, skipping Narra" >&2; have_narra=0; }
 command -v go >/dev/null 2>&1 || { echo "note: go not found, skipping Go" >&2; have_go=0; }
 command -v rustc >/dev/null 2>&1 || { echo "note: rustc not found, skipping Rust" >&2; have_rust=0; }
+command -v zig >/dev/null 2>&1 || { echo "note: zig not found, skipping Zig" >&2; have_zig=0; }
+command -v odin >/dev/null 2>&1 || { echo "note: odin not found, skipping Odin" >&2; have_odin=0; }
 
 if [ "$have_narra" = 1 ]; then
   # The Narra compiler comes from the seed; only cc is needed.
@@ -41,7 +45,7 @@ if [ "$have_narra" = 1 ]; then
   fi
 fi
 
-printf '%-12s %10s %10s %10s   %s\n' program narra go rust check
+printf '%-12s %10s %10s %10s %10s %10s   %s\n' program narra go rust zig odin check
 failed=0
 skipped=0
 
@@ -67,12 +71,12 @@ bench_compiler() {
 for p in "${programs[@]}"; do
   if [ "$p" = compiler ]; then
     if [ "$have_narra" = 0 ]; then
-      printf '%-12s %10s %10s %10s   %s\n' compiler - - - skipped
+      printf '%-12s %10s %10s %10s %10s %10s   %s\n' compiler - - - - - skipped
       skipped=1
     elif result="$(bench_compiler)"; then
-      printf '%-12s %10s %10s %10s   peak memory %s\n' compiler "${result%% *}" - - "${result#* }"
+      printf '%-12s %10s %10s %10s %10s %10s   peak memory %s\n' compiler "${result%% *}" - - - - "${result#* }"
     else
-      printf '%-12s %10s %10s %10s   %s\n' compiler FAIL - - FAIL
+      printf '%-12s %10s %10s %10s %10s %10s   %s\n' compiler FAIL - - - - FAIL
       failed=1
     fi
     continue
@@ -81,7 +85,7 @@ for p in "${programs[@]}"; do
   cols=()
   outputs=()
 
-  for lang in narra go rust; do
+  for lang in narra go rust zig odin; do
     exe="$build/$p-$lang"
     rm -f "$exe"
     ok=1
@@ -97,6 +101,14 @@ for p in "${programs[@]}"; do
       rust)
         [ "$have_rust" = 1 ] || ok=0
         [ "$ok" = 1 ] && { rustc -C opt-level=3 -o "$exe" "$dir/$p.rs" >"$build/$p-$lang.log" 2>&1 || ok=0; }
+        ;;
+      zig)
+        [ "$have_zig" = 1 ] || ok=0
+        [ "$ok" = 1 ] && { zig build-exe -O ReleaseFast --cache-dir "$build/zig-cache" -femit-bin="$exe" "$dir/$p.zig" >"$build/$p-$lang.log" 2>&1 || ok=0; }
+        ;;
+      odin)
+        [ "$have_odin" = 1 ] || ok=0
+        [ "$ok" = 1 ] && { odin build "$dir/$p.odin" -file -o:speed -out:"$exe" >"$build/$p-$lang.log" 2>&1 || ok=0; }
         ;;
     esac
     if [ "$ok" = 0 ]; then
@@ -118,7 +130,7 @@ for p in "${programs[@]}"; do
   done
   # A row where no language ran checked nothing.
   if [ -z "$ref" ] && [ "$check" = ok ]; then check=skipped; skipped=1; fi
-  printf '%-12s %10s %10s %10s   %s\n' "$p" "${cols[0]}" "${cols[1]}" "${cols[2]}" "$check ($ref)"
+  printf '%-12s %10s %10s %10s %10s %10s   %s\n' "$p" "${cols[0]}" "${cols[1]}" "${cols[2]}" "${cols[3]}" "${cols[4]}" "$check ($ref)"
 done
 
 echo

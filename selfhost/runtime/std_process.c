@@ -79,6 +79,30 @@ static bool narra_io_no_nul(lstr* s, lstr** err) {
 }
 #endif
 
+// The absolute working folder, as the system spells it.
+static bool narra_proc_cwd(lstr** out, lstr** err) {
+  size_t capacity = 256;
+  for (;;) {
+    char* buffer = malloc(capacity);
+    if (!buffer) {
+      *err = lstr_from_cstr("out of memory");
+      return false;
+    }
+    if (getcwd(buffer, capacity) != NULL) {
+      *out = narra_io_lossy(buffer, strlen(buffer));
+      free(buffer);
+      return true;
+    }
+    int reason = errno;
+    free(buffer);
+    if (reason != ERANGE) {
+      *err = lstr_from_cstr(strerror(reason));
+      return false;
+    }
+    capacity *= 2;
+  }
+}
+
 #ifdef __wasi__
 // WASI preview 1 starts no processes. The compiler refuses Process.run on this
 // target (E0991); the stub keeps a build that is not checked linking.

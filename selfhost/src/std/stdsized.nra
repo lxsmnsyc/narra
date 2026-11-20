@@ -19,6 +19,7 @@ import {
   Emitter,
   Code,
   EmitWalker,
+  noteHelper,
   reportUnsupported,
   temp,
   readNodeType,
@@ -192,13 +193,27 @@ function convertsLosslessly(source: SizedRow, target: SizedRow): bool {
   return false
 }
 
+function writeSourceTypes(target: SizedRow, losslessOnly: bool): string uses alloc {
+  // The integer types a conversion to target takes, as the bound of its type parameter.
+  let types: Array<string> = []
+  for (const source of Arrays.values(SIZED_ROWS)) {
+    if (!losslessOnly || convertsLosslessly(source, target)) {
+      Arrays.push(mutable types, source.typeText)
+    }
+  }
+  return Str.join(types, " | ")
+}
+
 function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
+  const lossless = writeSourceTypes(row, true)
+  const integers = writeSourceTypes(row, false)
   return [
     StdFunc {
       name: `${row.prefix}.from`,
       module: row.path,
       key: "from",
       check: "checkSizedFrom",
+      signature: `<T: ${lossless}>(value: T): ${row.typeText}`,
     },
     StdFunc {
       name: `${row.prefix}.tryFrom`,
@@ -206,18 +221,21 @@ function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
       key: "tryFrom",
       effects: ["alloc"],
       check: "checkSizedTryFrom",
+      signature: `<T: ${integers}>(value: T): Option<${row.typeText}>`,
     },
     StdFunc {
       name: `${row.prefix}.wrap`,
       module: row.path,
       key: "wrap",
       check: "checkSizedWrap",
+      signature: `<T: ${integers}>(value: T): ${row.typeText}`,
     },
     StdFunc {
       name: `${row.prefix}.addChecked`,
       module: row.path,
       key: "addChecked",
       parameters: [row.typeText, row.typeText],
+      parameterNames: ["first", "second"],
       result: `Option<${row.typeText}>`,
       effects: ["alloc"],
     },
@@ -226,6 +244,7 @@ function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
       module: row.path,
       key: "subChecked",
       parameters: [row.typeText, row.typeText],
+      parameterNames: ["first", "second"],
       result: `Option<${row.typeText}>`,
       effects: ["alloc"],
     },
@@ -234,6 +253,7 @@ function conversionFuncs(row: SizedRow): Array<StdFunc> uses alloc {
       module: row.path,
       key: "mulChecked",
       parameters: [row.typeText, row.typeText],
+      parameterNames: ["first", "second"],
       result: `Option<${row.typeText}>`,
       effects: ["alloc"],
     },
@@ -256,6 +276,7 @@ export function sizedFuncs(): Array<StdFunc> uses alloc {
         module: row.path,
         key: "toString",
         parameters: [row.typeText],
+        parameterNames: ["value"],
         result: "string",
         effects: ["alloc"],
       })
@@ -264,6 +285,7 @@ export function sizedFuncs(): Array<StdFunc> uses alloc {
         module: row.path,
         key: "parse",
         parameters: ["string", "int"],
+        parameterNames: ["text", "base"],
         result: `Result<${row.typeText}, string>`,
         effects: ["alloc"],
         check: "fixed",
@@ -401,6 +423,8 @@ function emitParse<W: EmitWalker>(
   )
   const text = argumentText(walker, mutable emitter, arguments, 0)
   const base = argumentText(walker, mutable emitter, arguments, 1)
+  // The parse routine is in the runtime of std/internal/sized, not of std/int.
+  noteHelper(emitter, "std/internal/sized")
   const bits = Int.toString(target.bits)
   let signedText = "false"
   if (target.isSigned) {

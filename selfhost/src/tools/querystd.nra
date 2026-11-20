@@ -1,0 +1,160 @@
+// narrac query interface for a std module: the types a builtin module brings
+// into view, the builtin functions of the registry with their
+// display names and signatures, then the Narra source of the module and of its
+// std/ext part from the embedded std text.
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Ranges from "std/range"
+import { File } from "narrac/syntax/ast"
+import { lex } from "narrac/syntax/lexer"
+import { parse } from "narrac/syntax/parser"
+import { extensionPath } from "narrac/driver/modules"
+import { Registry, StdFunc } from "narrac/std/builtins"
+import { stdRegistry } from "narrac/std/stdlib"
+import { stdSourceFor } from "narrac/std/stdtext"
+import { SiteKind, collectSites } from "narrac/tools/querysites"
+import { InterfaceEntry, Location, writeInterface } from "narrac/tools/queryjson"
+import * as Signature from "narrac/tools/querysignature"
+import { sortStrings } from "narrac/tools/querygraph"
+
+export function isStdModulePath(path: string): bool {
+  return Str.startsWith(path, "std/")
+}
+
+function writeBuiltinSignature(builtin: StdFunc): string uses alloc {
+  let text = `export function ${builtin.key}${builtin.signature}`
+  if (builtin.signature == "") {
+    // A builtin with a check function and no written signature has no parameter types.
+    let parameters: Array<string> = []
+    if (builtin.check != "" && builtin.check != "fixed") {
+      Arrays.push(mutable parameters, "...")
+    }
+    for (const index of Ranges.upTo(Arrays.length(builtin.parameters))) {
+      let flag = ""
+      if (index < Arrays.length(builtin.mutables) && builtin.mutables[index]) {
+        flag = "mutable "
+      }
+      let name = ""
+      if (index < Arrays.length(builtin.parameterNames)) {
+        name = `${builtin.parameterNames[index]}: `
+      }
+      Arrays.push(mutable parameters, `${flag}${name}${builtin.parameters[index]}`)
+    }
+    text = `${text}(${Str.join(parameters, ", ")})`
+    // A function without a result writes none, as in Narra source.
+    if (builtin.result != "" && builtin.result != "void") {
+      text = `${text}: ${builtin.result}`
+    }
+  }
+  if (Arrays.length(builtin.effects) > 0) {
+    text = `${text} uses ${Str.join(builtin.effects, ", ")}`
+  }
+  if (builtin.note != "") {
+    text = `${text} // ${builtin.note}`
+  }
+  return text
+}
+
+function listTypeEntries(registry: Registry, path: string): Array<InterfaceEntry> uses alloc {
+  let entries: Array<InterfaceEntry> = []
+  if (registry.modules[path] is Some(module)) {
+    for (const builtinType of Arrays.values(module.types)) {
+      Arrays.push(mutable entries, InterfaceEntry {
+        name: builtinType.name,
+        kind: "struct",
+        signature: `export opaque struct ${builtinType.name}${builtinType.typeParameters}`,
+        location: None,
+        functions: copy(builtinType.functions),
+      })
+    }
+  }
+  return entries
+}
+
+function listBuiltinEntries(registry: Registry, path: string): Array<InterfaceEntry> uses alloc {
+  let entries: Array<InterfaceEntry> = []
+  if (registry.modules[path] is Some(module)) {
+    let names: Array<string> = []
+    for (const name of Maps.keys(module.functions)) {
+      Arrays.push(mutable names, name)
+    }
+    sortStrings(mutable names)
+    for (const name of Arrays.values(names)) {
+      if (module.functions[name] is Some(index)) {
+        Arrays.push(mutable entries, InterfaceEntry {
+          name,
+          kind: "function",
+          signature: writeBuiltinSignature(registry.functions[index]),
+          location: None,
+        })
+      }
+    }
+  }
+  return entries
+}
+
+function listSourceEntries(path: string): Result<Array<InterfaceEntry>, string> uses alloc {
+  let entries: Array<InterfaceEntry> = []
+  const text = stdSourceFor(path)
+  if (text == "") {
+    return Ok(entries)
+  }
+  const file = `std/src/${Str.replace(Str.sliceFrom(path, 4), "/", "__")}.nra`
+  const parsed = parse(text, 0)
+  if (parsed is Err(diagnostic)) {
+    return Err(`std source ${path}: ${diagnostic.message}`)
+  }
+  // The parse keeps no tokens, and the site index needs them.
+  const tokens = lex(text)
+  if (tokens is Err(_)) {
+    return Err(`std source ${path} does not lex`)
+  }
+  const ast: File = parsed.value.file
+  for (const site of Arrays.values(collectSites(ast, tokens.value))) {
+    if (site.kind != SiteKind.DeclarationSite || site.member >= 0) {
+      continue
+    }
+    const declaration = ast.declarations[site.declaration]
+    const signature = Signature.writeDeclaration(declaration, "")
+    if (signature == "") {
+      continue
+    }
+    Arrays.push(mutable entries, InterfaceEntry {
+      name: site.name,
+      kind: Signature.describeDeclarationKind(declaration),
+      signature,
+      location: Some(Location { file, start: copy(site.start), end: copy(site.end) }),
+    })
+  }
+  return Ok(entries)
+}
+
+export function queryStdInterface(json: bool, path: string): Result<string, string> uses alloc {
+  if (Str.startsWith(path, "std/internal/") || Str.startsWith(path, "std/ext/")) {
+    return Err(`unknown module "${path}"`)
+  }
+  const registry = stdRegistry()
+  const hasModule = registry.modules[path] is Some(_)
+  const extension = extensionPath(path)
+  if (!hasModule && stdSourceFor(path) == "") {
+    return Err(`unknown module "${path}"`)
+  }
+  let entries = listTypeEntries(registry, path)
+  for (const entry of Arrays.values(listBuiltinEntries(registry, path))) {
+    Arrays.push(mutable entries, entry)
+  }
+  for (const part of Arrays.values([extension, path])) {
+    if (part == "") {
+      continue
+    }
+    const sourceEntries = listSourceEntries(part)
+    if (sourceEntries is Err(message)) {
+      return Err(message)
+    }
+    for (const entry of Arrays.values(sourceEntries.value)) {
+      Arrays.push(mutable entries, entry)
+    }
+  }
+  return Ok(writeInterface(json, path, entries))
+}

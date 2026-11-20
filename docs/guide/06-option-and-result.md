@@ -257,7 +257,8 @@ Both versions of `readNumber` do the same thing. The helpers suit short chains t
 When an arrow function passed to these helpers returns a bare `None` or `Err(...)`, the compiler cannot work out the missing type. It asks for an annotation:
 
 ```narra error
-// error: 6:50: cannot tell the type of None here; add a type annotation
+// error: 7:50: cannot tell the type of None here; add a type annotation
+// error: 7:38: expected (int) => Option<U>, found (int) => void; the argument does not fit the generic parameter
 import * as Options from "std/option"
 
 export function run(args: Array<string>): int {
@@ -273,6 +274,6 @@ Annotating the arrow function's result, as in `(number): Option<int> => None`, f
 
 `Option` and `Result` are for failures that a caller can handle: a missing setting, a bad number, a file that does not exist. Other failures mean the program itself is wrong. Say the reader checks every port when it loads the settings, and a later function still finds a port below 1. That cannot happen unless the code has a bug, and there is nothing sensible to return. Stop the program with `panic("message")`, or state the condition with `assert(port >= 1)`. A panic prints the message and ends the program with exit code 101, and no code can catch it.
 
-Some operations panic on their own. An index past the end of an array panics. Integer overflow does not panic; it wraps. Integer division does not panic either: the compiler accepts `total / count` only when `count` is a non-zero constant or a name you checked with `if (count != 0)` first. Chapter 10 shows how a test checks that a function panics.
+Some operations panic on their own. An index past the end of an array panics. Integer overflow does not panic; it wraps. Integer division does not panic either: the compiler refuses a divisor it cannot prove to be non-zero ([chapter 2](02-values-and-types.md#dividing-by-a-name)). Chapter 10 shows how a test checks that a function panics.
 
 Next: [7. Traits](07-traits.md).

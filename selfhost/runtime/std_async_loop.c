@@ -697,21 +697,27 @@ static bool narra_loop_wake_idle(void) {
   return true;
 }
 
-// Runs the loop until the entry's handle is done and gives its value, the
-// exit code. Nothing ready, no timer, no descriptor and no idle handle while
-// the entry waits means the tasks wait on each other: the program stops as a
-// panic does.
-static int64_t narra_async_run_entry(narra_task* entry) {
-  while (!entry->done) {
+// Runs the loop of this thread until the task is done and gives its value,
+// which stays in the task's frame while the caller holds the handle. The
+// async entry and an async thread function run this way. Nothing ready, no
+// timer, no descriptor and no idle handle while the task waits means the
+// tasks wait on each other: the program stops as a panic does.
+static void* narra_loop_run_until(narra_task* task) {
+  while (!task->done) {
     narra_loop_run_ready();
-    if (entry->done) break;
+    if (task->done) break;
     if (narra_loop_poll()) continue;
     if (narra_loop_wake_idle()) continue;
     fflush(stdout);
     fprintf(stderr, "async: every task waits on another task\n");
     exit(101);
   }
-  int64_t code = *(int64_t*)entry->value;
+  return task->value;
+}
+
+// The exit code of an async entry: the value of its handle.
+static int64_t narra_async_run_entry(narra_task* entry) {
+  int64_t code = *(int64_t*)narra_loop_run_until(entry);
   narra_task_release(entry);
   return code;
 }

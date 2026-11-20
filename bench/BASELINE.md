@@ -2,6 +2,27 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-20, Zig added (batch-22)
+
+Run of `bench/run.sh -n 7` on `feat/bench-zig-odin` (based on `feat/batch-22`), machine Apple M2 (`arm64`, macOS). Toolchains: go1.27.3 darwin/arm64, rustc 1.98.0 (88d9e12ae 2026-08-18), zig 0.17.1 (`-O ReleaseFast`), Apple clang 21.0.0 (clang-2100.3.34.2). No other agent was running. The load average was 1.97 (1 minute) at the start, with the 5 and 15 minute averages (3.85 and 6.94) still falling, and 2.65 at the end; the run itself adds about 0.7. Read small differences as noise.
+
+Odin is not installed on this machine, so the `odin` column is `-`. The Odin programs are written but have not been compiled or run. Run `bench/run.sh` on a machine with Odin to fill the column.
+
+### Results (seconds)
+
+| program   | narra | go    | rust  | zig   | odin | output     |
+| --------- | ----- | ----- | ----- | ----- | ---- | ---------- |
+| fib       | 0.113 | 0.124 | 0.113 | 0.112 | -    | 39088169   |
+| sieve     | 0.139 | 0.143 | 0.139 | 0.132 | -    | 1270607    |
+| matmul    | 0.106 | 0.203 | 0.119 | 0.083 | -    | 3547800000 |
+| strings   | 0.222 | 0.298 | 0.358 | 0.148 | -    | 100000     |
+| interp    | 0.185 | 0.242 | 0.169 | 0.170 | -    | 972838     |
+| particles | 0.067 | 0.074 | 0.093 | 0.047 | -    | 6996184    |
+| dot       | 0.035 | 0.137 | 0.057 | 0.028 | -    | 800        |
+| compiler  | 0.400 | -     | -     | -     | -    | peak memory 210 MB |
+
+Narra, Go and Rust are within 3% of the batch-16 run, except the `compiler` row (0.381 s to 0.400 s, 200 MB to 210 MB), which measures the batch-22 source. Zig is faster than the others on `matmul`, `strings`, `particles` and `dot`. `-O ReleaseFast` drops bounds checks, which Go and Rust keep, and Zig's allocator and `std.fmt` differ from the others in `strings`.
+
 ## 2026-11-16, end of batch-16
 
 Run of `bench/run.sh -n 9` at commit 0c5e8373 on `feat/batch-16`, same machine and toolchains as the batch-13 run below. No agent was running. The load average was 2.94 (1 minute) at the start and 2.52 at the end, above the 2 this file asks for, so read small differences as noise.

@@ -34,5 +34,5 @@ Dropped: effect-export-gap, not reproduced. The only shape that compiles is the 
 ## Still to do
 
 - [x] `sh scripts/linux-check.sh`: PASS in 1059s.
-- [ ] Push `feat/batch-20` and open the batch-20 pull request for the maintainer.
+- [x] Push `feat/batch-20` and open the batch-20 pull request for the maintainer. PR #125, merged.
 - [ ] After it merges: first-release. The maintainer decides the first tag (prerelease or full release, and the `install.sh` fallback for prereleases) and pushes it.

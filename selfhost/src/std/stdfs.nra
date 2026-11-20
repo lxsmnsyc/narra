@@ -30,10 +30,31 @@ import * as Int from "std/int"
 
 export const FS_FUNCS: Array<StdFunc> = [
   StdFunc {
+    name: "Fs.appendText",
+    module: "std/fs",
+    key: "appendText",
+    parameters: ["string", "string"],
+    parameterNames: ["path", "text"],
+    result: "Result<int, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.copyFile",
+    module: "std/fs",
+    key: "copyFile",
+    parameters: ["string", "string"],
+    parameterNames: ["from", "to"],
+    result: "Result<int, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
     name: "Fs.createDir",
     module: "std/fs",
     key: "createDir",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "Result<bool, string>",
     effects: ["io", "alloc"],
     check: "fixed",
@@ -43,6 +64,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "createDirAll",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "Result<bool, string>",
     effects: ["io", "alloc"],
     check: "fixed",
@@ -52,6 +74,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "exists",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "bool",
     effects: ["io"],
   },
@@ -60,6 +83,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "isDir",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "bool",
     effects: ["io"],
   },
@@ -68,6 +92,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "listDir",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "Result<Array<string>, string>",
     effects: ["io", "alloc"],
     check: "fixed",
@@ -77,6 +102,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "readBytes",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "Result<bytes, string>",
     effects: ["io", "alloc"],
     check: "fixed",
@@ -86,6 +112,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "readText",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "Result<string, string>",
     effects: ["io", "alloc"],
     check: "fixed",
@@ -95,15 +122,38 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "removeDir",
     parameters: ["string"],
+    parameterNames: ["path"],
     result: "Result<bool, string>",
     effects: ["io", "alloc"],
     check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.removeDirAll",
+    module: "std/fs",
+    key: "removeDirAll",
+    parameters: ["string"],
+    parameterNames: ["path"],
+    result: "Result<bool, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+    note: "removes a folder and everything in it without following links; Ok(false) when missing; refuses an empty path, a root and a path ending in . or ..; stops at the first entry it cannot remove, names it and leaves the rest; crosses mount points as rm -rf does; WASI holds one descriptor per folder level",
   },
   StdFunc {
     name: "Fs.removeFile",
     module: "std/fs",
     key: "removeFile",
     parameters: ["string"],
+    parameterNames: ["path"],
+    result: "Result<bool, string>",
+    effects: ["io", "alloc"],
+    check: "fixed",
+  },
+  StdFunc {
+    name: "Fs.rename",
+    module: "std/fs",
+    key: "rename",
+    parameters: ["string", "string"],
+    parameterNames: ["from", "to"],
     result: "Result<bool, string>",
     effects: ["io", "alloc"],
     check: "fixed",
@@ -113,6 +163,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "writeBytes",
     parameters: ["string", "bytes"],
+    parameterNames: ["path", "data"],
     result: "Result<int, string>",
     effects: ["io"],
     check: "fixed",
@@ -122,6 +173,7 @@ export const FS_FUNCS: Array<StdFunc> = [
     module: "std/fs",
     key: "writeText",
     parameters: ["string", "string"],
+    parameterNames: ["path", "text"],
     result: "Result<int, string>",
     effects: ["io"],
     check: "fixed",
@@ -161,9 +213,10 @@ function emitReadFile<W: EmitWalker>(
   return ioResult(mutable emitter, resultType, success, output, bad)
 }
 
-function emitWriteText<W: EmitWalker>(
+function emitWriteWith<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
+  call: string,
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
@@ -175,7 +228,7 @@ function emitWriteText<W: EmitWalker>(
   const success = temp(
     mutable emitter,
     Type.TBool,
-    `narra_fs_write(${path}, ${text}, &${written}, &${bad})`,
+    `${call}(${path}, ${text}, &${written}, &${bad})`,
   )
   return ioResult(mutable emitter, resultType, success, written, bad)
 }
@@ -207,6 +260,61 @@ function emitListDir<W: EmitWalker>(
   writeLine(mutable emitter, `  free(${names}.items);`)
   writeLine(mutable emitter, "}")
   return ioResult(mutable emitter, resultType, success, array, bad)
+}
+
+function emitCopyFile<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = copy(readNodeType(emitter, nodeId))
+  const source = argumentText(walker, mutable emitter, arguments, 0)
+  const target = argumentText(walker, mutable emitter, arguments, 1)
+  const copied = temp(mutable emitter, Type.TInt, "0")
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_copy(${source}, ${target}, &${copied}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, copied, bad)
+}
+
+function emitRename<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = copy(readNodeType(emitter, nodeId))
+  const source = argumentText(walker, mutable emitter, arguments, 0)
+  const target = argumentText(walker, mutable emitter, arguments, 1)
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_rename(${source}, ${target}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, "true", bad)
+}
+
+function emitRemoveAll<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  nodeId: int,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  const resultType = copy(readNodeType(emitter, nodeId))
+  const path = argumentText(walker, mutable emitter, arguments, 0)
+  const removed = temp(mutable emitter, Type.TBool, "false")
+  const bad = stringOut(mutable emitter)
+  const success = temp(
+    mutable emitter,
+    Type.TBool,
+    `narra_fs_remove_all(${path}, &${removed}, &${bad})`,
+  )
+  return ioResult(mutable emitter, resultType, success, removed, bad)
 }
 
 function emitFsChange<W: EmitWalker>(
@@ -260,8 +368,20 @@ export function emitFsCall<W: EmitWalker>(
   if (name == "Fs.readBytes") {
     return emitReadFile(walker, mutable emitter, "narra_fs_read_bytes", nodeId, arguments)
   }
+  if (name == "Fs.appendText") {
+    return emitWriteWith(walker, mutable emitter, "narra_fs_append", nodeId, arguments)
+  }
+  if (name == "Fs.copyFile") {
+    return emitCopyFile(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.rename") {
+    return emitRename(walker, mutable emitter, nodeId, arguments)
+  }
+  if (name == "Fs.removeDirAll") {
+    return emitRemoveAll(walker, mutable emitter, nodeId, arguments)
+  }
   if (name == "Fs.writeText" || name == "Fs.writeBytes") {
-    return emitWriteText(walker, mutable emitter, nodeId, arguments)
+    return emitWriteWith(walker, mutable emitter, "narra_fs_write", nodeId, arguments)
   }
   if (name == "Fs.listDir") {
     return emitListDir(walker, mutable emitter, nodeId, arguments)

@@ -16,7 +16,8 @@
 // without type arguments, so a generic function shows its type parameter
 // names), and calls from the call graph the effect pass records
 // (EffectState.calls). Positions come from the site index (querysites.nra).
-// Only the package's own modules are searched, not std source modules.
+// Only the package's own modules are searched; interface also answers for a
+// std module (querystd.nra).
 //
 // Text output is for people. With --json each command prints one JSON
 // object and a newline. An error prints `error <message>` to stderr (with
@@ -52,15 +53,18 @@ import * as Effects from "narrac/check/effects"
 import { EffectState } from "narrac/check/effects"
 import { Site, SiteKind, collectSites, isBefore } from "narrac/tools/querysites"
 import {
+  InterfaceEntry,
   Location,
   quoteJson,
   writeStringList,
   writeLocation,
   writeLocationText,
   writeDiagnostic,
+  writeInterface,
 } from "narrac/tools/queryjson"
 import * as Signature from "narrac/tools/querysignature"
 import { findCycles, sortStrings } from "narrac/tools/querygraph"
+import { isStdModulePath, queryStdInterface } from "narrac/tools/querystd"
 
 const USAGE = "usage: narrac query [--package DIR] [--json] type-of FILE:LINE:COL | def NAME | refs NAME | callers FUNCTION | interface MODULE | recursion MODULE | hovers FILE"
 
@@ -133,6 +137,10 @@ export function runQuery(arguments: Array<string>): int uses io, alloc {
 
   if (command == "hovers") {
     return runHovers(directory, json, operand)
+  }
+
+  if (command == "interface" && isStdModulePath(operand)) {
+    return reportAnswer(json, queryStdInterface(json, operand))
   }
 
   const selected = selectMembers(directory, false, false, false)
@@ -1595,35 +1603,15 @@ export function listDeclarations(query: Query): Array<Declared> from query uses 
       if (site.kind != SiteKind.DeclarationSite) {
         continue
       }
-      let kind = ""
+      const declaration = view.module.ast.declarations[site.declaration]
+      let kind = Signature.describeDeclarationKind(declaration)
       let names = [site.name]
-      match (view.module.ast.declarations[site.declaration]) {
-        Decl.Func(_) => {
-          kind = "function"
+      // An enum member site is a variant, also found by its qualified name.
+      if (declaration is Decl.Enum(enumDecl)) {
+        if (site.member >= 0) {
+          kind = "variant"
+          names = [`${enumDecl.name}.${site.name}`, site.name]
         }
-        Decl.Const(_) => {
-          kind = "const"
-        }
-        Decl.Struct(_) => {
-          kind = "struct"
-        }
-        Decl.Enum(enumDecl) => {
-          kind = "enum"
-          if (site.member >= 0) {
-            kind = "variant"
-            names = [`${enumDecl.name}.${site.name}`, site.name]
-          }
-        }
-        Decl.Distinct(_) => {
-          kind = "distinct"
-        }
-        Decl.Alias(_) => {
-          kind = "alias"
-        }
-        Decl.Trait(_) => {
-          kind = "trait"
-        }
-        _ => {}
       }
       const qualified = `${view.path}.${names[0]}`
       Arrays.push(mutable names, qualified)
@@ -2020,36 +2008,17 @@ function queryCallers(
 }
 
 function findSignature(checker: Checker, view: ModuleView, declaration: Decl): string uses alloc {
-  return match (declaration) {
-    Decl.Func(funcDecl) => funcDecl.exported ? `export ${Signature.writeFunction(funcDecl)}` : ""
-    Decl.Const(constDecl) => {
-      if (!constDecl.exported) {
-        return ""
-      }
-      const index = findConstIndex(checker, view.path, constDecl.pos)
-      let typeText = "void"
-      if (index >= 0) {
-        typeText = findConstType(checker, index)
-      } else if (constDecl.type is Some(type)) {
-        typeText = Signature.writeType(type)
-      }
-      return `export const ${constDecl.name}: ${typeText}`
+  // A const shows the type the checker gave it.
+  let constType = ""
+  if (declaration is Decl.Const(constDecl)) {
+    const index = findConstIndex(checker, view.path, constDecl.pos)
+    if (index >= 0) {
+      constType = findConstType(checker, index)
+    } else if (constDecl.type is None) {
+      constType = "void"
     }
-    Decl.Struct(structDecl) => (
-      structDecl.exported
-        ? `export ${Signature.writeStruct(structDecl)}`
-        : ""
-    )
-    Decl.Enum(enumDecl) => enumDecl.exported ? `export ${Signature.writeEnum(enumDecl)}` : ""
-    Decl.Trait(traitDecl) => traitDecl.exported ? `export ${Signature.writeTrait(traitDecl)}` : ""
-    Decl.Alias(aliasDecl) => aliasDecl.exported ? `export ${Signature.writeAlias(aliasDecl)}` : ""
-    Decl.Distinct(distinctDecl) => (
-      distinctDecl.exported
-        ? `export ${Signature.writeDistinct(distinctDecl)}`
-        : ""
-    )
-    _ => ""
   }
+  return Signature.writeDeclaration(declaration, constType)
 }
 
 function queryInterface(
@@ -2063,7 +2032,7 @@ function queryInterface(
   }
   const view = query.views[viewIndex]
   const declared = listDeclarations(query)
-  let parts: Array<string> = []
+  let entries: Array<InterfaceEntry> = []
   for (const entry of Arrays.values(declared)) {
     if (entry.view != viewIndex || entry.member >= 0) {
       continue
@@ -2072,24 +2041,14 @@ function queryInterface(
     if (signature == "") {
       continue
     }
-    if (query.json) {
-      Arrays.push(
-        mutable parts,
-        `{"name": ${quoteJson(entry.names[0])}, "kind": ${quoteJson(entry.kind)}, "signature": ${quoteJson(signature)}, "location": ${writeLocation(entry.location)}}`,
-      )
-    } else {
-      Arrays.push(mutable parts, `${signature}\n`)
-    }
+    Arrays.push(mutable entries, InterfaceEntry {
+      name: entry.names[0],
+      kind: entry.kind,
+      signature,
+      location: Some(entry.location),
+    })
   }
-  if (query.json) {
-    return Ok(
-      `{"query": "interface", "module": ${quoteJson(path)}, "declarations": [${Str.join(parts, ", ")}]}\n`,
-    )
-  }
-  if (Arrays.length(parts) == 0) {
-    return Ok("(none)\n")
-  }
-  return Ok(Str.join(parts, ""))
+  return Ok(writeInterface(query.json, path, entries))
 }
 
 function writePosKey(pos: Pos): string uses alloc {

@@ -139,7 +139,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-A condition compares one integer parameter with a constant: `==`, `!=`, `<`, `<=`, `>` or `>=`, and several of them joined by `&&` or written on more `requires` lines. A function with `requires` cannot be passed around as a value, because a call through the value could not be checked.
+A condition here compares one integer parameter with a constant: `==`, `!=`, `<`, `<=`, `>` or `>=`, and several of them joined by `&&` or written on more `requires` lines. [Chapter 17](17-proofs-and-compile-time.md#conditions-between-two-parameters) adds conditions between two parameters and with `||`. A function with `requires` cannot be passed around as a value, because a call through the value could not be checked.
 
 ### Arguments a caller may leave out
 
@@ -293,14 +293,15 @@ applyToAll(prices, (cents) => {
 An arrow function stored under a name has nothing to take its types from, so you write them. Leave them out, and the compiler asks for them:
 
 ```narra error
-// error: 3:21: cannot tell the type of parameter "cents"; write it as `cents: Type`
+// error: 2:26: cannot tell the type of parameter "cents"; write it as `cents: Type`
+export const identity = (cents) => cents
+
 export function run(args: Array<string>): int {
-  const discount = (cents) => cents - 50
-  return discount(100)
+  return 0
 }
 ```
 
-Write the type of each parameter in the parentheses: `const discount = (cents: int) => cents - 50` compiles. The compiler works out the result type from the body. You can still write it after the parentheses, as in `(cents: int): int => cents - 50`.
+Write the type of each parameter in the parentheses: `const identity = (cents: int) => cents` compiles. The compiler works out the result type from the body. You can still write it after the parentheses, as in `(cents: int): int => cents`.
 
 ### A small helper inside a function
 
@@ -443,9 +444,13 @@ A stored or returned closure can be called long after the function that made it 
 While the closure runs, the variable it assigns belongs to it. The same call cannot also pass that variable as another argument, because the function could be reading it while the closure replaces it:
 
 ```narra error
-// error: 8:8: "items" is assigned by a closure passed to this call, so no other argument can use it
+// error: 12:8: "items" is assigned by a closure passed to this call, so no other argument can use it
+import * as Arrays from "std/array"
+
 function each(items: Array<int>, action: () => void) {
-  action()
+  if (Arrays.length(items) > 0) {
+    action()
+  }
 }
 
 export function run(args: Array<string>): int {
@@ -486,7 +491,8 @@ The returned closure keeps `amountCents`, so it still works after `makeDiscount`
 Now you want a rule that applies another rule twice, and you want to keep it to use later. The first try does not compile:
 
 ```narra error
-// error: 3:21: a closure cannot capture parameter "rule" because it is not escaping; declare it as `escaping rule`
+// error: 4:21: a closure cannot capture parameter "rule" because it is not escaping; declare it as `escaping rule`
+// error: 4:26: a closure cannot capture parameter "rule" because it is not escaping
 function twice(rule: (cents: int) => int): (cents: int) => int {
   return (cents) => rule(rule(cents))
 }

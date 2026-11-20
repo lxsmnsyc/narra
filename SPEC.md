@@ -1,4 +1,4 @@
-# Narra specification (draft)
+# Narra specification
 
 This document defines the Narra language. Each section states the rules first, then shows an example. `DECISIONS.md` explains why each rule was chosen over the alternatives.
 
@@ -141,7 +141,7 @@ each(numbers, (item) => { total = total + item })
 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`. The condition must have type `bool`. There is no truthiness: `None`, `0` and `""` are not conditions.
 - `while (cond) { ... }`.
-- `for (const item of iter) { ... }` loops over an iterator. `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
+- `for (const item of source) { ... }` loops over an array, a `Range`, a generator, or the result of `Maps.keys`, `Maps.entries` or `Str.chars` (each an array). `for (const #[i, item] of Arrays.entries(items))` gives indexes from 0.
 - **`for (mutable item of items)` changes the elements in place** (D85). `item` reaches each element of the array, as a `mutable` parameter would, so `item.hp = 0` changes `items`. `for (const #[index, mutable item] of Arrays.entries(items))` also gives the index, and `Arrays.values(items)` may be written for `items`.
   - The source is a local place of type `Array<T>`: a local `const` or `let`, a `mutable` parameter, or a field or element path of one. A call result, a plain parameter, a top-level constant, a map, a range and a generator are compile errors.
   - `T` has contents (section 6, Mutable parameters): `for (mutable n of numbers)` over `Array<int>` is a compile error; write `numbers[index] = ...` in an `Arrays.entries` loop.
@@ -163,7 +163,7 @@ for (mutable player of players) {
 }
 ```
 
-- **An iterator is a `Generator<T>`** (section 8). `for ... of` iterates over its own copy of the generator, so a generator held in a variable is not advanced. `Arrays.values`, `Arrays.entries`, `Maps.keys`, `Maps.entries`, `Str.chars` and the `Range` functions return generators. A function returns its own iterator by returning a generator.
+- **What a loop reads.** `for ... of` reads an `Array<T>` (each element), a `Range` (each number), or a `Generator<T>` (each value it yields). `Maps.keys`, `Maps.entries` and `Str.chars` return arrays, and a `Range` is its own type, so none of them is a `Generator<T>`: a parameter of type `Generator<int>` does not take an array or a `Range`, and a function that wants one writes a `function*` that yields the items. `Arrays.values` and `Arrays.entries` are allowed only at the head of a loop (E0920), where they stand for the array itself. A generator (section 8) is an iterator you write: a function returns its own by returning a generator, and `for ... of` iterates over its own copy of it, so a generator held in a variable is not advanced.
 - **`for await (const chunk of stream) { ... }`** reads an `AsyncGenerator<T>` in an async body, waiting for each value (section 8, Async generators).
 - **Counting loops use `Range`.** `Ranges.upTo(n)` counts from 0 to `n - 1`. `Ranges.between(start, end)` counts from `start` to `end - 1`. `Ranges.stepped(start, end, step)` takes a step: a positive step counts up while the value is below `end`, a negative step counts down while it is above `end`, and a step of 0 gives an empty range. A step that is 0 at compile time (a literal, or a constant that folds to 0) is error E1270, since the range could never have a value. `Ranges.stepped` returns a `Range`, so it never panics. The loop stops before the value would pass the largest or smallest `int`.
 
@@ -341,7 +341,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **Prelude.** The prelude holds the types and constructors `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `Array`, `Map`, `Range`, `Box` and the primitive types, and the functions `print`, `assert`, `panic` and `copy` (section 6, Copies on shared values). Nothing else is in scope without an import. These four are the only global functions.
 - **A type in the prelude does not bring its functions.** The functions of `Array`, `Map`, `Range` and `Box` live in `std/array`, `std/map`, `std/range` and `std/box` (D67). `Arrays.push(mutable xs, v)` needs `import * as Arrays from "std/array"`. Without the import the call is a compile error (E0908) whose fix adds the import line. A type the program declares named `Box` or `Map` hides the prelude one.
 - **Std aliases are plural by convention.** The std modules of the capitalized prelude types are imported as `Arrays`, `Maps`, `Boxes`, `Ranges`, `Options` and `Results` (D72). Samples and fixes use these names. Any other alias that follows the rules below works too.
-- **Standard modules.** `std/arena`, `std/args`, `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/iterator`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/regex`, `std/result`, `std/shape`, `std/simd` (section 4), `std/string`, `std/template` (section 2, Literals), `std/terminal`, `std/test`, `std/time`, `std/toml` and `std/unicode`, and the async modules `std/async`, `std/async/file`, `std/async/net` and `std/async/time` (section 8).
+- **Standard modules.** `std/arena`, `std/args`, `std/array`, `std/box`, `std/build`, `std/bytes`, `std/cell`, `std/char`, `std/cstring` (section 9), `std/env`, `std/f32`, `std/fixedarray` (section 2), `std/float`, `std/fs`, `std/hash`, `std/int`, `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32`, `std/u64`, `std/io`, `std/iterator`, `std/json`, `std/map`, `std/math`, `std/option`, `std/path`, `std/process`, `std/ptr` (section 9), `std/random`, `std/range`, `std/regex`, `std/result`, `std/shape`, `std/simd` (section 4), `std/string`, `std/template` (section 2, Literals), `std/terminal`, `std/test`, `std/time`, `std/toml` and `std/unicode`, and the async modules `std/async` and `std/net` (section 8).
 - **`std/path` and Windows.** `Path.join`, `dirname`, `basename` and `extname` follow Node's `path.posix` on every system. A program built for Windows (`--target Windows-X86_64`) also reads `\` as a separator, and a leading drive such as `C:` is kept in front of the result and is not a segment: `Path.join("C:\\a", "..\\b")` is `C:/b`, and `Path.join("C:/a", "..")` is `C:/`. `join` always writes `/`, which the Windows file functions accept; `dirname` returns the text of the input up to the last separator, so `Path.dirname("C:\\a\\b")` is `C:\a`, and `Path.dirname("C:a")` is `C:`. UNC paths (`\\\\server\\share`) are not supported. On other systems `\` is an ordinary name character. `std/fs` opens every file in binary mode on Windows and stdin, stdout and stderr are binary too, so `\n` is never rewritten (`print` writes `\n`, not `\r\n`), and `std/fs` creates a directory without a mode there. Samples: `testdata/windows_path.nra`, `testdata/windows_runtime.nra`.
 - **`std/process`, `std/test` and `std/async` on Windows.** A program built for `Windows-X86_64` runs all three. Known gaps against the other systems:
   - `Process.run` starts the program with `CreateProcessW`, searching `PATH` itself (never the current directory or the folder of the program) and trying the name (only when it ends in `.exe`, `.com`, `.bat` or `.cmd`), then the name with `.exe` and `.com`; it does not start a shell, so `echo` and `dir` need `cmd /c`. The arguments are joined into one command line with the quoting `CommandLineToArgvW` reverses, and they must be valid UTF-8. The exit code is the value the process ended with: a crash gives a number such as `3221225477` (`0xC0000005`), not 128 plus a signal. The child, and any process it left running, ends when the call returns or this process ends (a job object). A `.bat` or `.cmd` program runs through `cmd.exe`, which reads `%`, `&`, `|` and `^` in the arguments as its own syntax, so do not pass untrusted text to one. SIGTERM and SIGHUP do not exist, so nothing is forwarded; a console sends Ctrl-C to the child itself.
@@ -354,7 +354,7 @@ Code that is valid TypeScript but means something different in Narra is a compil
 - **`std/shape` and `std/json` (D83).** `std/shape` declares `export enum Value { Null, Bool(value: bool), Int(value: int), Float(value: f64), Text(value: string), List(items: Array<Value>), Record(fields: Map<string, Value>) }`, a dynamic tree for structured data. `std/json` has `parse(text: string): Result<Value, string> uses alloc` and `stringify(value: Value): string uses alloc`. Write `import * as Json from "std/json"` and `import { Value } from "std/shape"`. `parse` follows RFC 8259: a number without fraction or exponent that fits `int` is `Value.Int`, every other number is `Value.Float`; a duplicate key keeps its first place and takes the last value; escapes and surrogate pairs decode, a lone surrogate is an error; nesting deeper than 512 is an error. Errors read `<line>:<column>: <reason>`. `stringify` is compact, writes non-ASCII as UTF-8 and a non-finite `Float` as `null`, and a whole `Float` keeps `.0`.
 - **`std/math`, `std/time`, `std/random` and `std/hash`** are Narra source over the primitives of `std/internal/math` (the functions of C's `math.h`), `std/internal/clock` and `std/internal/entropy`.
   - `std/math` has the constants `PI` and `E`; `abs` and `absFloat`; `min`, `max` and `clamp` for any `Ordered` type, so for `int` and `f64`; `pow` and `powInt` (`powInt` returns `None` for a negative exponent, overflow wraps like `*`; use `Int.mulChecked` to detect it); and `sqrt`, `floor`, `ceil`, `round` (half away from zero), `trunc`, `sin`, `cos`, `tan`, `atan2`, `exp` and `log`, all on `f64`. `clamp` returns `None` when `low > high`, and `Some(value)` otherwise.
-  - `std/time` has `Instant` and `Duration` (both a count of nanoseconds). `now()` reads the monotonic clock, `elapsed(since)` reads it again, `between(earlier, later)` needs no clock, `unixMillis()` is the wall clock, `sleep(duration)` sleeps. `milliseconds`, `seconds` and `nanoseconds` build a `Duration`, `asMilliseconds` and `asNanoseconds` read it. Reading a clock and sleeping have the `io` effect (section 7).
+  - `std/time` has `Instant` and `Duration` (both a count of nanoseconds). `now()` reads the monotonic clock, `elapsed(since)` reads it again, `between(earlier, later)` needs no clock, `unixMillis()` is the wall clock, and the async `sleep(duration): Result<Duration, AsyncError>` waits without blocking the loop (section 8). `milliseconds`, `seconds` and `nanoseconds` build a `Duration`, `asMilliseconds` and `asNanoseconds` read it. Reading a clock and sleeping have the `io` effect (section 7).
   - `std/random` is SplitMix64: a `Random` holds one `u64` state, the same seed gives the same numbers on every run and platform, and a value is copied like any struct. `seeded(seed)` and `fromSystem() uses io` (seeded from `/dev/urandom`) make one; `nextInt(mutable random, low, high)` returns `Some(n)` with `n` in `[low, high)` without modulo bias, and `None` when the range is empty; `nextFloat` returns an `f64` in `[0, 1)`; `nextBits` returns 64 random bits; `shuffle(mutable random, mutable items)` is a Fisher-Yates shuffle. It is not for cryptography.
   - `std/hash` has `Hash.of(x)`, the `Hashable` hash of any value (it may change between builds), and `fnv1a(text)`, FNV-1a 64 over the UTF-8 bytes of a string as a `u64`, which never changes. `of` is a keyword, and is accepted as a function name and after `.`, like `from`.
 - **`std/process`** (alias `Process`) is builtin: `run(command: string, arguments: Array<string>): Result<#[int, string, string], string>` and `exit(code: int): void`. `exit` has the `io` effect and ends the process with `code` (the operating system keeps the low 8 bits). It flushes pending standard output first, then leaves at once: live values are not released, so the leak check (`NARRA_CHECK_LEAKS`) reports nothing for them, and the code after the call does not run. Like `panic`, a call to `exit` ends a path, so a function that returns a value may end with it. While `run` waits, it forwards SIGTERM, SIGINT and SIGHUP to the child (the child stays in the caller's process group, so Ctrl-C still reaches it). The caller keeps running: `run` returns and reports the child's end as exit code 128 plus the signal number, so a program that calls `Process.run` in a loop must check for it. `narrac run`, `narrac test` and `Test.panics` use the same forwarding for the processes they start, so killing narrac does not orphan the program or a test.
@@ -408,7 +408,6 @@ Rules:
 - **`export opaque struct`** and **`export distinct type`** export a type while hiding its contents (section 4).
 - **No import side effects.** Top-level declarations must be functions, types, traits or `const` constants. There is no top-level `let`.
 - **Constructors come with their enum and are always qualified.** Importing `Token` makes `Token.Word(x)` usable, in expressions and in patterns (D71). A bare `Word(x)` is a compile error whose fix writes `Token.Word(x)`. `Some`, `None`, `Ok` and `Err` are the exception: they are prelude names and stay bare. Constructors of different enums never clash, whatever their fields, and a user enum may have a constructor named `None` (`Maybe.None`); a bare `None` is always the prelude one. Two constructors with the same name in one enum are an error.
-- **`narrac move old new`** moves a file and rewrites every import of it.
 
 ## 4. Types
 
@@ -832,7 +831,7 @@ const label = match (status) {
 - **Hashing.** `Hash.of(x)` needs `Hashable`. The compiler implements it for every type that has no function or float inside it.
 - Generic code that uses `==` declares `<T: Equatable>`. Code that hashes declares `<T: Hashable>`.
 - **Type arguments in a call.** `id<int>(1)`, `Mod.pair<int, string>(a, b)` and `first<Array<int>>(xs)` give the type arguments of a generic function. They fix the type parameters before the arguments are checked, so an argument that does not fit is an ordinary type mismatch. Write one type argument per type parameter or none; a different count is an error, and so are type arguments on a function that is not generic. A `<` after a name starts type arguments only when a balanced `<...>` of type names follows, closed by `>` directly followed by `(`. Every name in it that is not followed by `.` must be a type parameter of the enclosing declaration (so a lowercase `t` works), a primitive type (`int`, `f64`, `bool`, `char`, `string`, `void`), or start with a capital letter. A name of two or more characters with no lowercase letter (`MAX`, `LIMIT_2`) is a constant, not a type, so `a < b > (c)` and `both(x < MAX, MIN > (y))` are still comparisons. The remaining ambiguity is a value that is capitalized but not SCREAMING_CASE, as in `f(x < Limit, Cap > (y))`, which reads as a call with type arguments; parenthesize the second comparison, `(Cap > y)`. Single capital letters (`T`, `K`, `V`) are types. An integer literal (`3`, `-1`) between the brackets is a constant type argument, whatever the name before `<`, as in TypeScript: `both(a < 3, 4 > (c))` is the call `a<3, 4>(c)`, so write the comparison in parentheses, `both((a < 3), 4 > (c))`. Constructors (`Some<int>(1)`) and builtin functions take no type arguments; annotate the variable instead, as in `const x: Option<int> = None()`. Function types are not accepted inside the arguments.
-- **Constant type parameters.** `const N: int` in the type parameters of a function or a struct stands for an integer, not a type: `function repeat<const N: int>(text: string): string`, `struct Vector<const N: int> { ... }`. Its argument is an integer literal (`repeat<3>("ab")`, `Vector<-1>`) or a constant parameter in scope (`Vector<N>`). A call infers it from the argument types or the expected type like a type parameter (`const plane: Vector<2> = zeros()`); one that only the body uses must be written. A type argument never computes: `Vector<N + 1>` is a compile error, and so are a local, a top-level constant or a type where a constant belongs, and a constant where a type belongs (`value: N`). In the body `N` is an `int` value, known in each instance: `total / N` needs no check, and an instance with `N` equal to 0 is the usual divisor error, which names the instance and its call. A local or parameter named like a constant parameter is a shadowing error. A constant parameter does not satisfy a `requires` condition yet: a call that passes `N` to a function with `requires` is E0985. Each value is its own instance, so `repeat<2>` and `repeat<3>` are two functions and `Vector<2>` and `Vector<3>` two types. The kind is `int` only for now; the sized integer kinds (`const N: u8`) may come later. Enums and type aliases take no constant parameters.
+- **Constant type parameters.** `const N: int` in the type parameters of a function or a struct stands for an integer, not a type: `function repeat<const N: int>(text: string): string`, `struct Vector<const N: int> { ... }`. Its argument is an integer literal (`repeat<3>("ab")`, `Vector<-1>`) or a constant parameter in scope (`Vector<N>`). A call infers it from the argument types or the expected type like a type parameter (`const plane: Vector<2> = zeros()`); one that only the body uses must be written. A struct literal does not work it out from its fields: `Schedule { hours: [1, 2, 3] }` is an error unless an expected type gives it (`const plan: Schedule<3> = Schedule { hours: [1, 2, 3] }`), so write `Schedule<3> { hours: [1, 2, 3] }`. A type argument never computes: `Vector<N + 1>` is a compile error, and so are a local, a top-level constant or a type where a constant belongs, and a constant where a type belongs (`value: N`). In the body `N` is an `int` value, known in each instance: `total / N` needs no check, and an instance with `N` equal to 0 is the usual divisor error, which names the instance and its call. A local or parameter named like a constant parameter is a shadowing error. A constant parameter does not satisfy a `requires` condition yet: a call that passes `N` to a function with `requires` is E0985. Each value is its own instance, so `repeat<2>` and `repeat<3>` are two functions and `Vector<2>` and `Vector<3>` two types. The kind is `int` only for now; the sized integer kinds (`const N: u8`) may come later. Enums and type aliases take no constant parameters.
 - **Floats follow IEEE 754 in `==`.** `NaN == NaN` is `false`. A struct that contains `NaN` is not equal to itself.
 
 <!-- context
@@ -1371,7 +1370,7 @@ function bump(mutable n: int) {  // compile error: int has no contents to change
 
 ### Values across threads
 
-- **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `AsyncGenerator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/async/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
+- **Only `Sendable` values cross threads.** `Sendable` is an automatic trait: the compiler implements it for every type that holds none of these, at any depth: a function type, `Dynamic<Trait>`, `Ptr<T>`, `Cell<T>`, `Async<T>`, `Generator<T>`, `AsyncGenerator<T>`, `Coroutine<In, Out>`, `Scope`, `Thread<T>`, and the sockets of `std/net`. `Shared<T>`, `Sender<T>`, `Receiver<T>` and `Atomic<T>` are `Sendable`. A capture of a thread function, a thread result, and the type argument of `Channel.create`, `Shared.create` and `Atomic.create` must be `Sendable` (E1190). Generic code declares `<T: Sendable>`. `implement Sendable` is a compile error (E1194).
 - A value captured by a thread function, sent through a channel or stored in a `Shared` is marked shared. Shared values use atomic reference counts. Unshared values use plain counts. Only a program that imports `std/thread` (or a module built on it) has shared values; any other program uses plain counts throughout.
 - An in-place update on a shared value copies first, so threads never see each other's writes.
 - Safe code has no shared mutable memory, so no data race is possible. Section 8 covers threads, channels and the few types that are shared on purpose.
@@ -1484,20 +1483,32 @@ Threads run in a scope. Every thread started in a scope finishes before the scop
 
 ```narra
 import * as Thread from "std/thread"
+import * as Ranges from "std/range"
 
-const total = Thread.scope((scope) => {
-  const left = Thread.start(scope, () => sum(firstHalf))
-  const right = Thread.start(scope, () => sum(secondHalf))
-  return Thread.join(left) + Thread.join(right)
-})
+function sumRange(start: int, end: int): int {
+  let total = 0
+  for (const number of Ranges.between(start, end)) {
+    total = total + number
+  }
+  return total
+}
+
+export function sumInTwoThreads(): int uses alloc {
+  return Thread.scope((scope) => {
+    const left = Thread.start(scope, () => sumRange(0, 500))
+    const right = Thread.start(scope, () => sumRange(500, 1000))
+    return Thread.join(left) + Thread.join(right)
+  })
+}
 ```
 
-- **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`.
-- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result. A second `join` gives the same value. Each thread has an 8 MiB stack, the size of the main thread's.
-- **Effects.** `Thread.start` has the effects of `f` and `alloc`. `Thread.scope` and `Thread.join` add none: joining gives the same result every run.
+- **`Thread.scope(f)`** calls `f` with a `Scope`. It waits for every thread started in that scope, then returns the result of `f`, or nothing when `f` returns nothing.
+- **`Thread.start(scope, f)`** takes `f` as an escaping parameter and runs it on a new thread and returns a `Thread<T>`. `Thread.join(t)` waits for it and returns its result. A second `join` gives the same value. Each thread has an 8 MiB stack, the size of the main thread's. `f` is a plain function: an `async` arrow or the name of an `async` function is a compile error that names `Thread.startAsync` (E1192).
+- **`Thread.startAsync(scope, f)`** takes `f: () => Async<T>`, an `async` arrow written at the call or the name of a top-level `async` function, and returns a `Thread<T>`. The new thread runs the task of `f` on its own event loop until it finishes, and `join` gives the awaited value. This is how code on a thread sleeps or uses `std/net`.
+- **Effects.** `Thread.start` and `Thread.startAsync` have the effects of `f` and `alloc`. `Thread.scope` and `Thread.join` add none: joining gives the same result every run.
 - **A `Scope` cannot escape.** It can be passed to a function, but it cannot be stored in a field, element, tuple or constructor, returned, or captured by an escaping closure, a thread function included (E1191). Only code running inside `Thread.scope` can start threads in it.
-- **Thread functions** are an arrow function written at the call or the name of a top-level function (E1193), so the compiler sees what they capture. They capture only constant values, like every closure that can outlive its call, and each capture and the result must be `Sendable` (section 6, E1190). They cannot be `async` (E1192).
-- **Tasks on a thread.** Each thread has its own event loop. A thread function may start tasks; when it returns, its thread cancels and drains what is left, as the program does at exit (Async functions below), before `join` gives the result. An `Async<T>` is not `Sendable`, so a handle never reaches another thread's loop; work moves between loops through channels and `Shared`.
+- **Thread functions** are an arrow function written at the call or the name of a top-level function (E1193), so the compiler sees what they capture. They capture only constant values, like every closure that can outlive its call, and each capture and the result must be `Sendable` (section 6, E1190). For `Thread.startAsync` the awaited value must be `Sendable`, not the `Async` handle. `Parallel.map` takes only a plain function: an `async` one gives an `Async<U>`, which is not `Sendable` (E1190).
+- **Tasks on a thread.** Each thread has its own event loop. A thread function may start tasks; when it returns, or when the task that `Thread.startAsync` runs finishes, its thread cancels and drains what is left, as the program does at exit (Async functions below), before `join` gives the result. An `Async<T>` is not `Sendable`, so a handle never reaches another thread's loop; work moves between loops through channels and `Shared`.
 - **A panic on any thread** prints its message and ends the process with code 101.
 - **`Parallel.map(items, f)`** from `std/parallel` splits an array into one part per core, runs `f` on each element on those threads and returns the results in order. `f` follows the thread function rules.
 - `==`, `!=` and map keys on a `Thread<T>` or a `Scope` are a compile error (E1195).
@@ -1505,17 +1516,27 @@ const total = Thread.scope((scope) => {
 ### Channels
 
 ```narra
-const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
+import * as Thread from "std/thread"
+import * as Channel from "std/channel"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
 
-Thread.start(scope, () => {
-  for (const i of Ranges.upTo(100)) {
-    Channel.send(sender, i)                            // blocks while the channel is full
-  }
-  Channel.close(sender)
-})
+export function printNumbers(): int uses io, alloc {
+  const #[sender, receiver] = Channel.create<int>(16)     // holds up to 16 values
 
-for (const value of Channel.values(receiver)) {       // ends when the channel is closed and empty
-  print(Int.toString(value))
+  return Thread.scope((scope) => {
+    Thread.start(scope, () => {
+      for (const i of Ranges.upTo(100)) {
+        Channel.send(sender, i)                            // blocks while the channel is full
+      }
+      Channel.close(sender)
+    })
+
+    for (const value of Channel.values(receiver)) {       // ends when the channel is closed and empty
+      print(Int.toString(value))
+    }
+    return 0
+  })
 }
 ```
 
@@ -1523,7 +1544,7 @@ for (const value of Channel.values(receiver)) {       // ends when the channel i
 
 - **`Channel.create<T>(capacity)`** returns a `#[Sender<T>, Receiver<T>]`. `T` must be `Sendable` (E1190). A capacity below 1 is taken as 1.
 - **`Channel.send(sender, value)`** blocks while the channel is full and returns `true`. It returns `false` and drops the value once the channel is closed or every copy of the receiver is gone.
-- **`Channel.receive(receiver)`** blocks until a value arrives and returns `Some(value)`, or `None` once the channel is closed and empty. **`Channel.values(receiver)`** is a `Generator<T> uses io` over the same values. Copies of a `Receiver` share the queue, so several threads can take values from one channel; each value goes to one of them.
+- **`Channel.receive(receiver)`** blocks until a value arrives and returns `Some(value)`, or `None` once the channel is closed and empty. **`Channel.values(receiver)`** is a `Generator<T> uses io` over the same values; a `for` loop over it also needs `alloc`, because a generator's frame is allocated, so the caller writes `uses io, alloc`. Copies of a `Receiver` share the queue, so several threads can take values from one channel; each value goes to one of them.
 - **`Channel.close(sender)`** closes the channel for every copy of the sender. Dropping the last copy also closes it.
 - Blocking calls have the `io` effect. In async code they block the thread's event loop, as other blocking calls do.
 - `==`, `!=` and map keys on a `Sender` or a `Receiver` are a compile error (E1195).
@@ -1590,8 +1611,8 @@ An async function runs as a task on the event loop of its thread. A task suspend
 ```narra
 import * as Async from "std/async"
 import * as Bytes from "std/bytes"
-import * as Net from "std/async/net"
-import { Connection } from "std/async/net"
+import * as Net from "std/net"
+import { Connection } from "std/net"
 
 async function echo(connection: Connection): int uses io, alloc {
   let total = 0
@@ -1657,11 +1678,10 @@ The loop:
 - **The program exits when the entry function finishes.** Tasks still running then are cancelled and run until they return; a task left waiting on a task that can never finish is dropped. The wait a cancelled task is suspended in gives `Err(AsyncError.Cancelled)`, and the task runs up to its next suspending call; that call drops it, so its frame releases its locals and it does not resume. `Async.idle` counts as a suspending call. A task cancelled before its first run is dropped at its first suspending call without seeing `Err(AsyncError.Cancelled)`. A loop that never suspends (including one that reads an async generator that never awaits) is a plain infinite loop, as in synchronous code. To let tasks finish first, end the entry with `await Async.idle()`. A detached task lives at most as long as the program. This differs from `Async.cancel` during the run, where every later suspending call keeps returning the error.
 - **A cycle of awaits stops the program.** When no task is ready, no timer is set and no I/O is waiting, but the entry has not finished, the tasks wait on each other. The program stops with the message `async: every task waits on another task` and exit code 101, as for a panic.
 - **Cancel is cooperative.** After `Async.cancel(handle)`, the suspending std call that the task waits on or makes next returns `Err(AsyncError.Cancelled)` without doing its work, and so does every later one. The body handles it like any error and returns a `T`, so `await` on a cancelled handle still gives a `T`. A cancelled handle's `then` callbacks do not run. A cancel passes down the await chain: when the cancelled task waits on a handle that no other task awaits, that task is cancelled too, and so on, so the innermost timer, I/O or idle wait gives `Err(AsyncError.Cancelled)`. A handle that other tasks also await, that has `then` callbacks or that an unfinished `Async.all` or `Async.race` was given is not cancelled, a cancel of an `Async.all` or `Async.race` handle stops there, and detached tasks and tasks the cancelled task started but does not await keep running. A task cancelled while it runs passes the cancel when it next waits in an `await`. Cancelling a finished task does nothing. A cancel wakes a task waiting in its own `Async.idle()`, and `idle` in a cancelled task finishes at once.
-- **Suspending I/O lives in `std/async/*`.** Each suspending function is `async` and returns `Result<T, AsyncError>`, so a body must look at the result (E0229) and sees a cancel.
-  - `std/async/time`: `sleep(duration: Duration): Result<Duration, AsyncError>`, with `Duration` from `std/time`. Ok holds the time slept.
-  - `std/async/file`: `readText`, `writeText`, `readBytes` and `writeBytes`, with the names and arguments of `std/fs`. Each call reads or writes in one blocking step, then lets the other ready tasks run once.
-  - `std/async/net`: `listen(host, port): Result<Listener, AsyncError>` and `localPort(listener): int`, which do not suspend, and `accept(listener)`, `connect(host, port)`, `read(connection, maxBytes): Result<bytes, AsyncError>` (empty at the end of the stream) and `write(connection, data): Result<int, AsyncError>`. `host` is a numeric address, and port 0 picks a free port. One task at a time may read a connection and one may write it; a second gives `Err(AsyncError.Failed(...))`. `read` gives at most 64 KiB per call. `Listener` and `Connection` are handles: copies share the socket, and it closes when the last copy is dropped (section 6).
-- **Blocking calls block the loop.** `std/fs`, `Time.sleep`, `Process.run` and the other blocking functions are allowed in async code, and no other task runs while they wait.
+- **One form per std function (D125).** A std function is `async` when the operating system can wait for it in the background (timers, sockets), and plain when it cannot (files, processes, standard input). No function has both forms. Each suspending function returns `Result<T, AsyncError>`, so a body must look at the result (E0229) and sees a cancel.
+  - `Time.sleep` in `std/time`: `sleep(duration: Duration): Result<Duration, AsyncError>`. Ok holds the time slept.
+  - `std/net`: `listen(host, port): Result<Listener, AsyncError>` and `localPort(listener): int`, which do not suspend, and `accept(listener)`, `connect(host, port)`, `read(connection, maxBytes): Result<bytes, AsyncError>` (empty at the end of the stream) and `write(connection, data): Result<int, AsyncError>`. `host` is a numeric address, and port 0 picks a free port. One task at a time may read a connection and one may write it; a second gives `Err(AsyncError.Failed(...))`. `read` gives at most 64 KiB per call. `Listener` and `Connection` are handles: copies share the socket, and it closes when the last copy is dropped (section 6).
+- **Blocking calls block the loop.** `std/fs`, `Process.run` and the other plain functions are allowed in async code, and no other task runs while they wait. `await Async.idle()` between them lets the other tasks run.
 - **A task stays on the thread that runs its loop.** An `Async<T>` or a `Cell` cannot be sent to another thread. Pass work between the loops of several threads with channels.
 - The loop waits with `kqueue` on macOS and `epoll` on Linux.
 
@@ -1671,8 +1691,8 @@ An async generator produces values one at a time and may wait between them (D110
 
 ```narra
 import * as Bytes from "std/bytes"
-import * as Net from "std/async/net"
-import { Connection } from "std/async/net"
+import * as Net from "std/net"
+import { Connection } from "std/net"
 
 async function* sizes(connection: Connection): AsyncGenerator<int> uses (io, alloc) {
   for await (const chunk of Net.chunks(connection, 4096)) {
@@ -1700,11 +1720,11 @@ async function total(connection: Connection): int uses io, alloc {
 - **A stream is shared, not copied.** Copies of an `AsyncGenerator<T>` share one body and one position, as copies of an `Async<T>` share one task, so two loops over one stream each get some of its values. `==`, `!=` and map keys on one are E1106. A value passed to a stream is shared with it as with a task: while a local holds the stream, a write to the passed place is E0978.
 - **Stopping early.** `break`, `return` or a labeled `break` out of a `for await` drops the loop's reference to the stream, as dropping a copy read with `Async.next` does. When it was the last one, the body is dropped where it waits at its `yield`, and what it holds there is released; a `Connection` closes when its last copy goes. Nothing else of the body runs.
 - **Cancel.** A cancel of a task that waits on a value of a stream, or of the `Async.next` handle itself, passes to the stream when it is the only request waiting on it: the wait inside the body gives `Err(AsyncError.Cancelled)`, as do its later suspending calls, and later requests give `None` once the body ends. A request nobody awaits still runs the body to its next `yield`; that value is lost when the handle is dropped.
-- **`Net.chunks(connection, maxBytes): AsyncGenerator<Result<bytes, AsyncError>>`** in `std/async/net` yields `Ok(chunk)` for each read that is not empty, ends at the end of the stream, and on an error yields one `Err` and ends. A `maxBytes` of zero or less ends the stream at once.
+- **`Net.chunks(connection, maxBytes): AsyncGenerator<Result<bytes, AsyncError>>`** in `std/net` yields `Ok(chunk)` for each read that is not empty, ends at the end of the stream, and on an error yields one `Err` and ends. A `maxBytes` of zero or less ends the stream at once.
 
 ## 9. Unsafe code and C interop
 
-- **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression; assign to a `let` declared before it. Code inside `unsafe` may crash; it is the stated exception to D92.
+- **`unsafe { ... }`** is a statement, and the only place a call with the `unsafe` effect is allowed: the std/ptr functions that read, write, move or free a pointer, and any function whose effects include `unsafe`. A call outside one is E0996. `unsafe` is a keyword only before `{`, so it stays an effect name. The block is not an expression (`const x = unsafe { ... }` is a syntax error); assign to a `let` declared before it. A `return` inside the block returns from the enclosing function. Code inside `unsafe` may crash; it is the stated exception to D92.
 - **The `unsafe` effect.** A function that holds an `unsafe` block has the `unsafe` effect: an exported one writes `uses unsafe` (E0800), a private one is inferred, and every caller needs an `unsafe` block of its own. A function value whose type lists `uses unsafe` is called the same way.
 - **Generators and traits.** Running a generator runs its body, so a `for` loop or `yield*` over a generator whose body has the `unsafe` effect needs an `unsafe` block (E0996). A call through a trait has the effects the trait function declares, so an implementation may use `unsafe` only when its trait function declares `uses unsafe` (E0800); otherwise it wraps the unsafe code with `@trusted`, the one attribute allowed on an implement block member.
 - **`@trusted`** on a function states that its `unsafe` blocks were checked by hand. It stops the effect there: the function does not have `unsafe`, so callers need no block and an exported one does not declare it. `@trusted` on a function with no `unsafe` block, or on one that writes `uses unsafe`, is E0997.
@@ -1891,7 +1911,7 @@ export function opener(): string {
 - **A `@target` function is type-checked on every target**, like a dropped branch, and its effects count the same way.
 - **`narrac check` checks a debug build for the host; `narrac check --all-targets` checks every supported target**, each as a debug and as a release build, since a condition on `Build.debug` can keep a use in one of them only. It reports each diagnostic once, in source order; an E0991 lists every target it fails on, with `(debug)` or `(release)` after a target that fails in one build only. A use that is wrong only on another target shows only with `--all-targets`.
 - **The targets are one table of eight rows,** named `<Os>-<Arch>` or, for a Linux row that links musl, `<Os>-<Arch>-musl`: `MacOS-Arm64`, `MacOS-X86_64`, `Linux-X86_64`, `Linux-Arm64`, `Linux-X86_64-musl`, `Linux-Arm64-musl`, `Windows-X86_64` and `Wasi-Wasm32`. `Os` has the variants `MacOS`, `Linux`, `Windows` and `Wasi`; `Arch` has `Arm64`, `X86_64` and `Wasm32`. `Build.os` and `Build.arch` do not tell musl from glibc.
-- **`Wasi-Wasm32` runs under a WASI preview 1 host such as `wasmtime run -W exceptions=y`.** The build passes `-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false` and links `-lsetjmp`, because the panic handler uses `setjmp`; the runtime defines the `__c_longjmp` exception tag that the wasm `setjmp` lowering needs. Programs read their arguments from `args_get` and write `/dev/stdout` and `/dev/stderr` to descriptors 1 and 2. The std items WASI cannot back are E0991 on this target, like a `@target` function that does not exist there: `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/async/net`, and `Terminal.columns`. A use inside an `if` that drops `Os.Wasi` (`if (Build.os != Os.Wasi)`) is accepted. Their signatures are the same on every target. The async loop on this target has timers and no descriptor waits: a turn with nothing ready sleeps until the nearest timer. `narrac test --target Wasi-Wasm32` is not supported: `test` rejects `--target` on every row.
+- **`Wasi-Wasm32` runs under a WASI preview 1 host such as `wasmtime run -W exceptions=y`.** The build passes `-mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false` and links `-lsetjmp`, because the panic handler uses `setjmp`; the runtime defines the `__c_longjmp` exception tag that the wasm `setjmp` lowering needs. Programs read their arguments from `args_get` and write `/dev/stdout` and `/dev/stderr` to descriptors 1 and 2. The std items WASI cannot back are E0991 on this target, like a `@target` function that does not exist there: `Process.run`, every function of `std/thread`, `std/parallel`, `std/channel`, `std/shared` and `std/atomic`, the functions of `std/net`, and `Terminal.columns`. A use inside an `if` that drops `Os.Wasi` (`if (Build.os != Os.Wasi)`) is accepted. Their signatures are the same on every target. The async loop on this target has timers and no descriptor waits: a turn with nothing ready sleeps until the nearest timer. `narrac test --target Wasi-Wasm32` is not supported: `test` rejects `--target` on every row.
 - **`narrac build --target <name>` and `narrac check --target <name>` use another target's row** for the build conditions. `build` also passes `-target <triple>` to the C compiler, before its other flags, when the row is not the host's (the triple is the `zig cc -target` form, for example `x86_64-linux-musl`), so `CC` must be a cross compiler such as `zig cc`. An unknown name is E1600 and lists the names; `-sanitize` with a target other than the host is E1601. `narrac targets` prints one line per row: the name and the triple.
 - **`@target` before an `extern { } from` block** declares its C functions, and links its library, only when building for its target. It applies to every member of the block, since a block names one library, and each member follows the rules of a `@target` function above. Only the block takes the attribute; a member does not (E1000).
 
@@ -2109,3 +2129,4 @@ These are left out of the first version on purpose.
 - **Functors and module parameters.** See `DECISIONS.md`, D6.
 - **A native debug backend.** See `DECISIONS.md`, D10.
 - **A bytecode VM.** Possible later for scripting and hot reload. The first target is native code only.
+- **`narrac move old new`.** A command that moves a file and rewrites every import of it. It is not built yet: `narrac move` prints the usage line and exits 2.

@@ -78,7 +78,7 @@ Without `as`, `toString` would be a vague name in this file, so the import renam
 
 ### What needs no import
 
-`print`, `assert` and `panic` work in every file. So do the types `Array`, `Map`, `Range`, `Box`, `Option` and `Result`, and the constructors `Some`, `None`, `Ok` and `Err`. Every other name comes from an import.
+`print`, `assert`, `panic` and `copy` work in every file. So do the types `Array`, `Map`, `Range`, `Box`, `Option` and `Result`, and the constructors `Some`, `None`, `Ok` and `Err`. Every other name comes from an import.
 
 The functions that work on those types are in their own modules. Writing an array type needs no import, but pushing to an array does. If you forget it, the error gives the line to add:
 
@@ -104,7 +104,62 @@ export function run(args: Array<string>): int {
 
 The same goes for the other prelude types. Their modules are imported as `Arrays` (`std/array`), `Maps` (`std/map`), `Ranges` (`std/range`), `Boxes` (`std/box`), `Options` (`std/option`) and `Results` (`std/result`).
 
-The other standard modules are `std/char`, `std/env`, `std/float`, `std/fs`, `std/int`, `std/process`, `std/string` and `std/test`. Importing a path that does not exist is an error that lists them all.
+The compiler accepts 55 standard modules. Importing a path that does not exist is an error that lists them all. Here they are in groups, each with one line. Later chapters teach most of them.
+
+Numbers and text:
+
+- `std/int`: functions for `int` (`i64`), such as `toString`, `parse` and checked arithmetic.
+- `std/i8`, `std/i16`, `std/i32`, `std/u8`, `std/u16`, `std/u32` and `std/u64`: the same for each sized integer type, including conversions such as `I32.from`.
+- `std/float`: functions for `f64`, such as `fromInt` and `toString`.
+- `std/f32`: the same for the 32-bit float.
+- `std/math`: the constants `PI` and `E`, and `min`, `max`, `clamp`, `pow` and the other math functions.
+- `std/random`: a seeded random number generator that gives the same numbers for the same seed.
+- `std/string`: functions for strings, such as `split`, `trim` and `replace`.
+- `std/char`: functions for single characters.
+- `std/unicode`: grapheme clusters, case mapping, normalization and display width.
+- `std/regex`: regular expressions.
+- `std/template`: the `Raw` type and the `raw` tag for tagged template literals.
+
+Collections and values:
+
+- `std/array`, `std/map`, `std/range`: functions for the `Array`, `Map` and `Range` types.
+- `std/fixedarray`: arrays whose length is part of the type.
+- `std/bytes`: a block of raw bytes.
+- `std/option`, `std/result`: functions for `Option` and `Result`.
+- `std/box`, `std/cell`: a value on the heap, and a shared value that changes on one thread.
+- `std/set`: a collection of distinct values.
+- `std/iterator`: lazy `map`, `filter`, `take` and other operators over generators.
+- `std/arena`: a pool of values that refer to each other by handle.
+- `std/hash`: hashing of any value, and a fixed FNV-1a hash of a string.
+- `std/shape`: the `Value` tree that serialization reads and writes.
+- `std/json`, `std/toml`: parse and write JSON and TOML as a `Value`.
+- `std/simd`: vector types that work on several numbers in one instruction.
+
+Files, the system and tools:
+
+- `std/fs`: read and write files and folders.
+- `std/path`: join and split file paths.
+- `std/io`: read standard input and write standard output and error.
+- `std/env`: the program's arguments and environment variables.
+- `std/process`: end the program with `Process.exit`, and run another program with `Process.run`.
+- `std/time`: instants, durations, the clock and an async sleep.
+- `std/args`: a command-line parser.
+- `std/terminal`: whether a stream is a terminal, its width and color.
+- `std/test`: checks for `test` blocks.
+- `std/build`: constants for the target system, such as `Build.os`.
+
+Generators, async and threads:
+
+- `std/coroutine`: `resume` and `send` to run a generator or coroutine.
+- `std/async`: wait for several async tasks, or cancel one.
+- `std/net`: TCP connections for async code.
+- `std/thread`, `std/parallel`: start threads, and run a function over an array on all cores.
+- `std/channel`, `std/shared`, `std/atomic`: send values between threads, share a value with a lock, and use atomic numbers.
+
+Unsafe code and C:
+
+- `std/ptr`: raw pointers.
+- `std/cstring`: strings for C calls.
 
 `Process.exit(code)` in `std/process` ends the program at once with that exit code. It flushes the output printed so far, has the `io` effect, and does not run the code after it.
 
@@ -196,7 +251,7 @@ Before you add `export`, decide whether other files should depend on that functi
 
 ## What a module can hold
 
-Besides functions and structs, a module can export enums, traits and constants. A constant at the top of a file is a `const` whose value the compiler can work out. That can be a number, a string, or an array or struct of them:
+Besides functions and structs, a module can export enums, traits, type aliases and constants. To pass on a name that another module exports, import it and export it again, as [chapter 4](04-structs-and-enums.md#export-a-name-from-another-module) shows. A constant at the top of a file is a `const` whose value the compiler can work out. That can be a number, a string, or an array or struct of them:
 
 ```narra
 import * as Str from "std/string"

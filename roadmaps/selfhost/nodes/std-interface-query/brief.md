@@ -1,12 +1,12 @@
 ---
 id: std-interface-query
 title: "narrac query interface for every public std module"
-status: todo
+status: done
 priority: could
 type: feature
-story: 
+story: batch-21
 early: false
-outline: true
+outline: false
 milestone: p6-docs
 target:
 ship: auto
@@ -23,13 +23,15 @@ added: 2026-11-20
 spent:
 owns:
   - roadmaps/selfhost/nodes/std-interface-query/**
+  - testdata/query/**
 shared:
+  - selfhost/src/tools/**
+  - selfhost/src/driver/**
+  - selfhost/tests/src/**
+  - compiler/README.md
 reserves: []
 provides: []
-depends_on:
-  - on: first-release
-    kind: hard
-    why: after the release (docs-structure-review proposal, approved 2026-11-20)
+depends_on: []
 ---
 # narrac query interface for every public std module
 
@@ -37,4 +39,9 @@ depends_on:
 
 `narrac query interface std/<module>` answers for every public std module, builtin and source; today it prints `unknown module` for `std/iterator`, `std/string`, `std/toml`, and 18 builtin modules have no source. Proposal change 10.
 
-Outline from the approved docs-structure-review proposal (`roadmaps/selfhost/nodes/docs-structure-review/proposal.md`). Refine into a full brief when `plan.py refine` lists it.
+Outline from the approved docs-structure-review proposal (`roadmaps/selfhost/nodes/docs-structure-review/proposal.md`). Refined 2026-11-20 into batch-21 (docs-concept-audit, approved).
+
+## Acceptance
+
+- [ ] `narrac query --json interface std/<module>` answers for every public std module (builtin and source), with each export's signature and effects; a case covers a builtin and a source module.
+- [ ] `sh scripts/test.sh` passes.

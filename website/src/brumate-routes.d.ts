@@ -7,6 +7,8 @@ declare module 'brumate/routes' {
     '/guide': {};
     '/guide/[page]': { page: string };
     '/install': {};
+    '/reference': {};
+    '/reference/[...page]': { page: string };
     '/spec': {};
   }
 }

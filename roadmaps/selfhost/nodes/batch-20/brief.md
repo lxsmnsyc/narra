@@ -1,7 +1,7 @@
 ---
 id: batch-20
 title: "Batch 20: pre-release fixes"
-status: active
+status: done
 priority: could
 type: story
 story: 

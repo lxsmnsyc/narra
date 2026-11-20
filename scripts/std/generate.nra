@@ -1,0 +1,1080 @@
+// Writes the std reference: one page for each public std module and README.md, the index.
+//
+//   narrac run -release scripts/std/generate.nra <narrac> <repository> <folder>
+//
+// <narrac> lists its builtin modules (`narrac builtins`) and answers
+// `narrac query --json interface` for each module. The source modules are the files of
+// <repository>/std/src. The pages go to <folder> (docs/reference/std), std/<name> as
+// <name>.md, and a Markdown file there that no module wrote is removed.
+// Signatures stay in `narra fragment` fences, so no generic type can become markup.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Io from "std/io"
+import * as Json from "std/json"
+import * as Path from "std/path"
+import * as Process from "std/process"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+struct Declaration derives Shape {
+  name: string
+  kind: string
+  signature: string
+  functions: Array<string> = []
+}
+
+struct Interface derives Shape {
+  declarations: Array<Declaration>
+}
+
+struct ModuleInfo {
+  path: string
+  alias: string
+  description: string
+  chapter: string
+}
+
+struct Chapter {
+  link: string
+  title: string
+}
+
+function listModuleInfo(): Array<ModuleInfo> uses alloc {
+  return [
+    ModuleInfo {
+      path: "std/arena",
+      alias: "Arenas",
+      description: "Values in slots, reached through handles that check the generation of the slot.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/args",
+      alias: "Args",
+      description: "A command line as data: flags, positionals and subcommands, parsed in one call.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/array",
+      alias: "Arrays",
+      description: "Arrays: length, push, slices and loops over values and entries.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/async",
+      alias: "Async",
+      description: "Task handles of async functions: wait for all, the first, or cancel.",
+      chapter: "14-async",
+    },
+    ModuleInfo {
+      path: "std/atomic",
+      alias: "Atomic",
+      description: "`Atomic<T>`, a bool or an integer with atomic operations.",
+      chapter: "15-threads-and-shared-state",
+    },
+    ModuleInfo {
+      path: "std/box",
+      alias: "Boxes",
+      description: "`Box<T>`, a value behind a reference, for recursive data.",
+      chapter: "04-structs-and-enums",
+    },
+    ModuleInfo {
+      path: "std/build",
+      alias: "Build",
+      description: "The target a program is built for: operating system, architecture and build mode.",
+      chapter: "19-building-for-other-systems",
+    },
+    ModuleInfo {
+      path: "std/bytes",
+      alias: "Bytes",
+      description: "Byte strings: conversion from and to arrays and text, slices and concatenation.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/cell",
+      alias: "Cells",
+      description: "`Cell<T>`, one mutable slot that every copy of the handle shares.",
+      chapter: "09-memory-and-mutable",
+    },
+    ModuleInfo {
+      path: "std/channel",
+      alias: "Channel",
+      description: "Bounded channels between threads.",
+      chapter: "15-threads-and-shared-state",
+    },
+    ModuleInfo {
+      path: "std/char",
+      alias: "Char",
+      description: "Characters, their code points and ASCII classes.",
+      chapter: "08-modules-and-packages#importing-from-the-standard-library",
+    },
+    ModuleInfo {
+      path: "std/coroutine",
+      alias: "Co",
+      description: "Resume a generator by hand and send values into it.",
+      chapter: "12-generators",
+    },
+    ModuleInfo {
+      path: "std/cstring",
+      alias: "CStrings",
+      description: "`CString`, a string with no zero byte, which C reads as a zero-terminated string.",
+      chapter: "16-unsafe-code-and-c",
+    },
+    ModuleInfo {
+      path: "std/env",
+      alias: "Env",
+      description: "The command line arguments and the environment variables of the process.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/f32",
+      alias: "F32",
+      description: "32-bit floats: conversion, truncation and text.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/fixedarray",
+      alias: "FixedArrays",
+      description: "Helpers over `FixedArray`, an array whose length is part of its type.",
+      chapter: "17-proofs-and-compile-time",
+    },
+    ModuleInfo {
+      path: "std/float",
+      alias: "Float",
+      description: "64-bit floats: conversion, square root, truncation, text (reading and printing) and `PI`.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/fs",
+      alias: "Fs",
+      description: "Files and folders: read, write, list, create and remove.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/hash",
+      alias: "Hash",
+      description: "Hashes of `Hashable` values and the FNV-1a hash of text.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/i16",
+      alias: "I16",
+      description: "16-bit signed integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/i32",
+      alias: "I32",
+      description: "32-bit signed integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/i8",
+      alias: "I8",
+      description: "8-bit signed integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/int",
+      alias: "Int",
+      description: "`int`, the 64-bit signed integer: checked arithmetic, division, parsing and text.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/io",
+      alias: "Io",
+      description: "Standard input, output and error.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/iterator",
+      alias: "Iterators",
+      description: "Lazy and eager operations over generators.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/json",
+      alias: "Json",
+      description: "Parse and write JSON text as a `Value` of `std/shape`, or as any `Shape` type.",
+      chapter: "07-traits",
+    },
+    ModuleInfo {
+      path: "std/map",
+      alias: "Maps",
+      description: "Maps: size, keys, entries, update and remove.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/math",
+      alias: "Math",
+      description: "Number functions: minimum and maximum, powers, roots, rounding and trigonometry.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/net",
+      alias: "Net",
+      description: "TCP sockets on the event loop of the thread.",
+      chapter: "14-async",
+    },
+    ModuleInfo {
+      path: "std/option",
+      alias: "Options",
+      description: "Helpers over `Option`, the type of a value that may be missing.",
+      chapter: "06-option-and-result",
+    },
+    ModuleInfo {
+      path: "std/parallel",
+      alias: "Parallel",
+      description: "Run a function over an array on several threads.",
+      chapter: "15-threads-and-shared-state",
+    },
+    ModuleInfo {
+      path: "std/path",
+      alias: "Path",
+      description: "File paths as text: join, folder, base name and extension.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/process",
+      alias: "Process",
+      description: "Run other programs and exit the process.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/ptr",
+      alias: "Ptr",
+      description: "`Ptr<T>`, a raw pointer for unsafe code and C.",
+      chapter: "16-unsafe-code-and-c",
+    },
+    ModuleInfo {
+      path: "std/random",
+      alias: "Random",
+      description: "A seeded random number generator that gives the same numbers on every platform.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/range",
+      alias: "Ranges",
+      description: "Ranges of integers for `for ... of` loops.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/regex",
+      alias: "Regexes",
+      description: "Regular expressions with a linear-time engine.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/result",
+      alias: "Results",
+      description: "Helpers over `Result`, the type of a value or an error.",
+      chapter: "06-option-and-result",
+    },
+    ModuleInfo {
+      path: "std/set",
+      alias: "Sets",
+      description: "`Set<T>`, a collection of distinct values with union, intersection and difference.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/shape",
+      alias: "Shapes",
+      description: "`Value`, a dynamic tree for structured data, and the `Shape` trait.",
+      chapter: "07-traits",
+    },
+    ModuleInfo {
+      path: "std/shared",
+      alias: "Shared",
+      description: "`Shared<T>`, a value guarded by a lock.",
+      chapter: "15-threads-and-shared-state",
+    },
+    ModuleInfo {
+      path: "std/simd",
+      alias: "Simd",
+      description: "Vector types and operations on all their lanes at once.",
+      chapter: "19-building-for-other-systems",
+    },
+    ModuleInfo {
+      path: "std/string",
+      alias: "Str",
+      description: "Text: length, slices, search, trim, pad, split and join, and a builder.",
+      chapter: "02-values-and-types",
+    },
+    ModuleInfo {
+      path: "std/template",
+      alias: "Template",
+      description: "The parts type and the tag of tagged templates.",
+      chapter: "17-proofs-and-compile-time",
+    },
+    ModuleInfo {
+      path: "std/terminal",
+      alias: "Terminal",
+      description: "Detect a terminal and style text for it.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/test",
+      alias: "Test",
+      description: "Assertions for `test` blocks: equality, panics and golden files.",
+      chapter: "10-effects-and-testing",
+    },
+    ModuleInfo {
+      path: "std/thread",
+      alias: "Thread",
+      description: "Threads that run in a scope.",
+      chapter: "15-threads-and-shared-state",
+    },
+    ModuleInfo {
+      path: "std/time",
+      alias: "Time",
+      description: "A monotonic clock for measuring, the wall clock, and an async sleep.",
+      chapter: "11-files-and-the-system",
+    },
+    ModuleInfo {
+      path: "std/toml",
+      alias: "Toml",
+      description: "Parse and write TOML text as a `Value` of `std/shape`.",
+      chapter: "13-standard-library",
+    },
+    ModuleInfo {
+      path: "std/u16",
+      alias: "U16",
+      description: "16-bit unsigned integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/u32",
+      alias: "U32",
+      description: "32-bit unsigned integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/u64",
+      alias: "U64",
+      description: "64-bit unsigned integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/u8",
+      alias: "U8",
+      description: "8-bit unsigned integers: checked arithmetic, conversion and text.",
+      chapter: "02-values-and-types#sized-integers",
+    },
+    ModuleInfo {
+      path: "std/unicode",
+      alias: "Unicode",
+      description: "Grapheme clusters, case mapping and display width.",
+      chapter: "13-standard-library",
+    },
+  ]
+}
+
+const LOWER_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+
+const INDEX_INTRODUCTION = "# Standard library\n\nEvery public module of the standard library. A module page lists its types, functions and constants with their signatures and effects, and links to the guide chapter that teaches the module.\n\nThese pages are generated by `scripts/std/generate.nra` from `narrac query --json interface`. Do not edit them.\n\n## Modules\n\n"
+
+function sliceText(text: string, start: int, end: int): string uses alloc {
+  const sliced = Str.slice(text, start, end)
+  if (sliced is Some(part)) {
+    return part
+  }
+  return ""
+}
+
+function containsText(items: Array<string>, wanted: string): bool {
+  for (const item of Arrays.values(items)) {
+    if (item == wanted) {
+      return true
+    }
+  }
+  return false
+}
+
+function isIdentifierByte(byte: int): bool {
+  return ((byte >= 48 && byte <= 57) ||
+    (byte >= 65 && byte <= 90) ||
+    (byte >= 97 && byte <= 122) ||
+    byte == 95)
+}
+
+function makeSlug(heading: string): string uses alloc {
+  const builder = Str.builder()
+  for (const index of Ranges.upTo(Str.length(heading))) {
+    const byte = Str.byteAt(heading, index)
+    if (byte >= 65 && byte <= 90) {
+      Str.append(mutable builder, sliceText(LOWER_LETTERS, byte - 65, byte - 64))
+    } else if (byte == 32) {
+      Str.append(mutable builder, "-")
+    } else if (isIdentifierByte(byte) || byte == 45) {
+      Str.append(mutable builder, sliceText(heading, index, index + 1))
+    }
+  }
+  return Str.build(builder)
+}
+
+function escapeText(text: string): string uses alloc {
+  const builder = Str.builder()
+  for (const character of Arrays.values(Str.chars(text))) {
+    if (
+      character == '\\' ||
+        character == '`' ||
+        character == '<' ||
+        character == '>' ||
+        character == '&' ||
+        character == '|' ||
+        character == '*' ||
+        character == '_' ||
+        character == '[' ||
+        character == ']'
+    ) {
+      Str.appendChar(mutable builder, '\\')
+    }
+    Str.appendChar(mutable builder, character)
+  }
+  return Str.build(builder)
+}
+
+function changeDepth(text: string, index: int, depth: int): int {
+  const byte = Str.byteAt(text, index)
+  if (byte == 40 || byte == 91 || byte == 123 || byte == 60) {
+    return depth + 1
+  }
+  if (byte == 41 || byte == 93 || byte == 125) {
+    return depth - 1
+  }
+  if (byte == 62 && !(index > 0 && Str.byteAt(text, index - 1) == 61)) {
+    return depth - 1
+  }
+  return depth
+}
+
+function splitNote(signature: string): Array<string> uses alloc {
+  const found = Str.indexOf(signature, " // ")
+  if (found is Some(position)) {
+    return [sliceText(signature, 0, position), Str.sliceFrom(signature, position + 4)]
+  }
+  return [signature, ""]
+}
+
+function findEffects(signature: string): Array<string> uses alloc {
+  let depth = 0
+  let start = -1
+  for (const index of Ranges.upTo(Str.length(signature))) {
+    if (depth == 0 && Str.byteAt(signature, index) == 32) {
+      if (sliceText(signature, index, index + 6) == " uses ") {
+        start = index + 6
+      }
+    }
+    depth = changeDepth(signature, index, depth)
+  }
+  if (start < 0) {
+    return []
+  }
+  let list = Str.trim(Str.sliceFrom(signature, start))
+  if (Str.startsWith(list, "(") && Str.endsWith(list, ")")) {
+    list = sliceText(list, 1, Str.length(list) - 1)
+  }
+  let effects: Array<string> = []
+  const parts = Str.split(list, ",")
+  if (parts is Some(names)) {
+    for (const name of Arrays.values(names)) {
+      Arrays.push(mutable effects, Str.trim(name))
+    }
+  }
+  return effects
+}
+
+function layOutBody(signature: string): string uses alloc {
+  const opening = Str.indexOf(signature, " { ")
+  if (opening is None) {
+    return signature
+  }
+  if (!Str.endsWith(signature, "}")) {
+    return signature
+  }
+  const start = opening.value + 3
+  const end = Str.length(signature) - 1
+  let members: Array<string> = []
+  let depth = 0
+  let memberStart = start
+  for (const index of Ranges.between(start, end)) {
+    const byte = Str.byteAt(signature, index)
+    if (depth == 0 && (byte == 44 || byte == 59)) {
+      Arrays.push(mutable members, Str.trim(sliceText(signature, memberStart, index)))
+      memberStart = index + 1
+    }
+    depth = changeDepth(signature, index, depth)
+  }
+  const last = Str.trim(sliceText(signature, memberStart, end))
+  if (last != "") {
+    Arrays.push(mutable members, last)
+  }
+  if (Arrays.length(members) == 0) {
+    return signature
+  }
+  let text = `${sliceText(signature, 0, opening.value)} {\n`
+  for (const member of Arrays.values(members)) {
+    text += `  ${member}\n`
+  }
+  return `${text}}`
+}
+
+function mentionsName(text: string, name: string): bool uses alloc {
+  const length = Str.length(name)
+  for (const index of Ranges.upTo(Str.length(text) - length + 1)) {
+    if (sliceText(text, index, index + length) != name) {
+      continue
+    }
+    const before = index == 0 || !isIdentifierByte(Str.byteAt(text, index - 1))
+    const after =
+      index + length == Str.length(text) || !isIdentifierByte(Str.byteAt(text, index + length))
+    if (before && after) {
+      return true
+    }
+  }
+  return false
+}
+
+function findTypeFunctions(
+  declaration: Declaration,
+  functions: Array<Declaration>,
+): Array<string> uses alloc {
+  if (Arrays.length(declaration.functions) > 0) {
+    return copy(declaration.functions)
+  }
+  // A source type has no list; its functions are the ones whose parameters or result name it.
+  let names: Array<string> = []
+  for (const other of Arrays.values(functions)) {
+    const signature = splitNote(other.signature)[0]
+    const found = Str.indexOf(signature, "(")
+    if (found is Some(position)) {
+      if (mentionsName(Str.sliceFrom(signature, position), declaration.name)) {
+        Arrays.push(mutable names, other.name)
+      }
+    }
+  }
+  return names
+}
+
+function isTypeKind(kind: string): bool {
+  return kind == "struct" ||
+    kind == "enum" ||
+    kind == "distinct" ||
+    kind == "type" ||
+    kind == "trait"
+}
+
+struct Anchors {
+  counts: Map<string, int>
+}
+
+function takeAnchor(mutable anchors: Anchors, heading: string): string uses alloc {
+  // A repeated heading gets a number after its anchor, as the site and GitHub give it.
+  const base = makeSlug(heading)
+  let seen = 0
+  if (anchors.counts[base] is Some(count)) {
+    seen = count
+  }
+  anchors.counts[base] = seen + 1
+  if (seen == 0) {
+    return base
+  }
+  return `${base}-${Int.toString(seen)}`
+}
+
+function findChapter(
+  repository: string,
+  reference: string,
+  modulePath: string,
+  depth: int,
+): Result<Chapter, string> uses io, alloc {
+  // A reference is a chapter name, or a chapter name and `#` and the anchor of the section to link.
+  let chapter = reference
+  let fixedAnchor = ""
+  const hash = Str.indexOf(reference, "#")
+  if (hash is Some(position)) {
+    chapter = sliceText(reference, 0, position)
+    fixedAnchor = Str.sliceFrom(reference, position + 1)
+  }
+  const file = Path.join(repository, `docs/guide/${chapter}.md`)
+  const read = Fs.readText(file)
+  if (read is Err(message)) {
+    return Err(`cannot read ${file}: ${message}`)
+  }
+  const lines = Str.split(read.value, "\n")
+  if (lines is None) {
+    return Err(`${file} is empty`)
+  }
+
+  // The title is the first heading, "N. Title"; a section that names the module gets the link.
+  let title = ""
+  let section = ""
+  let foundFixed = false
+  let anchors = Anchors { counts: Map {} }
+  let insideFence = false
+  for (const line of Arrays.values(lines.value)) {
+    if (Str.startsWith(line, "```")) {
+      insideFence = !insideFence
+      continue
+    }
+    if (insideFence || !Str.startsWith(line, "#")) {
+      continue
+    }
+    const space = Str.indexOf(line, " ")
+    if (space is None) {
+      continue
+    }
+    const heading = Str.sliceFrom(line, space.value + 1)
+    if (title == "") {
+      title = heading
+      continue
+    }
+    const anchor = takeAnchor(mutable anchors, heading)
+    if (fixedAnchor != "") {
+      if (anchor == fixedAnchor) {
+        foundFixed = true
+        section = `#${anchor}`
+      }
+    } else if (section == "" && mentionsModule(heading, modulePath)) {
+      section = `#${anchor}`
+    }
+  }
+  if (fixedAnchor != "" && !foundFixed) {
+    return Err(`${file} has no section with the anchor ${fixedAnchor}`)
+  }
+  if (title == "") {
+    return Err(`${file} has no title`)
+  }
+  const dot = Str.indexOf(title, ". ")
+  if (dot is Some(position)) {
+    title = `chapter ${sliceText(title, 0, position)}, ${Str.sliceFrom(title, position + 2)}`
+  }
+  const up = Str.repeat("../", depth + 2)
+  if (up is None) {
+    return Err(`cannot build the link from ${modulePath} to ${file}`)
+  }
+  return Ok(Chapter { link: `${up.value}guide/${chapter}.md${section}`, title })
+}
+
+function mentionsModule(heading: string, modulePath: string): bool uses alloc {
+  const found = Str.indexOf(heading, modulePath)
+  if (found is Some(position)) {
+    const end = position + Str.length(modulePath)
+    // std/async must not match the start of a longer path such as std/async/x.
+    return end == Str.length(heading) || Str.byteAt(heading, end) != 47
+  }
+  return false
+}
+
+function renderFence(signature: string): string uses alloc {
+  return `\`\`\`narra fragment\n${signature}\n\`\`\`\n`
+}
+
+function renderNote(label: string, note: string): string uses alloc {
+  if (note == "") {
+    return ""
+  }
+  let text = escapeText(note)
+  if (!Str.endsWith(text, ".")) {
+    text += "."
+  }
+  return `\n${label}: ${text}\n`
+}
+
+function splitClauses(note: string): Array<string> uses alloc {
+  if (note == "") {
+    return []
+  }
+  const parts = Str.split(note, "; ")
+  if (parts is Some(clauses)) {
+    return clauses
+  }
+  return [note]
+}
+
+function findSharedClauses(notes: Array<Array<string>>): Array<string> uses alloc {
+  let shared: Array<string> = []
+  if (Arrays.length(notes) < 3) {
+    return shared
+  }
+  for (const clause of Arrays.values(notes[0])) {
+    let everywhere = true
+    for (const other of Arrays.values(notes)) {
+      if (!containsText(other, clause)) {
+        everywhere = false
+      }
+    }
+    if (everywhere) {
+      Arrays.push(mutable shared, clause)
+    }
+  }
+  return shared
+}
+
+function listOwnClauses(clauses: Array<string>, shared: Array<string>): string uses alloc {
+  let own: Array<string> = []
+  for (const clause of Arrays.values(clauses)) {
+    if (!containsText(shared, clause)) {
+      Arrays.push(mutable own, clause)
+    }
+  }
+  return Str.join(own, "; ")
+}
+
+function renderTypeSection(declaration: Declaration): string uses alloc {
+  const parts = splitNote(declaration.signature)
+  return `\n### ${declaration.name}\n\n${renderFence(layOutBody(parts[0]))}${renderNote("Details", parts[1])}`
+}
+
+function renderFunctionLinks(
+  names: Array<string>,
+  functionAnchors: Map<string, string>,
+): string uses alloc {
+  let links: Array<string> = []
+  for (const name of Arrays.values(names)) {
+    if (functionAnchors[name] is Some(anchor)) {
+      Arrays.push(mutable links, `[\`${name}\`](#${anchor})`)
+    }
+  }
+  return Str.join(links, ", ")
+}
+
+function renderTypeSections(
+  types: Array<Declaration>,
+  functions: Array<Declaration>,
+  functionAnchors: Map<string, string>,
+): string uses alloc {
+  let linkLists: Array<string> = []
+  for (const declaration of Arrays.values(types)) {
+    Arrays.push(
+      mutable linkLists,
+      renderFunctionLinks(findTypeFunctions(declaration, functions), functionAnchors),
+    )
+  }
+
+  // Types with the same functions are listed one after the other, with one Functions line.
+  let text = ""
+  let done: Array<bool> = []
+  for (const _type of Arrays.values(types)) {
+    Arrays.push(mutable done, false)
+  }
+  for (const first of Ranges.upTo(Arrays.length(types))) {
+    if (done[first]) {
+      continue
+    }
+    let group: Array<string> = []
+    for (const index of Ranges.between(first, Arrays.length(types))) {
+      if (linkLists[index] == linkLists[first]) {
+        done[index] = true
+        Arrays.push(mutable group, types[index].name)
+        text += renderTypeSection(types[index])
+      }
+    }
+    if (linkLists[first] == "") {
+      continue
+    }
+    if (Arrays.length(group) == 1) {
+      text += `\nFunctions: ${linkLists[first]}.\n`
+    } else {
+      let names: Array<string> = []
+      for (const name of Arrays.values(group)) {
+        Arrays.push(mutable names, `\`${name}\``)
+      }
+      text += `\nFunctions of ${Str.join(names, ", ")}: ${linkLists[first]}.\n`
+    }
+  }
+  return text
+}
+
+function renderEffects(signature: string): string uses alloc {
+  const effects = findEffects(signature)
+  if (Arrays.length(effects) == 0) {
+    return "\nEffects: none.\n"
+  }
+  let spans: Array<string> = []
+  for (const effect of Arrays.values(effects)) {
+    Arrays.push(mutable spans, `\`${effect}\``)
+  }
+  return `\nEffects: ${Str.join(spans, ", ")}.\n`
+}
+
+function renderPage(
+  info: ModuleInfo,
+  moduleInterface: Interface,
+  chapter: Option<Chapter>,
+): string uses alloc {
+  let page = `# ${info.path}\n\n${info.description}\n\n\`\`\`narra fragment\nimport * as ${info.alias} from "${info.path}"\n\`\`\`\n`
+  if (chapter is Some(taught)) {
+    page += `\nThe guide teaches it in [${taught.title}](${taught.link}).\n`
+  }
+  page += `\nThis page is generated by \`scripts/std/generate.nra\` from \`narrac query --json interface ${info.path}\`. Do not edit it.\n`
+
+  // Types, constants and functions each get a section, in that order.
+  let types: Array<Declaration> = []
+  let constants: Array<Declaration> = []
+  let functions: Array<Declaration> = []
+  for (const declaration of Arrays.values(moduleInterface.declarations)) {
+    if (isTypeKind(declaration.kind)) {
+      Arrays.push(mutable types, declaration)
+    } else if (declaration.kind == "function") {
+      Arrays.push(mutable functions, declaration)
+    } else {
+      Arrays.push(mutable constants, declaration)
+    }
+  }
+
+  // The type sections link to functions further down, so every anchor is known first.
+  let anchors = Anchors { counts: Map {} }
+  let functionAnchors: Map<string, string> = Map {}
+  if (Arrays.length(types) > 0) {
+    takeAnchor(mutable anchors, "Types")
+  }
+  for (const declaration of Arrays.values(types)) {
+    takeAnchor(mutable anchors, declaration.name)
+  }
+  if (Arrays.length(constants) > 0) {
+    takeAnchor(mutable anchors, "Constants")
+  }
+  for (const declaration of Arrays.values(constants)) {
+    takeAnchor(mutable anchors, declaration.name)
+  }
+  if (Arrays.length(functions) > 0) {
+    takeAnchor(mutable anchors, "Functions")
+  }
+  for (const declaration of Arrays.values(functions)) {
+    functionAnchors[declaration.name] = takeAnchor(mutable anchors, declaration.name)
+  }
+
+  if (Arrays.length(types) > 0) {
+    page += "\n## Types\n"
+  }
+  page += renderTypeSections(types, functions, functionAnchors)
+  if (Arrays.length(constants) > 0) {
+    page += "\n## Constants\n"
+  }
+  for (const declaration of Arrays.values(constants)) {
+    const parts = splitNote(declaration.signature)
+    page += `\n### ${declaration.name}\n\n${renderFence(parts[0])}${renderNote("Details", parts[1])}`
+  }
+  if (Arrays.length(functions) > 0) {
+    page += "\n## Functions\n"
+  }
+
+  // A note clause that every function repeats is printed once, above the list.
+  let notes: Array<Array<string>> = []
+  for (const declaration of Arrays.values(functions)) {
+    Arrays.push(mutable notes, splitClauses(splitNote(declaration.signature)[1]))
+  }
+  const shared = findSharedClauses(notes)
+  if (Arrays.length(shared) > 0) {
+    page += renderNote("Details for every function below", Str.join(shared, "; "))
+  }
+  for (const index of Ranges.upTo(Arrays.length(functions))) {
+    const declaration = functions[index]
+    const parts = splitNote(declaration.signature)
+    page += `\n### ${declaration.name}\n\n${renderFence(parts[0])}${renderEffects(parts[0])}${renderNote("Details", listOwnClauses(notes[index], shared))}`
+  }
+  return page
+}
+
+function runNarrac(
+  narrac: string,
+  arguments: Array<string>,
+): Result<string, string> uses io, alloc {
+  const ran = Process.run(narrac, arguments)
+  if (ran is Err(message)) {
+    return Err(`cannot run ${narrac}: ${message}`)
+  }
+  const #[code, output, errorOutput] = ran.value
+  if (code != 0) {
+    return Err(`${narrac} ${Str.join(arguments, " ")} failed: ${errorOutput}`)
+  }
+  return Ok(output)
+}
+
+function listModules(
+  narrac: string,
+  repository: string,
+): Result<Array<string>, string> uses io, alloc {
+  let modules: Array<string> = []
+
+  // A builtin module has a line `builtin module="std/NAME" ...` for each of its functions.
+  const builtins = runNarrac(narrac, ["builtins"])
+  if (builtins is Err(message)) {
+    return Err(message)
+  }
+  const prefix = "builtin module=\""
+  const lines = Str.split(builtins.value, "\n")
+  if (lines is Some(all)) {
+    for (const line of Arrays.values(all)) {
+      if (!Str.startsWith(line, `${prefix}std/`)) {
+        continue
+      }
+      const rest = Str.sliceFrom(line, Str.length(prefix))
+      const quote = Str.indexOf(rest, "\"")
+      if (quote is Some(end)) {
+        const modulePath = sliceText(rest, 0, end)
+        if (!Str.startsWith(modulePath, "std/internal/") && !containsText(modules, modulePath)) {
+          Arrays.push(mutable modules, modulePath)
+        }
+      }
+    }
+  }
+
+  // A source module is std/src/NAME.nra, with `__` for each slash of its path.
+  const folder = Path.join(repository, "std/src")
+  const names = Fs.listDir(folder)
+  if (names is Err(message)) {
+    return Err(`cannot list ${folder}: ${message}`)
+  }
+  for (const name of Arrays.values(names.value)) {
+    if (
+      !Str.endsWith(name, ".nra") ||
+        Str.startsWith(name, "ext__") ||
+        Str.startsWith(name, "internal__")
+    ) {
+      continue
+    }
+    const modulePath = `std/${Str.replace(sliceText(name, 0, Str.length(name) - 4), "__", "/")}`
+    if (!containsText(modules, modulePath)) {
+      Arrays.push(mutable modules, modulePath)
+    }
+  }
+  return Ok(modules)
+}
+
+function findModuleInfo(
+  table: Array<ModuleInfo>,
+  modulePath: string,
+): Option<ModuleInfo> from table {
+  for (const info of Arrays.values(table)) {
+    if (info.path == modulePath) {
+      return Some(info)
+    }
+  }
+  return None
+}
+
+function countSlashes(text: string): int {
+  let count = 0
+  for (const index of Ranges.upTo(Str.length(text))) {
+    if (Str.byteAt(text, index) == 47) {
+      count += 1
+    }
+  }
+  return count
+}
+
+function writePage(path: string, text: string): Result<bool, string> uses io, alloc {
+  const created = Fs.createDirAll(Path.dirname(path))
+  if (created is Err(message)) {
+    return Err(`cannot create ${Path.dirname(path)}: ${message}`)
+  }
+  const written = Fs.writeText(path, text)
+  if (written is Err(message)) {
+    return Err(`cannot write ${path}: ${message}`)
+  }
+  return Ok(true)
+}
+
+function removeStalePages(
+  folder: string,
+  relative: string,
+  written: Array<string>,
+): Result<bool, string> uses io, alloc {
+  const here = Path.join(folder, relative)
+  const names = Fs.listDir(here)
+  if (names is Err(message)) {
+    return Err(`cannot list ${here}: ${message}`)
+  }
+  for (const name of Arrays.values(names.value)) {
+    let path = name
+    if (relative != "") {
+      path = `${relative}/${name}`
+    }
+    if (Fs.isDir(Path.join(folder, path))) {
+      const removed = removeStalePages(folder, path, written)
+      if (removed is Err(message)) {
+        return Err(message)
+      }
+    } else if (Str.endsWith(name, ".md") && !containsText(written, path)) {
+      const removed = Fs.removeFile(Path.join(folder, path))
+      if (removed is Err(message)) {
+        return Err(`cannot remove ${path}: ${message}`)
+      }
+    }
+  }
+  return Ok(true)
+}
+
+function generate(
+  narrac: string,
+  repository: string,
+  folder: string,
+): Result<bool, string> uses io, alloc {
+  const modules = listModules(narrac, repository)
+  if (modules is Err(message)) {
+    return Err(message)
+  }
+
+  // Every public module needs a row in the table, and every row a module.
+  const table = listModuleInfo()
+  for (const modulePath of Arrays.values(modules.value)) {
+    if (findModuleInfo(table, modulePath) is None) {
+      return Err(`${modulePath} has no row in listModuleInfo`)
+    }
+  }
+  for (const info of Arrays.values(table)) {
+    if (!containsText(modules.value, info.path)) {
+      return Err(`listModuleInfo has a row for ${info.path}, which is not a public module`)
+    }
+  }
+
+  let written: Array<string> = []
+  let index = INDEX_INTRODUCTION
+  for (const info of Arrays.values(table)) {
+    const answer = runNarrac(narrac, ["query", "--json", "interface", info.path])
+    if (answer is Err(message)) {
+      return Err(message)
+    }
+    const decoded = Json.decode<Interface>(answer.value)
+    if (decoded is Err(message)) {
+      return Err(`the interface of ${info.path} is not valid: ${message}`)
+    }
+    const name = Str.sliceFrom(info.path, 4)
+    let chapter: Option<Chapter> = None
+    if (info.chapter != "") {
+      const found = findChapter(repository, info.chapter, info.path, countSlashes(name))
+      if (found is Err(message)) {
+        return Err(message)
+      }
+      chapter = Some(found.value)
+    }
+    const file = `${name}.md`
+    const saved = writePage(Path.join(folder, file), renderPage(info, decoded.value, chapter))
+    if (saved is Err(message)) {
+      return Err(message)
+    }
+    Arrays.push(mutable written, file)
+    index += `- [\`${info.path}\`](${file}): ${info.description}\n`
+  }
+  const saved = writePage(Path.join(folder, "README.md"), index)
+  if (saved is Err(message)) {
+    return Err(message)
+  }
+  Arrays.push(mutable written, "README.md")
+  return removeStalePages(folder, "", written)
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  if (Arrays.length(args) != 4) {
+    Io.writeError("usage: generate <narrac> <repository> <folder>\n")
+    return 2
+  }
+  const generated = generate(args[1], args[2], args[3])
+  if (generated is Err(message)) {
+    Io.writeError(`generate: ${message}\n`)
+    return 1
+  }
+  return 0
+}

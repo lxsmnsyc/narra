@@ -63,6 +63,16 @@ export interface Sample {
 }
 
 const DEFAULT_MANIFEST = '[package]\nname = "sample"\n';
+const ENTRY_FUNCTION = /^export\s+(async\s+)?function\s+run\s*\(/m;
+
+function writeSampleManifest(content: string): string {
+  // A sample with an entry function is a program: declaring its binary makes `run` the entry, so
+  // its fixed `args` parameter is not reported as unused.
+  if (ENTRY_FUNCTION.test(content)) {
+    return `${DEFAULT_MANIFEST}\n[[binary]]\nname = "sample"\nentry = "main.run"\n`;
+  }
+  return DEFAULT_MANIFEST;
+}
 
 /**
  * Turns the fences of a page into samples, by their place in the token list. A `narra file`
@@ -91,11 +101,15 @@ export function collectSamples(fences: { index: number; info: string; content: s
       current.set(words[2]!, files);
       if (kind === 'package') {
         const all = { ...firstVersions.get(words[2]!), ...files };
-        all['narra.toml'] ??= DEFAULT_MANIFEST;
+        // As the guide suite does: the package is named as its fences name it, and `main.run` is its entry.
+        all['narra.toml'] ??= `[package]\nname = "${words[2]}"\n\n[[binary]]\nname = "${words[2]}"\nentry = "main.run"\n`;
         samples.set(fence.index, { files: all, target: words[3]! });
       }
     } else if (kind) {
-      samples.set(fence.index, { files: { 'narra.toml': DEFAULT_MANIFEST, 'src/main.nra': fence.content }, target: 'src/main.nra' });
+      samples.set(fence.index, {
+        files: { 'narra.toml': writeSampleManifest(fence.content), 'src/main.nra': fence.content },
+        target: 'src/main.nra',
+      });
     }
   }
   return samples;
@@ -261,6 +275,36 @@ export async function queryHovers(samples: Map<number, Sample>): Promise<Map<num
     console.log(`twoslash: narrac gave no answer for ${failed} sample(s), they have no hovers`);
   }
   return result;
+}
+
+/**
+ * The diagnostics of a sample that its fence does not announce. A `narra error` fence announces
+ * its diagnostics in the `// error: LINE:COLUMN: MESSAGE` lines at its top, one per diagnostic; a
+ * `narra` or `narra file` fence announces none, so any diagnostic is unexpected. This is the rule
+ * the guide suite applies when it runs the same samples.
+ */
+export function findUnexpected(kind: FenceKind, content: string, answer: Answer): Diagnostic[] {
+  const expected: string[] = [];
+  if (kind === 'error') {
+    for (const line of content.split('\n')) {
+      if (!line.startsWith('// error:')) {
+        break;
+      }
+      expected.push(line.slice('// error:'.length).trim());
+    }
+  }
+  const unexpected: Diagnostic[] = [];
+  for (const diagnostic of answer.diagnostics) {
+    const text = `${diagnostic.line}:${diagnostic.column}: ${diagnostic.message}`;
+    let found = false;
+    for (const want of expected) {
+      found ||= text.includes(want);
+    }
+    if (!found) {
+      unexpected.push(diagnostic);
+    }
+  }
+  return unexpected;
 }
 
 const ENTITIES: Record<string, string> = {

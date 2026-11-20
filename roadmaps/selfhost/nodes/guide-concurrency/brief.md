@@ -1,7 +1,7 @@
 ---
 id: guide-concurrency
 title: "Guide chapter on async, threads and channels"
-status: todo
+status: dropped
 priority: could
 type: docs
 story: 
@@ -38,3 +38,5 @@ depends_on:
 A guide chapter on async, threads and channels, which the guide index lists as built but does not teach. Proposal change 17.
 
 Outline from the approved docs-structure-review proposal (`roadmaps/selfhost/nodes/docs-structure-review/proposal.md`). Refine into a full brief when `plan.py refine` lists it.
+
+Dropped 2026-11-20: replaced by guide-async and guide-threads (docs-concept-audit, approved).

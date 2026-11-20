@@ -1,6 +1,6 @@
 # 9. Memory and `mutable`
 
-You never free memory in Narra, and a change to a value never shows up through another name by surprise. What you decide is where a value is copied and where it may change. This chapter follows a player in a small game. It shows how the game's values are stored, why the compiler refuses some writes, how a function changes the player, and what a closure may capture.
+You never free memory in Narra, and a change to a value never shows up through another name by surprise. What you decide is where a value is copied and where it may change. This chapter follows a player in a small game. It shows how the game's values are stored and why the compiler refuses some writes. It then covers how a function changes the player and what a closure may capture. It ends with closures that share changing state, and with the loops of shared handles that leak memory.
 
 ## Why copies are cheap
 
@@ -37,7 +37,7 @@ export function run(args: Array<string>): int {
 }
 ```
 
-`backup` and `hero` would name one player, and a write through one name would have to copy the player first, so that the other keeps its hp. The source would not show that copy. So Narra rejects the second name at the line that makes it. Arrays, maps, structs, boxes, string builders and generators are the values that change in place, so a name for one of them cannot be given to another name. Numbers, strings, enums and functions never change in place, so `const total = count` is fine.
+`backup` and `hero` would name one player, and a write through one name would have to copy the player first, so that the other keeps its hp. The source would not show that copy. So Narra rejects the second name at the line that makes it. Arrays, maps, structs, boxes, string builders and generators ([chapter 12](12-generators.md)) are the values that change in place, so a name for one of them cannot be given to another name. Numbers, strings, enums and functions never change in place, so `const total = count` is fine.
 
 The fix is the one the message gives: write `copy(...)`. Now the two names hold two players, and the copy happens where you can see it:
 
@@ -279,7 +279,8 @@ export function run(args: Array<string>): int {
 A spell swaps the positions of two players. With two local variables, `swapPositions(mutable hero, mutable rival)` works. The game keeps its players in an array, though, and passing two elements of it fails:
 
 ```narra error
-// error: 20:32: "players" is passed as mutable in this call, so no other argument can use it
+// error: 21:32: "players" is passed as mutable in this call, so no other argument can use it
+// error: 21:52: "players" is passed as mutable in this call, so no other argument can use it
 struct Position {
   x: int
   y: int
@@ -605,10 +606,247 @@ export function run(args: Array<string>): int {
 
 The fix is the same: copy it into a `const` (`const current = score.points`) and capture `current`.
 
+## State that closures share: `Cell`
+
+Sometimes a stored closure has to see a score that keeps changing. The game wants a scorer that is handed out and called later, once per kill. A `let` cannot be captured there:
+
+```narra error
+// error: 7:5: a closure cannot capture "score" because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
+// error: 7:13: a closure cannot capture "score" because it is declared with let
+// error: 8:12: a closure cannot capture "score" because it is declared with let
+function makeScorer(): (points: int) => int {
+  let score = 0
+  return (points) => {
+    score = score + points
+    return score
+  }
+}
+
+export function run(args: Array<string>): int {
+  const addPoints = makeScorer()
+  return addPoints(10)
+}
+```
+
+The last words of the message name the fix. A `Cell` from `std/cell` is one slot that holds a value. The closure captures the `Cell` like any `const`, and what the `Cell` holds can still change:
+
+```narra
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+import * as Int from "std/int"
+
+function makeScorer(score: Cell<int>): (points: int) => int {
+  return (points) => {
+    Cells.update(score, (total) => total + points)
+    return Cells.get(score)
+  }
+}
+
+export function run(args: Array<string>): int {
+  const score = Cells.create(0)
+  const addPoints = makeScorer(score)
+  const resetScore = () => Cells.set(score, 0)
+  print(Int.toString(addPoints(10)))
+  print(Int.toString(addPoints(5)))
+  print(Int.toString(Cells.get(score)))
+  resetScore()
+  print(Int.toString(Cells.get(score)))
+  return 0
+}
+```
+
+```text
+10
+15
+15
+0
+```
+
+The module has four functions:
+
+- `Cells.create(value)` makes a `Cell` that holds `value`.
+- `Cells.get(cell)` returns a copy of the value.
+- `Cells.set(cell, value)` replaces the value.
+- `Cells.update(cell, change)` replaces the value with what `change` returns for the old one. `change` returns the new value, because a number cannot be a `mutable` parameter.
+
+A `Cell` is not copied the way a struct is. Passing it to a function, capturing it in a closure or storing it in a struct makes another handle to the same slot. So `addPoints`, `resetScore` and `run` above all see every write. A type like this is an identity type. `Shared`, in [chapter 15](15-threads-and-shared-state.md), is another. `==` on two cells is an error, because it would not be clear whether it compares the handles or the values. Compare `Cells.get(first)` with `Cells.get(second)`.
+
+Reach for a `Cell` when an escaping closure must change something. When the closure is passed straight to a function that only calls it, a `let` is enough, as chapter 3 showed. A `Cell` works on one thread only. Sending one to another thread is an error, and [chapter 15](15-threads-and-shared-state.md#share-a-value-with-a-lock) shows what to use there.
+
+## Enums and tuples are replaced
+
+A hero may carry a weapon, so the player gets a field of type `Option<Weapon>`. Every swing wears the weapon down. Reading the weapon with `is` gives a name for it, and writing to that name does not compile:
+
+```narra error
+// error: 15:5: "weapon" is bound by a pattern to a copy of part of the value, so it cannot be changed; copy it first with `copy(weapon)`
+struct Weapon {
+  name: string
+  durability: int
+}
+
+struct Player {
+  name: string
+  weapon: Option<Weapon>
+}
+
+export function run(args: Array<string>): int {
+  const hero = Player { name: "Ana", weapon: Some(Weapon { name: "sword", durability: 10 }) }
+  if (hero.weapon is Some(weapon)) {
+    weapon.durability = weapon.durability - 1
+  }
+  return 0
+}
+```
+
+The fields of an enum value are fixed, and a tuple has no element assignment. So a struct inside either of them is not a place you can write to, and copying `weapon` would only change the copy. To change the weapon, build a changed one and store it back in the field, which is a place:
+
+```narra
+import * as Int from "std/int"
+
+struct Weapon {
+  name: string
+  durability: int
+}
+
+struct Player {
+  name: string
+  weapon: Option<Weapon>
+}
+
+function wear(mutable player: Player) {
+  if (player.weapon is Some(weapon)) {
+    player.weapon = Some({ ...weapon, durability: weapon.durability - 1 })
+  }
+}
+
+export function run(args: Array<string>): int {
+  const hero = Player { name: "Ana", weapon: Some(Weapon { name: "sword", durability: 10 }) }
+  wear(mutable hero)
+  if (hero.weapon is Some(weapon)) {
+    print(Int.toString(weapon.durability))
+  }
+  return 0
+}
+```
+
+```text
+9
+```
+
+`player.weapon = Some(...)` replaces the whole `Option`. This is also why `x is Some(mutable y)` does not exist: an enum payload is replaced, never changed in place. A tuple works the same way: build a new tuple and assign it to the field that holds it.
+
 ## Freeing memory
 
 A value is freed when the last name that holds it goes away. That happens when a function returns, or when a variable gets a new value. There is no `free` call and no collector that runs later.
 
-A count can only reach zero if no value points back at itself, and the rules in this chapter make sure of that. A write to a value that another name holds copies it first, and `copy(...)` is where you ask for that. A `mutable` parameter cannot be stored, and only a closure that cannot outlive the call reaches a variable directly, so a value can never come to contain itself. Run a program with `NARRA_CHECK_LEAKS=1` to check: it reports any memory still held when the program exits.
+A count can only reach zero if no value points back at itself. For the values in this chapter the rules make sure of that. A write to a value that another name holds copies it first, and `copy(...)` is where you ask for that. A `mutable` parameter cannot be stored, and only a closure that cannot outlive the call reaches a variable directly, so a struct, an array or an enum can never come to contain itself.
+
+### Cycles through a `Cell`
+
+A `Cell` is the exception, because every handle names the same slot. A closure stored in a `Cell` that it also captures forms a loop. The slot holds the closure, and the closure holds the slot. Neither count reaches zero, so the memory is never freed. The compiler accepts the program, and there is no collector to find the loop later:
+
+```narra fragment
+const handler: Cell<Option<() => int>> = Cells.create(None)
+Cells.set(handler, Some(() => {
+  if (Cells.get(handler) is Some(_)) {
+    return 1
+  }
+  return 0
+}))
+```
+
+`NARRA_CHECK_LEAKS=1` finds it. Run the full program with the variable set, and it reports what is still held when the program exits and stops with exit code 102:
+
+```text
+leak check: 2 allocations still live
+```
+
+The same can happen with `Shared`, `Sender` and `Receiver` ([chapter 15](15-threads-and-shared-state.md)) and `Async` ([chapter 14](14-async.md)), the other identity types. A handle stored inside the object it names makes the same loop.
+
+There are two ways out. The first is to clear the slot before the last outside handle goes away. Setting the `Cell` back to `None` drops the closure, and the loop is gone:
+
+```narra
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+import * as Int from "std/int"
+
+export function run(args: Array<string>): int {
+  const handler: Cell<Option<() => int>> = Cells.create(None)
+  Cells.set(handler, Some(() => {
+    if (Cells.get(handler) is Some(_)) {
+      return 1
+    }
+    return 0
+  }))
+  if (Cells.get(handler) is Some(call)) {
+    print(Int.toString(call()))
+  }
+  Cells.set(handler, None)
+  return 0
+}
+```
+
+```text
+1
+```
+
+The second is to keep a graph out of identity types altogether. Store the nodes in an arena and let them name each other by handle, as [chapter 13](13-standard-library.md#graphs-stdarena) shows. An arena frees every node when it goes away.
+
+### Copies the compiler does not show
+
+The compile-time rules of this chapter find most places where a write has to copy a shared value, but not all. The compiler does not follow a value into a `mutable` argument of your own function. Here `keep` stores the caller's array in a bag, and the later write copies it:
+
+```narra fragment
+struct Bag {
+  items: Array<int>
+}
+
+function keep(mutable bag: Bag, items: Array<int>) {
+  bag.items = items
+}
+
+export function run(args: Array<string>): int {
+  const first = [1, 2, 3]
+  let bag = Bag { items: [] }
+  keep(mutable bag, first)
+  bag.items[0] = 10
+  return 0
+}
+```
+
+The program is correct, since `first` still starts with 1. It pays for a copy that the source does not show. To find such copies, run the program with `NARRA_CHECK_COPIES=1`. At exit it reports the copies on write that no `copy(...)` explains, and stops with exit code 103:
+
+```text
+copy check: copies on write that no copy(...) explains: array 1
+```
+
+Write the copy where a reader can see it, in `keep`, and the check passes:
+
+```narra
+import * as Int from "std/int"
+
+struct Bag {
+  items: Array<int>
+}
+
+function keep(mutable bag: Bag, items: Array<int>) {
+  bag.items = copy(items)
+}
+
+export function run(args: Array<string>): int {
+  const first = [1, 2, 3]
+  let bag = Bag { items: [] }
+  keep(mutable bag, first)
+  bag.items[0] = 10
+  print(`${Int.toString(first[0])} ${Int.toString(bag.items[0])}`)
+  return 0
+}
+```
+
+```text
+1 10
+```
+
+Both checks are for debug builds. A release build has neither.
 
 Next: [10. Effects and testing](10-effects-and-testing.md).

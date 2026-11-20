@@ -44,7 +44,7 @@ expected_failures=""
 
 # Samples a row leaves out, one "row:sample" pair per word: c_interop calls libc
 # through a bitcast, windows_runtime uses std/thread, windows_process uses Process.run
-# and windows_async uses std/async/net, which wasm32-wasi lacks.
+# and windows_async uses std/net, which wasm32-wasi lacks.
 left_out="Wasi-Wasm32:c_interop Wasi-Wasm32:windows_runtime Wasi-Wasm32:windows_process Wasi-Wasm32:windows_async"
 
 run_timeout=${RUN_TIMEOUT:-300}

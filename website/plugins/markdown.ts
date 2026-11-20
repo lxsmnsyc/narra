@@ -13,7 +13,7 @@ import { language as lua } from '../src/highlight/lua.ts';
 import { language as narra } from '../src/highlight/narra.ts';
 import { language as sh } from '../src/highlight/sh.ts';
 import { language as toml } from '../src/highlight/toml.ts';
-import { annotate, collectSamples, queryHovers, readFenceKind } from './twoslash.ts';
+import { annotate, collectSamples, findUnexpected, queryHovers, readFenceKind } from './twoslash.ts';
 import type { Answer } from './twoslash.ts';
 
 const REPOSITORY = 'https://github.com/lxsmnsyc/narra';
@@ -61,6 +61,12 @@ function rewriteLink(href: string, from: string): string {
   const guide = /^docs\/guide\/(.+)\.md$/.exec(target);
   if (guide) {
     return `/guide${guide[1] === 'README' ? '' : `/${guide[1]}`}${rest}`;
+  }
+  // The README of a folder is its index: `std/README.md` is `/reference/std`.
+  const reference = /^docs\/reference\/(.+)\.md$/.exec(target);
+  if (reference) {
+    const page = reference[1]!.replace(/(^|\/)README$/, '');
+    return `/reference${page ? `/${page}` : ''}${rest}`;
   }
   if (target === 'docs/install.md') {
     return `/install${rest}`;
@@ -176,6 +182,36 @@ function describe(parser: MarkdownIt, source: string): string {
   return '';
 }
 
+/**
+ * A sample of the guide, the reference or the README shows no diagnostic that its fence does not
+ * announce, so a stray warning fails the build. The fences of `SPEC.md` are fragments that the
+ * spec suite checks, so they are left out.
+ */
+function checkDiagnostics(
+  from: string,
+  fences: { index: number; info: string; content: string }[],
+  answers: Map<number, Answer>,
+): void {
+  if (from === 'SPEC.md') {
+    return;
+  }
+  const problems: string[] = [];
+  for (const fence of fences) {
+    const kind = readFenceKind(fence.info);
+    const answer = answers.get(fence.index);
+    if (!kind || !answer) {
+      continue;
+    }
+    for (const diagnostic of findUnexpected(kind, fence.content, answer)) {
+      const place = `${diagnostic.line}:${diagnostic.column}`;
+      problems.push(`${from}, fence \`${fence.info}\`, ${place}: ${diagnostic.message}`);
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(`a sample shows a diagnostic its fence does not announce:\n${problems.join('\n')}`);
+  }
+}
+
 export default function markdown(): Plugin {
   return {
     name: 'narra-markdown',
@@ -198,6 +234,7 @@ export default function markdown(): Plugin {
         }
       }
       env.answers = await queryHovers(collectSamples(fences));
+      checkDiagnostics(from, fences, env.answers);
       const html = parser.render(source, env);
       let title = '';
       for (const heading of env.headings) {

@@ -18,10 +18,7 @@ import {
   match,
   on,
   precedence_for,
-  promote_by_text_set,
-  promote_by_upper_snake_case,
   promote_function_calls,
-  promote_pascal_case,
   rewrite_types,
   to_html,
   type as tokenType,
@@ -349,13 +346,37 @@ const promoteGenericCalls = as_claim_producer((source, tokens, tokenTypes, sink)
   }
 });
 
+// A name that starts with a capital is a constant when it has at least two capitals or
+// underscores and no lowercase letter (`MAX`, `HTTP_OK`), and a class otherwise (`Cell`, `T`,
+// `I32`, `CStrings`). The TextMate grammar uses the same rule in `constant-name` and `type-name`.
+const CONSTANT_NAME = /^[A-Z][0-9]*[A-Z_][A-Z0-9_]*$/;
+const CAPITAL_NAME = /^[A-Z]/;
+
+const promoteCapitalNames = as_claim_producer((source, tokens, tokenTypes, sink) => {
+  const identifier = tokenTypes.indexOf(token.identifier);
+  const constant = tokenTypes.indexOf(token.constant);
+  const className = tokenTypes.indexOf(token.class_name);
+  if (identifier < 0 || constant < 0 || className < 0) {
+    return;
+  }
+  for (let index = 0; index * 3 < tokens.length; index++) {
+    if (tokens[index * 3] !== identifier) {
+      continue;
+    }
+    const text = source.slice(tokens[index * 3 + 1]!, tokens[index * 3 + 2]!);
+    if (CONSTANT_NAME.test(text)) {
+      sink.emit(index, constant, precedence_for(token.constant));
+    } else if (CAPITAL_NAME.test(text)) {
+      sink.emit(index, className, precedence_for(token.class_name));
+    }
+  }
+});
+
 // Names are told apart by their shape, as in the TextMate grammar.
 export const reclassifiers = [
   promoteGenericCalls,
   promote_function_calls(token.identifier, token.function, { plain: true, generic_fn: true }),
-  promote_by_upper_snake_case(token.identifier, token.constant),
-  promote_pascal_case(token.identifier, token.class_name),
-  promote_by_text_set(token.identifier, token.class_name, ['T', 'U', 'K', 'V', 'E']),
+  promoteCapitalNames,
   // A name right before a template is its tag.
   rewrite_types([
     { anchor: token.identifier, when: tokenType(token.template), rewrite: token.function },

@@ -7,18 +7,25 @@ A test compiles and runs every program in the guide. Each one works with the com
 ## Chapters
 
 1. [Getting started](01-getting-started.md): install the compiler, run a first program, read an error, split a program into a package.
-2. [Values and types](02-values-and-types.md): `const` and `let`, numbers, strings and templates, `bool` and `if`, arrays, maps, tuples.
-3. [Functions and closures](03-functions-and-closures.md): functions, recursion, functions as values, arrow functions, generics, closures and `escaping`.
-4. [Structs and enums](04-structs-and-enums.md): structs, copies and spread updates, enums and `match`, recursive data and `Box`, distinct and opaque types.
-5. [Pattern matching](05-pattern-matching.md): `match` with guards and literals, destructuring, `is` and `Option`, block expressions, `if` values and `? :`.
+2. [Values and types](02-values-and-types.md): `const` and `let`, numbers and division, strings and templates, `bool` and `if`, loops, arrays, maps, sized numbers, math, random numbers and hashing, tuples.
+3. [Functions and closures](03-functions-and-closures.md): functions, `requires`, default arguments, recursion, functions as values, arrow functions, generics, closures and `escaping`.
+4. [Structs and enums](04-structs-and-enums.md): structs, copies and spread updates, enums and `match`, recursive data and `Box`, generic types, type aliases, `typeof`, distinct and opaque types, re-exports.
+5. [Pattern matching](05-pattern-matching.md): `match` with guards and literals, array patterns, destructuring, `is` and `Option`, block expressions, `if` values and `? :`, named arguments.
 6. [Option and Result](06-option-and-result.md): `std/option`, `std/result`, errors without exceptions.
-7. [Traits](07-traits.md): declarations, `implement`, constraints, `derives`, equality and ordering.
-8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, std imports.
-9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, writes to shared values, `mutable` parameters and their rules.
-10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test` and `narrac test`.
-11. [The standard library](11-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
-12. [Tools](12-tools.md): `narrac check` and its JSON output, `narrac explain`, `narrac apply-fix`, `narrac fmt` and its options, `narrac query`, `narrac test`, and `narrac lsp` for editors.
-13. [Narra for TypeScript programmers](13-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
+7. [Traits](07-traits.md): declarations, `implement`, constraints, `derives`, equality, ordering and hashing, `Dynamic` values, saving values as JSON with `Shape`.
+8. [Modules and packages](08-modules-and-packages.md): imports, aliases, exports, the standard modules, packages from git, workspaces.
+9. [Memory and `mutable`](09-memory-and-mutable.md): reference counting, copies, writes to shared values, `mutable` parameters and their rules, `Cell`, leaks and hidden copies.
+10. [Effects and testing](10-effects-and-testing.md): `uses`, effect checking, `std/test`, `narrac test` and golden files.
+11. [Files and the system](11-files-and-the-system.md): reading and writing files, paths, folders, standard input and output, the command line and the environment, other programs, bytes, time.
+12. [Generators](12-generators.md): `function*`, `yield`, the effects of a generator, resuming by hand, coroutines.
+13. [The standard library](13-standard-library.md): the modules larger programs are built on: `std/iterator` for lazy and eager operations over generators, `std/set` for distinct values, `std/arena` for graphs of values, `std/args` for command lines, `std/toml` for configuration files, `std/terminal` for colors and terminal detection, `std/regex` for patterns and `std/unicode` for text as people see it.
+14. [Async](14-async.md): async functions, `await`, waiting for all or the first, cancelling, files and the network in async code, async generators.
+15. [Threads and shared state](15-threads-and-shared-state.md): threads and scopes, `Parallel.map`, channels, `Shared` and `Atomic`, `Sendable`, threads or async tasks.
+16. [Unsafe code and C](16-unsafe-code-and-c.md): calling C, the `unsafe` effect and `@trusted`, C types and strings, pointers, linking, `narrac audit`.
+17. [Proofs and compile-time constants](17-proofs-and-compile-time.md): `requires` between parameters, `ensures`, fixed-size arrays, refinement types, constant type parameters, `@const` functions, tagged templates.
+18. [Tools](18-tools.md): `narrac emit` and `narrac targets`, `narrac check` and its JSON output, `narrac explain`, `narrac apply-fix`, `narrac fmt` and its options, `narrac query`, `narrac test`, and `narrac lsp` for editors.
+19. [Building for other systems](19-building-for-other-systems.md): `std/build` conditions, `@target`, `--target` and `--all-targets`, WebAssembly, Windows, debug and release builds, `std/simd`.
+20. [Narra for TypeScript programmers](20-narra-for-typescript-programmers.md): optional reading that compares Narra with TypeScript, topic by topic.
 
 ## Reading the samples
 
@@ -50,13 +57,4 @@ Save a sample to a file and run it with `narrac run file.nra` to try your own ch
 
 The language is meant to have these features, and the compiler does not have them yet. The guide does not teach them.
 
-- Functions that C programs can call, and `@layout` for structs shared with C.
-
-Some features are built but not taught in the guide yet:
-
-- `async` and `await`, threads, channels and shared state.
-- SIMD vectors and fixed-size arrays.
-- `@const` functions, `ensures` lines and refinement types.
-- `typeof` in types and `Dynamic` trait values.
-- Unsafe code, C interop and build conditions.
-- Building for another system with `--target`, including Windows and WebAssembly (WASI).
+- Functions that C programs can call, and `@layout` for structs shared with C ([chapter 16](16-unsafe-code-and-c.md#not-built-yet)).

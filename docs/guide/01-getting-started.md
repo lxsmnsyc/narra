@@ -68,7 +68,7 @@ export function run(args: Array<string>): int {
 3
 ```
 
-`Int.toString` lives in the standard module `std/int`. The `import` line makes the functions of that module available under the name `Int`. Only `print`, `assert` and `panic` are there without an import. Everything else, including the functions for strings, arrays and maps, comes from a module you import.
+`Int.toString` lives in the standard module `std/int`. The `import` line makes the functions of that module available under the name `Int`. Only `print`, `assert`, `panic` and `copy` are there without an import. Everything else, including the functions for strings, arrays and maps, comes from a module you import.
 
 When you are only looking for mistakes, `narrac check hello.nra` reports the errors without building anything.
 
@@ -81,7 +81,7 @@ narrac build -o hello hello.nra
 ./hello
 ```
 
-This is a debug build. Running it with `NARRA_CHECK_LEAKS=1` set reports memory that was never freed. Add `-release` for an optimized build. In both builds, dividing by zero or reading past the end of an array stops the program with a message.
+This is a debug build. Running it with `NARRA_CHECK_LEAKS=1` set reports memory that was never freed. Add `-release` for an optimized build. In both builds, reading past the end of an array stops the program with a message.
 
 ## Split the program into files
 
@@ -142,6 +142,6 @@ From inside the `shop` folder, `narrac run .` builds and runs the package and pr
 | `narrac check file.nra` | report errors without building |
 | `narrac test file.nra` | run the tests in the file (chapter 10) |
 
-For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`. Chapter 12 covers the other commands: formatting, explaining and fixing errors, questions about a package, and editor support.
+For a package, run each command from inside the package folder and write `.` in place of the file: `narrac run .`, `narrac build -o app .`, `narrac check .`, `narrac test .`. Without `-o`, `narrac build .` names the executable after the `[[binary]]`. Chapter 18 covers the other commands: formatting, explaining and fixing errors, questions about a package, and editor support.
 
 Next: [2. Values and types](02-values-and-types.md).

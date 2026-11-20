@@ -1,6 +1,6 @@
 ---
 name: guide-samples
-version: 2
+version: 3
 status: frozen
 defined_by: guide-basics
 ---
@@ -28,7 +28,7 @@ hello
 ```
 ````
 
-A sample that must not compile has the info string `narra error`, and its first line is a comment with the expected message, in the format of `compiler/testdata/errors/` without the file name:
+A sample that must not compile has the info string `narra error`, and its leading lines are comments with the expected messages, one per diagnostic it prints (a sample passes only when every diagnostic it prints is named by one of these lines), in the format of `compiler/testdata/errors/` without the file name:
 
 ````md
 ```narra error
@@ -81,3 +81,5 @@ The `guide` suite in `selfhost/tests/src/guide.nra`, and its `extractor` case, w
 
 - v1: initial, written while refining language-guide. Fences are `narra`, not `ts`, because a website with Narra highlighting is planned (maintainer, 2026-11-05).
 - v2: `narra file PACKAGE PATH` blocks for multi-file package samples; chapters 1, 4 and 8 use them. Stub, contract tests and behavior now name the self-hosted test suite instead of the retired Go harness (guide-multifile-samples, 2026-11-12).
+
+Version 3 (2026-11-20, snippet-warnings): a `narra error` fence names every diagnostic it prints in its leading `// error:` lines, and the site build fails on any diagnostic a fence does not announce.

@@ -4,8 +4,8 @@
 // emitsimd.nra. No function has an effect, panics or allocates.
 import * as Arrays from "std/array"
 import * as Int from "std/int"
-import { StdFunc } from "narrac/std/builtins"
-import { Type, findLaneSize } from "narrac/check/types"
+import { StdFunc, StdType } from "narrac/std/builtins"
+import { Type, findLaneSize, formatVectorName } from "narrac/check/types"
 import { checkFixedIndex } from "narrac/check/fixedarrays"
 import { findTypedConstant, checkShiftCount } from "narrac/check/operands"
 import {
@@ -14,6 +14,7 @@ import {
   findUnsignedTwin,
   isFloatVector,
   isUnsignedVector,
+  listVectorTypes,
 } from "narrac/check/simdtypes"
 import {
   Checker,
@@ -33,61 +34,212 @@ import {
 } from "narrac/check/exprs"
 import { checkArgumentCount, checkArgumentAgainst, makePreludeEnum } from "narrac/std/stdcheckhelp"
 
+// The type parameters of the std/simd signatures.
+const SIMD_NOTE = "V: a vector type such as I32x4 (listed above), M: the signed integer vector of the same shape (its mask), L: the lane type of V, N: its lane count"
+
 export const SIMD_FUNCS: Array<StdFunc> = [
-  StdFunc { name: "Simd.abs", module: "std/simd", key: "abs", check: "checkSimdAbs" },
-  StdFunc { name: "Simd.all", module: "std/simd", key: "all", check: "checkSimdTest" },
-  StdFunc { name: "Simd.any", module: "std/simd", key: "any", check: "checkSimdTest" },
-  StdFunc { name: "Simd.equal", module: "std/simd", key: "equal", check: "checkSimdCompare" },
+  StdFunc {
+    name: "Simd.abs",
+    module: "std/simd",
+    key: "abs",
+    check: "checkSimdAbs",
+    signature: "<V>(vector: V): V",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.all",
+    module: "std/simd",
+    key: "all",
+    check: "checkSimdTest",
+    signature: "<M>(mask: M): bool",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.any",
+    module: "std/simd",
+    key: "any",
+    check: "checkSimdTest",
+    signature: "<M>(mask: M): bool",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.equal",
+    module: "std/simd",
+    key: "equal",
+    check: "checkSimdCompare",
+    signature: "<V, M>(first: V, second: V): M",
+    note: SIMD_NOTE,
+  },
   StdFunc {
     name: "Simd.fromFixed",
     module: "std/simd",
     key: "fromFixed",
     check: "checkSimdFromFixed",
+    signature: "<L, const N: int, V>(values: FixedArray<L, N>): V",
+    note: SIMD_NOTE,
   },
-  StdFunc { name: "Simd.greater", module: "std/simd", key: "greater", check: "checkSimdCompare" },
+  StdFunc {
+    name: "Simd.greater",
+    module: "std/simd",
+    key: "greater",
+    check: "checkSimdCompare",
+    signature: "<V, M>(first: V, second: V): M",
+    note: SIMD_NOTE,
+  },
   StdFunc {
     name: "Simd.greaterOrEqual",
     module: "std/simd",
     key: "greaterOrEqual",
     check: "checkSimdCompare",
+    signature: "<V, M>(first: V, second: V): M",
+    note: SIMD_NOTE,
   },
-  StdFunc { name: "Simd.less", module: "std/simd", key: "less", check: "checkSimdCompare" },
+  StdFunc {
+    name: "Simd.less",
+    module: "std/simd",
+    key: "less",
+    check: "checkSimdCompare",
+    signature: "<V, M>(first: V, second: V): M",
+    note: SIMD_NOTE,
+  },
   StdFunc {
     name: "Simd.lessOrEqual",
     module: "std/simd",
     key: "lessOrEqual",
     check: "checkSimdCompare",
+    signature: "<V, M>(first: V, second: V): M",
+    note: SIMD_NOTE,
   },
-  StdFunc { name: "Simd.load", module: "std/simd", key: "load", check: "checkSimdLoad" },
-  StdFunc { name: "Simd.max", module: "std/simd", key: "max", check: "checkSimdMinMax" },
-  StdFunc { name: "Simd.min", module: "std/simd", key: "min", check: "checkSimdMinMax" },
-  StdFunc { name: "Simd.notEqual", module: "std/simd", key: "notEqual", check: "checkSimdCompare" },
-  StdFunc { name: "Simd.select", module: "std/simd", key: "select", check: "checkSimdSelect" },
-  StdFunc { name: "Simd.shiftLeft", module: "std/simd", key: "shiftLeft", check: "checkSimdShift" },
+  StdFunc {
+    name: "Simd.load",
+    module: "std/simd",
+    key: "load",
+    check: "checkSimdLoad",
+    signature: "<V, L>(items: Array<L>, start: int): Option<V>",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.max",
+    module: "std/simd",
+    key: "max",
+    check: "checkSimdMinMax",
+    signature: "<V>(first: V, second: V): V",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.min",
+    module: "std/simd",
+    key: "min",
+    check: "checkSimdMinMax",
+    signature: "<V>(first: V, second: V): V",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.notEqual",
+    module: "std/simd",
+    key: "notEqual",
+    check: "checkSimdCompare",
+    signature: "<V, M>(first: V, second: V): M",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.select",
+    module: "std/simd",
+    key: "select",
+    check: "checkSimdSelect",
+    signature: "<M, V>(mask: M, ifTrue: V, ifFalse: V): V",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.shiftLeft",
+    module: "std/simd",
+    key: "shiftLeft",
+    check: "checkSimdShift",
+    signature: "<V>(vector: V, count: int): V",
+    note: `${SIMD_NOTE}; count: a constant from 0 to the lane bits - 1, or a name checked against both ends`,
+  },
   StdFunc {
     name: "Simd.shiftRight",
     module: "std/simd",
     key: "shiftRight",
     check: "checkSimdShift",
+    signature: "<V>(vector: V, count: int): V",
+    note: `${SIMD_NOTE}; count: a constant from 0 to the lane bits - 1, or a name checked against both ends`,
   },
-  StdFunc { name: "Simd.shuffle", module: "std/simd", key: "shuffle", check: "checkSimdShuffle" },
-  StdFunc { name: "Simd.splat", module: "std/simd", key: "splat", check: "checkSimdSplat" },
+  StdFunc {
+    name: "Simd.shuffle",
+    module: "std/simd",
+    key: "shuffle",
+    check: "checkSimdShuffle",
+    signature: "<V>(vector: V, lanes: Array<int>): V",
+    note: `${SIMD_NOTE}; lanes: a list literal of constants, one per lane`,
+  },
+  StdFunc {
+    name: "Simd.splat",
+    module: "std/simd",
+    key: "splat",
+    check: "checkSimdSplat",
+    signature: "<V, L>(value: L): V",
+    note: SIMD_NOTE,
+  },
   StdFunc {
     name: "Simd.store",
     module: "std/simd",
     key: "store",
     mutables: [true, false, false],
     check: "checkSimdStore",
+    signature: "<V, L>(mutable items: Array<L>, start: int, vector: V): bool",
+    note: SIMD_NOTE,
   },
-  StdFunc { name: "Simd.sum", module: "std/simd", key: "sum", check: "checkSimdSum" },
-  StdFunc { name: "Simd.toFixed", module: "std/simd", key: "toFixed", check: "checkSimdToFixed" },
+  StdFunc {
+    name: "Simd.sum",
+    module: "std/simd",
+    key: "sum",
+    check: "checkSimdSum",
+    signature: "<V, L>(vector: V): L",
+    note: SIMD_NOTE,
+  },
+  StdFunc {
+    name: "Simd.toFixed",
+    module: "std/simd",
+    key: "toFixed",
+    check: "checkSimdToFixed",
+    signature: "<V, L, const N: int>(vector: V): FixedArray<L, N>",
+    note: SIMD_NOTE,
+  },
   StdFunc {
     name: "Simd.withLane",
     module: "std/simd",
     key: "withLane",
     check: "checkSimdWithLane",
+    signature: "<V, L>(vector: V, index: int, value: L): V",
+    note: `${SIMD_NOTE}; index: a constant or a name proven to be 0 to N - 1`,
   },
 ]
+
+export function listSimdTypes(): Array<StdType> uses alloc {
+  let types: Array<StdType> = []
+  for (const vector of Arrays.values(listVectorTypes())) {
+    // abs rejects unsigned lanes; any, all and the shifts reject float lanes.
+    let functions: Array<string> = []
+    for (const builtin of Arrays.values(SIMD_FUNCS)) {
+      const key = builtin.key
+      if (key == "abs" && isUnsignedVector(vector)) {
+        continue
+      }
+      const integerOnly = key == "any" || key == "all" || key == "shiftLeft" || key == "shiftRight"
+      if (integerOnly && isFloatVector(vector)) {
+        continue
+      }
+      Arrays.push(mutable functions, key)
+    }
+    if (vector is Type.TVector(lane, count)) {
+      const name = formatVectorName(lane, count)
+      Arrays.push(mutable types, StdType { module: "std/simd", name, functions })
+    }
+  }
+  return types
+}
 
 function checkVectorArgument<W: Walker>(
   mutable checker: Checker,

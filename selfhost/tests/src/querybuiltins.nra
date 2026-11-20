@@ -1,0 +1,379 @@
+// The builtin_signatures case of the query suite. `narrac builtins` prints a line
+// for each registry row whose display data is missing (a check function without a
+// signature, a parameter without a name), and the case fails on any. Then each
+// public row with a written signature becomes a probe function whose header is the
+// signature with its type parameters replaced by concrete types, and whose body
+// forwards the parameters to the builtin. `narrac check` on the probes fails when a
+// signature shows a wrong arity, parameter type or result.
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Ranges from "std/range"
+import * as Common from "testrunner/context"
+import { Context } from "testrunner/context"
+import * as Shell from "testrunner/shell"
+import { splitString, substring } from "testrunner/textops"
+
+// The bytes the probe writer looks for.
+const OPEN_PAREN = 40
+const CLOSE_PAREN = 41
+const DIGIT_ZERO = 48
+const DIGIT_NINE = 57
+const COLON = 58
+const UPPER_A = 65
+const UPPER_Z = 90
+const UNDERSCORE = 95
+const LOWER_A = 97
+const LOWER_Z = 122
+
+// A row of `narrac builtins` that has a written signature.
+struct Row {
+  module: string
+  key: string
+  name: string
+  signature: string
+  note: string
+  effects: string
+}
+
+// An argument that the note of a row asks to be a constant: the probe passes value for
+// the parameter instead of forwarding it.
+struct ConstantArgument {
+  row: string
+  parameter: string
+  value: string
+}
+
+const CONSTANT_ARGUMENTS: Array<ConstantArgument> = [
+  ConstantArgument { row: "Ptr.element", parameter: "index", value: "2" },
+  ConstantArgument { row: "Simd.shiftLeft", parameter: "count", value: "3" },
+  ConstantArgument { row: "Simd.shiftRight", parameter: "count", value: "3" },
+  ConstantArgument { row: "Simd.shuffle", parameter: "lanes", value: "[3, 2, 1, 0]" },
+  ConstantArgument { row: "Simd.withLane", parameter: "index", value: "2" },
+]
+
+// One type parameter: its name and the concrete types a probe tries for it.
+struct TypeParameter {
+  name: string
+  choices: Array<string>
+}
+
+function readRows(output: string): Result<Array<Row>, string> uses alloc {
+  let rows: Array<Row> = []
+  let problems: Array<string> = []
+  let current: Option<Row> = None
+  for (const line of Arrays.values(splitString(output, "\n"))) {
+    if (Str.startsWith(line, "builtin ")) {
+      keepRow(mutable rows, current)
+      current = Some(readHeader(line))
+      continue
+    }
+    if (line == "") {
+      continue
+    }
+    if (!Str.startsWith(line, "  ")) {
+      // A problem line of `narrac builtins`.
+      Arrays.push(mutable problems, line)
+      continue
+    }
+    if (current is Some(row)) {
+      current = Some(readDetail(row, Str.trim(line)))
+    }
+  }
+  keepRow(mutable rows, current)
+  if (Arrays.length(problems) > 0) {
+    return Err(Str.join(problems, "\n"))
+  }
+  return Ok(rows)
+}
+
+function keepRow(mutable rows: Array<Row>, current: Option<Row>) uses alloc {
+  // Only public rows with a written signature become probes.
+  if (current is Some(row)) {
+    if (row.signature != "" && !Str.startsWith(row.module, "std/internal/")) {
+      Arrays.push(mutable rows, row)
+    }
+  }
+}
+
+function readHeader(line: string): Row uses alloc {
+  // builtin module="std/array" export=push Array.push
+  let module = ""
+  let key = ""
+  let name = ""
+  for (const part of Arrays.values(splitString(line, " "))) {
+    if (Str.startsWith(part, "module=\"")) {
+      module = Str.replace(Str.sliceFrom(part, 8), "\"", "")
+    } else if (Str.startsWith(part, "export=")) {
+      key = Str.sliceFrom(part, 7)
+    } else if (part != "builtin") {
+      name = part
+    }
+  }
+  return Row { module, key, name, signature: "", note: "", effects: "" }
+}
+
+function readDetail(row: Row, detail: string): Row from row uses alloc {
+  if (Str.startsWith(detail, "signature ")) {
+    return { ...row, signature: Str.sliceFrom(detail, 10) }
+  }
+  if (Str.startsWith(detail, "note ")) {
+    return { ...row, note: Str.sliceFrom(detail, 5) }
+  }
+  if (Str.startsWith(detail, "effects ")) {
+    return { ...row, effects: Str.sliceFrom(detail, 8) }
+  }
+  return row
+}
+
+function chooseTypes(module: string, name: string): Array<string> uses alloc {
+  // A probe tries one concrete type for a type parameter without a bound.
+  if (module == "") {
+    // copy rejects a type that it would not copy.
+    return ["Array<int>"]
+  }
+  if (module == "std/simd") {
+    if (name == "L") {
+      return ["i32"]
+    }
+    return ["I32x4"]
+  }
+  if (name == "K") {
+    return ["string"]
+  }
+  if (name == "U") {
+    return ["bool"]
+  }
+  return ["int"]
+}
+
+function readTypeParameters(module: string, text: string): Array<TypeParameter> uses alloc {
+  // `T`, `T: Show`, `const N: int`, or `T: i8 | u8` (one of the listed types).
+  let parameters: Array<TypeParameter> = []
+  for (const item of Arrays.values(splitString(text, ", "))) {
+    if (Str.startsWith(item, "const ")) {
+      if (Str.indexOf(item, ":") is Some(colon)) {
+        Arrays.push(mutable parameters, TypeParameter {
+          name: Str.trim(substring(item, 6, colon)),
+          choices: ["4"],
+        })
+      }
+      continue
+    }
+    let name = item
+    if (Str.indexOf(item, ": ") is Some(colon)) {
+      name = substring(item, 0, colon)
+      const bound = Str.sliceFrom(item, colon + 2)
+      // A list of builtin types (`i8 | u8`, lower case), not a trait bound such as `Show`.
+      const first = Str.byteAt(bound, 0)
+      if (first >= LOWER_A && first <= LOWER_Z) {
+        Arrays.push(mutable parameters, TypeParameter {
+          name,
+          choices: splitString(bound, " | "),
+        })
+        continue
+      }
+    }
+    // A trait bound holds for the default choice.
+    Arrays.push(mutable parameters, TypeParameter {
+      name,
+      choices: chooseTypes(module, name),
+    })
+  }
+  return parameters
+}
+
+function isWordByte(byte: int): bool {
+  return (byte >= DIGIT_ZERO && byte <= DIGIT_NINE) ||
+    (byte >= UPPER_A && byte <= UPPER_Z) ||
+    (byte >= LOWER_A && byte <= LOWER_Z) ||
+    byte == UNDERSCORE
+}
+
+function replaceWord(text: string, word: string, replacement: string): string uses alloc {
+  let builder = Str.builder()
+  let wordStart = -1
+  const length = Str.length(text)
+  for (const index of Ranges.upTo(length + 1)) {
+    if (index < length && isWordByte(Str.byteAt(text, index))) {
+      if (wordStart < 0) {
+        wordStart = index
+      }
+      continue
+    }
+    // A word ends here: write it, replaced when it is the word, then the byte after it.
+    if (wordStart >= 0) {
+      const found = substring(text, wordStart, index)
+      if (found == word) {
+        Str.append(mutable builder, replacement)
+      } else {
+        Str.append(mutable builder, found)
+      }
+      wordStart = -1
+    }
+    if (index < length) {
+      Str.append(mutable builder, substring(text, index, index + 1))
+    }
+  }
+  return Str.build(builder)
+}
+
+function listInstances(row: Row): Array<string> uses alloc {
+  // The signature with every type parameter replaced, once for each combination of choices.
+  if (!Str.startsWith(row.signature, "<")) {
+    return [row.signature]
+  }
+  let instances: Array<string> = []
+  if (Str.indexOf(row.signature, ">(") is Some(close)) {
+    instances = [Str.sliceFrom(row.signature, close + 1)]
+    const parameters = readTypeParameters(row.module, substring(row.signature, 1, close))
+    for (const parameter of Arrays.values(parameters)) {
+      let next: Array<string> = []
+      for (const instance of Arrays.values(instances)) {
+        for (const choice of Arrays.values(parameter.choices)) {
+          Arrays.push(mutable next, replaceWord(instance, parameter.name, choice))
+        }
+      }
+      instances = copy(next)
+    }
+  }
+  return instances
+}
+
+function readArguments(instance: string): #[Array<string>, int] uses alloc {
+  // A parameter name is the word before a `:` at the top of the parameter list; the list
+  // ends at the `)` that closes it.
+  let arguments: Array<string> = []
+  let depth = 0
+  let wordStart = -1
+  for (const index of Ranges.upTo(Str.length(instance))) {
+    const byte = Str.byteAt(instance, index)
+    if (byte == OPEN_PAREN) {
+      depth += 1
+    } else if (byte == CLOSE_PAREN) {
+      depth -= 1
+      if (depth == 0) {
+        return #[arguments, index]
+      }
+    } else if (isWordByte(byte)) {
+      if (wordStart < 0) {
+        wordStart = index
+      }
+    } else {
+      if (byte == COLON && depth == 1 && wordStart >= 0) {
+        const name = substring(instance, wordStart, index)
+        if (Str.endsWith(substring(instance, 0, wordStart), "mutable ")) {
+          Arrays.push(mutable arguments, `mutable ${name}`)
+        } else {
+          Arrays.push(mutable arguments, name)
+        }
+      }
+      wordStart = -1
+    }
+  }
+  return #[arguments, -1]
+}
+
+function writeProbe(row: Row, alias: string, instance: string, number: int): string uses alloc {
+  const #[forwarded, close] = readArguments(instance)
+  let header = instance
+  let arguments: Array<string> = []
+  for (const argument of Arrays.values(forwarded)) {
+    let value = argument
+    for (const constant of Arrays.values(CONSTANT_ARGUMENTS)) {
+      if (constant.row == row.name && constant.parameter == argument) {
+        value = constant.value
+        header = replaceWord(header, argument, `_${argument}`)
+      }
+    }
+    Arrays.push(mutable arguments, value)
+  }
+  const call = `${alias}${row.key}(${Str.join(arguments, ", ")})`
+  const label = `_probe${Int.toString(number)}`
+  const comment = `// ${row.name}: ${row.signature}`
+  if (row.note == "only inside a test block") {
+    // A closure in a test block; the rows of std/test have no result.
+    return `${comment}\ntest "${label}" {\n  const ${label} = ${header} => {\n    ${call}\n  }\n}\n`
+  }
+  let body = `return ${call}`
+  if (row.note == "only as the source of a for ... of loop") {
+    header = substring(instance, 0, close + 1)
+    body = `for (const _item of ${call}) {}`
+  } else if (close == Str.length(instance) - 1) {
+    // A signature without a result.
+    body = call
+  }
+  if (Str.contains(row.effects, "unsafe")) {
+    body = `unsafe {\n    ${body}\n  }`
+  }
+  return `${comment}\nfunction ${label}${header} {\n  ${body}\n}\n`
+}
+
+function writeProbes(rows: Array<Row>): string uses alloc {
+  let imports: Array<string> = []
+  let probes: Array<string> = []
+  let modules: Array<string> = []
+  for (const row of Arrays.values(rows)) {
+    // A prelude row is called without a module.
+    let alias = ""
+    if (row.module != "") {
+      let found = -1
+      let position = 0
+      for (const module of Arrays.values(modules)) {
+        if (module == row.module) {
+          found = position
+        }
+        position += 1
+      }
+      if (found < 0) {
+        found = Arrays.length(modules)
+        Arrays.push(mutable modules, row.module)
+        Arrays.push(
+          mutable imports,
+          `import * as Module${Int.toString(found)} from "${row.module}"`,
+        )
+      }
+      alias = `Module${Int.toString(found)}.`
+    }
+    for (const instance of Arrays.values(listInstances(row))) {
+      const probe = writeProbe(row, alias, instance, Arrays.length(probes))
+      Arrays.push(mutable probes, probe)
+    }
+  }
+  return `${Str.join(imports, "\n")}\n\n${Str.join(probes, "\n")}\nexport function run(_args: Array<string>): int {\n  return 0\n}\n`
+}
+
+export function runBuiltinSignatures(context: Context): Result<bool, string> uses io, alloc {
+  const listed = Common.runNarrac(context, ["builtins"])
+  if (listed.code != 0) {
+    return Err(`narrac builtins failed: ${listed.errorOutput}`)
+  }
+  const rows = readRows(listed.output)
+  if (rows is Err(message)) {
+    return Err(`narrac builtins reports rows without display data:\n${message}`)
+  }
+  if (Arrays.length(rows.value) == 0) {
+    return Err("narrac builtins prints no row with a signature")
+  }
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const path = Path.join(made.value, "probes.nra")
+  const source = writeProbes(rows.value)
+  const written = Fs.writeText(path, source)
+  if (written is Err(message)) {
+    Shell.removeTree(made.value)
+    return Err(message)
+  }
+  const checked = Common.runNarrac(context, ["check", path])
+  Shell.removeTree(made.value)
+  if (checked.code != 0) {
+    return Err(
+      `a displayed signature does not match its builtin:\n${Common.describeRun(checked)}\nprobes:\n${source}`,
+    )
+  }
+  return Ok(true)
+}

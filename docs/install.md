@@ -39,7 +39,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 | System | Processor |
 | --- | --- |
-| macOS | arm64, x64 |
+| macOS 13 or newer | arm64, x64 |
 | Linux (glibc 2.28 or newer) | arm64, x64 |
 | Linux (musl, such as Alpine) | arm64, x64 |
 | Windows | x64 |

@@ -2,6 +2,27 @@
 
 The latest run is first. Compare performance nodes against it.
 
+## 2026-11-20, C added, Odin removed
+
+Run of `bench/run.sh -n 7` on `feat/bench-c` (based on `main` after batch-22), machine Apple M2 (`arm64`, macOS). Toolchains as in the Zig run below; C builds with Apple clang 21.0.0 (clang-2100.3.34.2), `cc -O2 -std=c11`, the same compiler and level `narrac build -release` uses. The load average was 2.67 (1 minute) at the start and 5.16 at the end, above the 2 this file asks for, so read small differences as noise.
+
+Odin is removed: its toolchain was too costly to set up, and its programs were never run.
+
+### Results (seconds)
+
+| program   | narra | c     | go    | rust  | zig   | output     |
+| --------- | ----- | ----- | ----- | ----- | ----- | ---------- |
+| fib       | 0.112 | 0.111 | 0.134 | 0.121 | 0.114 | 39088169   |
+| sieve     | 0.138 | 0.135 | 0.149 | 0.141 | 0.147 | 1270607    |
+| matmul    | 0.108 | 0.081 | 0.205 | 0.122 | 0.097 | 3547800000 |
+| strings   | 0.241 | 0.178 | 0.294 | 0.361 | 0.168 | 100000     |
+| interp    | 0.188 | 0.187 | 0.245 | 0.174 | 0.175 | 972838     |
+| particles | 0.068 | 0.094 | 0.075 | 0.098 | 0.047 | 6996184    |
+| dot       | 0.038 | 0.040 | 0.159 | 0.058 | 0.031 | 800        |
+| compiler  | 0.405 | -     | -     | -     | -     | peak memory 210 MB |
+
+Narra matches C on `fib`, `sieve` and `interp`. C is faster on `matmul` (25%) and `strings` (26%): Narra checks array bounds, which plain C does not, and Narra's strings carry a reference count. Narra is faster than C on `particles` and `dot`. In `dot`, Narra uses an `F32x8` accumulator where C uses eight scalar ones. Why `particles` is faster has not been measured.
+
 ## 2026-11-20, Zig added (batch-22)
 
 Run of `bench/run.sh -n 7` on `feat/bench-zig-odin` (based on `feat/batch-22`), machine Apple M2 (`arm64`, macOS). Toolchains: go1.27.3 darwin/arm64, rustc 1.98.0 (88d9e12ae 2026-08-18), zig 0.17.1 (`-O ReleaseFast`), Apple clang 21.0.0 (clang-2100.3.34.2). No other agent was running. The load average was 1.97 (1 minute) at the start, with the 5 and 15 minute averages (3.85 and 6.94) still falling, and 2.65 at the end; the run itself adds about 0.7. Read small differences as noise.

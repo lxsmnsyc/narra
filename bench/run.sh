@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds every benchmark program in Narra, Go, Rust, Zig and Odin in release mode, runs each
+# Builds every benchmark program in Narra, C, Go, Rust and Zig in release mode, runs each
 # several times and prints a table of median wall-clock seconds.
 #
 # Usage: bench/run.sh [-n RUNS] [program ...]
@@ -26,16 +26,15 @@ fi
 mkdir -p "$build"
 
 have_narra=1
+have_c=1
 have_go=1
 have_rust=1
 have_zig=1
-have_odin=1
 
-command -v cc >/dev/null 2>&1 || { echo "note: no C compiler found, skipping Narra" >&2; have_narra=0; }
+command -v cc >/dev/null 2>&1 || { echo "note: no C compiler found, skipping Narra and C" >&2; have_narra=0; have_c=0; }
 command -v go >/dev/null 2>&1 || { echo "note: go not found, skipping Go" >&2; have_go=0; }
 command -v rustc >/dev/null 2>&1 || { echo "note: rustc not found, skipping Rust" >&2; have_rust=0; }
 command -v zig >/dev/null 2>&1 || { echo "note: zig not found, skipping Zig" >&2; have_zig=0; }
-command -v odin >/dev/null 2>&1 || { echo "note: odin not found, skipping Odin" >&2; have_odin=0; }
 
 if [ "$have_narra" = 1 ]; then
   # The Narra compiler comes from the seed; only cc is needed.
@@ -45,7 +44,7 @@ if [ "$have_narra" = 1 ]; then
   fi
 fi
 
-printf '%-12s %10s %10s %10s %10s %10s   %s\n' program narra go rust zig odin check
+printf '%-12s %10s %10s %10s %10s %10s   %s\n' program narra c go rust zig check
 failed=0
 skipped=0
 
@@ -85,7 +84,7 @@ for p in "${programs[@]}"; do
   cols=()
   outputs=()
 
-  for lang in narra go rust zig odin; do
+  for lang in narra c go rust zig; do
     exe="$build/$p-$lang"
     rm -f "$exe"
     ok=1
@@ -93,6 +92,10 @@ for p in "${programs[@]}"; do
       narra)
         [ "$have_narra" = 1 ] || ok=0
         [ "$ok" = 1 ] && { "$build/narrac-out/narrac" build -release -o "$exe" "$dir/$p.nra" >"$build/$p-$lang.log" 2>&1 || ok=0; }
+        ;;
+      c)
+        [ "$have_c" = 1 ] || ok=0
+        [ "$ok" = 1 ] && { cc -O2 -std=c11 -o "$exe" "$dir/$p.c" >"$build/$p-$lang.log" 2>&1 || ok=0; }
         ;;
       go)
         [ "$have_go" = 1 ] || ok=0
@@ -105,10 +108,6 @@ for p in "${programs[@]}"; do
       zig)
         [ "$have_zig" = 1 ] || ok=0
         [ "$ok" = 1 ] && { zig build-exe -O ReleaseFast --cache-dir "$build/zig-cache" -femit-bin="$exe" "$dir/$p.zig" >"$build/$p-$lang.log" 2>&1 || ok=0; }
-        ;;
-      odin)
-        [ "$have_odin" = 1 ] || ok=0
-        [ "$ok" = 1 ] && { odin build "$dir/$p.odin" -file -o:speed -out:"$exe" >"$build/$p-$lang.log" 2>&1 || ok=0; }
         ;;
     esac
     if [ "$ok" = 0 ]; then

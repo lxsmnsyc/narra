@@ -20,7 +20,7 @@ export function entries<T>(items: Array<T>): Array<#[int, T]>
 
 Effects: none.
 
-Note: only as the source of a for ... of loop.
+Details: only as the source of a for ... of loop.
 
 ### filled
 
@@ -54,7 +54,7 @@ export function values<T>(items: Array<T>): Array<T>
 
 Effects: none.
 
-Note: only as the source of a for ... of loop.
+Details: only as the source of a for ... of loop.
 
 ### withCapacity
 

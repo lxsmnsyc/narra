@@ -40,8 +40,6 @@ struct Chapter {
   title: string
 }
 
-// The import alias, the one-line description and the guide chapter that teaches each module.
-// A public module missing here stops the generator, and so does a row for a module that is gone.
 function listModuleInfo(): Array<ModuleInfo> uses alloc {
   return [
     ModuleInfo {
@@ -126,7 +124,7 @@ function listModuleInfo(): Array<ModuleInfo> uses alloc {
       path: "std/char",
       alias: "Char",
       description: "Characters and their code points.",
-      chapter: "",
+      chapter: "08-modules-and-packages#importing-from-the-standard-library",
     },
     ModuleInfo {
       path: "std/coroutine",
@@ -180,19 +178,19 @@ function listModuleInfo(): Array<ModuleInfo> uses alloc {
       path: "std/i16",
       alias: "I16",
       description: "16-bit signed integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/i32",
       alias: "I32",
       description: "32-bit signed integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/i8",
       alias: "I8",
       description: "8-bit signed integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/int",
@@ -348,25 +346,25 @@ function listModuleInfo(): Array<ModuleInfo> uses alloc {
       path: "std/u16",
       alias: "U16",
       description: "16-bit unsigned integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/u32",
       alias: "U32",
       description: "32-bit unsigned integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/u64",
       alias: "U64",
       description: "64-bit unsigned integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/u8",
       alias: "U8",
       description: "8-bit unsigned integers: checked arithmetic, conversion and text.",
-      chapter: "02-values-and-types",
+      chapter: "02-values-and-types#sized-integers",
     },
     ModuleInfo {
       path: "std/unicode",
@@ -406,7 +404,6 @@ function isIdentifierByte(byte: int): bool {
 }
 
 function makeSlug(heading: string): string uses alloc {
-  // As GitHub and the site make an anchor: lowercase, spaces become dashes, other punctuation goes.
   const builder = Str.builder()
   for (const index of Ranges.upTo(Str.length(heading))) {
     const byte = Str.byteAt(heading, index)
@@ -422,7 +419,6 @@ function makeSlug(heading: string): string uses alloc {
 }
 
 function escapeText(text: string): string uses alloc {
-  // A note is prose; its punctuation must not open a tag, a link, emphasis or a table cell.
   const builder = Str.builder()
   for (const character of Arrays.values(Str.chars(text))) {
     if (
@@ -445,7 +441,6 @@ function escapeText(text: string): string uses alloc {
 }
 
 function changeDepth(text: string, index: int, depth: int): int {
-  // Brackets of every kind nest; the `>` of `=>` closes nothing.
   const byte = Str.byteAt(text, index)
   if (byte == 40 || byte == 91 || byte == 123 || byte == 60) {
     return depth + 1
@@ -468,7 +463,6 @@ function splitNote(signature: string): Array<string> uses alloc {
 }
 
 function findEffects(signature: string): Array<string> uses alloc {
-  // The effects of the declaration follow the last ` uses ` outside every bracket.
   let depth = 0
   let start = -1
   for (const index of Ranges.upTo(Str.length(signature))) {
@@ -497,7 +491,6 @@ function findEffects(signature: string): Array<string> uses alloc {
 }
 
 function layOutBody(signature: string): string uses alloc {
-  // A struct, enum or trait prints its body on one line; the page gives each member a line.
   const opening = Str.indexOf(signature, " { ")
   if (opening is None) {
     return signature
@@ -597,10 +590,18 @@ function takeAnchor(mutable anchors: Anchors, heading: string): string uses allo
 
 function findChapter(
   repository: string,
-  chapter: string,
+  reference: string,
   modulePath: string,
   depth: int,
 ): Result<Chapter, string> uses io, alloc {
+  // A reference is a chapter name, or a chapter name and `#` and the anchor of the section to link.
+  let chapter = reference
+  let fixedAnchor = ""
+  const hash = Str.indexOf(reference, "#")
+  if (hash is Some(position)) {
+    chapter = sliceText(reference, 0, position)
+    fixedAnchor = Str.sliceFrom(reference, position + 1)
+  }
   const file = Path.join(repository, `docs/guide/${chapter}.md`)
   const read = Fs.readText(file)
   if (read is Err(message)) {
@@ -614,6 +615,7 @@ function findChapter(
   // The title is the first heading, "N. Title"; a section that names the module gets the link.
   let title = ""
   let section = ""
+  let foundFixed = false
   let anchors = Anchors { counts: Map {} }
   let insideFence = false
   for (const line of Arrays.values(lines.value)) {
@@ -634,9 +636,17 @@ function findChapter(
       continue
     }
     const anchor = takeAnchor(mutable anchors, heading)
-    if (section == "" && mentionsModule(heading, modulePath)) {
+    if (fixedAnchor != "") {
+      if (anchor == fixedAnchor) {
+        foundFixed = true
+        section = `#${anchor}`
+      }
+    } else if (section == "" && mentionsModule(heading, modulePath)) {
       section = `#${anchor}`
     }
+  }
+  if (fixedAnchor != "" && !foundFixed) {
+    return Err(`${file} has no section with the anchor ${fixedAnchor}`)
   }
   if (title == "") {
     return Err(`${file} has no title`)
@@ -646,18 +656,17 @@ function findChapter(
     title = `chapter ${sliceText(title, 0, position)}, ${Str.sliceFrom(title, position + 2)}`
   }
   const up = Str.repeat("../", depth + 2)
-  let prefix = "../../"
-  if (up is Some(text)) {
-    prefix = text
+  if (up is None) {
+    return Err(`cannot build the link from ${modulePath} to ${file}`)
   }
-  return Ok(Chapter { link: `${prefix}guide/${chapter}.md${section}`, title })
+  return Ok(Chapter { link: `${up.value}guide/${chapter}.md${section}`, title })
 }
 
 function mentionsModule(heading: string, modulePath: string): bool uses alloc {
-  // std/async must not match std/async/time.
   const found = Str.indexOf(heading, modulePath)
   if (found is Some(position)) {
     const end = position + Str.length(modulePath)
+    // std/async must not match std/async/time.
     return end == Str.length(heading) || Str.byteAt(heading, end) != 47
   }
   return false
@@ -667,7 +676,7 @@ function renderFence(signature: string): string uses alloc {
   return `\`\`\`narra fragment\n${signature}\n\`\`\`\n`
 }
 
-function renderNote(note: string): string uses alloc {
+function renderNote(label: string, note: string): string uses alloc {
   if (note == "") {
     return ""
   }
@@ -675,7 +684,112 @@ function renderNote(note: string): string uses alloc {
   if (!Str.endsWith(text, ".")) {
     text += "."
   }
-  return `\nNote: ${text}\n`
+  return `\n${label}: ${text}\n`
+}
+
+function splitClauses(note: string): Array<string> uses alloc {
+  if (note == "") {
+    return []
+  }
+  const parts = Str.split(note, "; ")
+  if (parts is Some(clauses)) {
+    return clauses
+  }
+  return [note]
+}
+
+function findSharedClauses(notes: Array<Array<string>>): Array<string> uses alloc {
+  let shared: Array<string> = []
+  if (Arrays.length(notes) < 3) {
+    return shared
+  }
+  for (const clause of Arrays.values(notes[0])) {
+    let everywhere = true
+    for (const other of Arrays.values(notes)) {
+      if (!containsText(other, clause)) {
+        everywhere = false
+      }
+    }
+    if (everywhere) {
+      Arrays.push(mutable shared, clause)
+    }
+  }
+  return shared
+}
+
+function listOwnClauses(clauses: Array<string>, shared: Array<string>): string uses alloc {
+  let own: Array<string> = []
+  for (const clause of Arrays.values(clauses)) {
+    if (!containsText(shared, clause)) {
+      Arrays.push(mutable own, clause)
+    }
+  }
+  return Str.join(own, "; ")
+}
+
+function renderTypeSection(declaration: Declaration): string uses alloc {
+  const parts = splitNote(declaration.signature)
+  return `\n### ${declaration.name}\n\n${renderFence(layOutBody(parts[0]))}${renderNote("Details", parts[1])}`
+}
+
+function renderFunctionLinks(
+  names: Array<string>,
+  functionAnchors: Map<string, string>,
+): string uses alloc {
+  let links: Array<string> = []
+  for (const name of Arrays.values(names)) {
+    if (functionAnchors[name] is Some(anchor)) {
+      Arrays.push(mutable links, `[\`${name}\`](#${anchor})`)
+    }
+  }
+  return Str.join(links, ", ")
+}
+
+function renderTypeSections(
+  types: Array<Declaration>,
+  functions: Array<Declaration>,
+  functionAnchors: Map<string, string>,
+): string uses alloc {
+  let linkLists: Array<string> = []
+  for (const declaration of Arrays.values(types)) {
+    Arrays.push(
+      mutable linkLists,
+      renderFunctionLinks(findTypeFunctions(declaration, functions), functionAnchors),
+    )
+  }
+
+  // Types with the same functions are listed one after the other, with one Functions line.
+  let text = ""
+  let done: Array<bool> = []
+  for (const _type of Arrays.values(types)) {
+    Arrays.push(mutable done, false)
+  }
+  for (const first of Ranges.upTo(Arrays.length(types))) {
+    if (done[first]) {
+      continue
+    }
+    let group: Array<string> = []
+    for (const index of Ranges.between(first, Arrays.length(types))) {
+      if (linkLists[index] == linkLists[first]) {
+        done[index] = true
+        Arrays.push(mutable group, types[index].name)
+        text += renderTypeSection(types[index])
+      }
+    }
+    if (linkLists[first] == "") {
+      continue
+    }
+    if (Arrays.length(group) == 1) {
+      text += `\nFunctions: ${linkLists[first]}.\n`
+    } else {
+      let names: Array<string> = []
+      for (const name of Arrays.values(group)) {
+        Arrays.push(mutable names, `\`${name}\``)
+      }
+      text += `\nFunctions of ${Str.join(names, ", ")}: ${linkLists[first]}.\n`
+    }
+  }
+  return text
 }
 
 function renderEffects(signature: string): string uses alloc {
@@ -740,32 +854,31 @@ function renderPage(
   if (Arrays.length(types) > 0) {
     page += "\n## Types\n"
   }
-  for (const declaration of Arrays.values(types)) {
-    const parts = splitNote(declaration.signature)
-    page += `\n### ${declaration.name}\n\n${renderFence(layOutBody(parts[0]))}${renderNote(parts[1])}`
-    let links: Array<string> = []
-    for (const name of Arrays.values(findTypeFunctions(declaration, functions))) {
-      if (functionAnchors[name] is Some(anchor)) {
-        Arrays.push(mutable links, `[\`${name}\`](#${anchor})`)
-      }
-    }
-    if (Arrays.length(links) > 0) {
-      page += `\nFunctions: ${Str.join(links, ", ")}.\n`
-    }
-  }
+  page += renderTypeSections(types, functions, functionAnchors)
   if (Arrays.length(constants) > 0) {
     page += "\n## Constants\n"
   }
   for (const declaration of Arrays.values(constants)) {
     const parts = splitNote(declaration.signature)
-    page += `\n### ${declaration.name}\n\n${renderFence(parts[0])}${renderNote(parts[1])}`
+    page += `\n### ${declaration.name}\n\n${renderFence(parts[0])}${renderNote("Details", parts[1])}`
   }
   if (Arrays.length(functions) > 0) {
     page += "\n## Functions\n"
   }
+
+  // A note clause that every function repeats is printed once, above the list.
+  let notes: Array<Array<string>> = []
   for (const declaration of Arrays.values(functions)) {
+    Arrays.push(mutable notes, splitClauses(splitNote(declaration.signature)[1]))
+  }
+  const shared = findSharedClauses(notes)
+  if (Arrays.length(shared) > 0) {
+    page += renderNote("Details for every function below", Str.join(shared, "; "))
+  }
+  for (const index of Ranges.upTo(Arrays.length(functions))) {
+    const declaration = functions[index]
     const parts = splitNote(declaration.signature)
-    page += `\n### ${declaration.name}\n\n${renderFence(parts[0])}${renderEffects(parts[0])}${renderNote(parts[1])}`
+    page += `\n### ${declaration.name}\n\n${renderFence(parts[0])}${renderEffects(parts[0])}${renderNote("Details", listOwnClauses(notes[index], shared))}`
   }
   return page
 }

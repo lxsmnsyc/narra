@@ -46,7 +46,7 @@ export function element<T, const N: int>(pointer: Ptr<FixedArray<T, N>>, index: 
 
 Effects: `unsafe`.
 
-Note: index: a constant or a name proven to be 0 to N - 1.
+Details: index: a constant or a name proven to be 0 to N - 1.
 
 ### free
 

@@ -34,6 +34,15 @@ export enum Rest derives Show, Equatable {
 }
 ```
 
+### Entry
+
+```narra fragment
+export struct Entry derives Show, Equatable {
+  name: string
+  value: string
+}
+```
+
 ### Command
 
 ```narra fragment
@@ -48,15 +57,6 @@ export struct Command derives Show, Equatable {
 ```
 
 Functions: [`parse`](#parse), [`help`](#help).
-
-### Entry
-
-```narra fragment
-export struct Entry derives Show, Equatable {
-  name: string
-  value: string
-}
-```
 
 ### Parsed
 

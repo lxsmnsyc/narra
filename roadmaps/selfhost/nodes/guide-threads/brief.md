@@ -1,7 +1,7 @@
 ---
 id: guide-threads
 title: "Chapter 15: threads and shared state"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-21

@@ -46353,8 +46353,8 @@ static E_Ordering k_166ad536_sort_5020c7a8_1(narra_env* env, lstr* v_first_24866
 static E_Ordering k_0ebe9f17_buildViews_1(narra_env* env, int64_t v_left_23704, int64_t v_right_23705) {
   K_0ebe9f17_buildViews_1* k_env = (K_0ebe9f17_buildViews_1*)env;
   const S_8130fc1d_Package* v_package_23699 = &k_env->c_v_package_23699;
-  S_8130fc1d_SourceModule t4830 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_left_23704, "src/tools/query.nra:1083:20");
-  S_8130fc1d_SourceModule t4831 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_right_23705, "src/tools/query.nra:1084:20");
+  S_8130fc1d_SourceModule t4830 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_left_23704, "src/tools/query.nra:1088:20");
+  S_8130fc1d_SourceModule t4831 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_right_23705, "src/tools/query.nra:1089:20");
   E_Ordering t4832 = ((E_Ordering){.tag = narra_ordering(lstr_cmp((t4830).f_file, (t4831).f_file))});
   return t4832;
 }
@@ -46366,8 +46366,8 @@ static E_Ordering w_0ebe9f17_compareHovers(narra_env* env, const S_0ebe9f17_Hove
 
 static E_Ordering k_0ebe9f17_queryRecursion_1(narra_env* env, A_Array_5fce1d7c* v_left_24028, A_Array_5fce1d7c* v_right_24029) {
   (void)env;
-  lstr* t5576 = A_Array_5fce1d7c_get(v_left_24028, INT64_C(0), "src/tools/query.nra:2117:9");
-  lstr* t5577 = A_Array_5fce1d7c_get(v_right_24029, INT64_C(0), "src/tools/query.nra:2118:10");
+  lstr* t5576 = A_Array_5fce1d7c_get(v_left_24028, INT64_C(0), "src/tools/query.nra:2122:9");
+  lstr* t5577 = A_Array_5fce1d7c_get(v_right_24029, INT64_C(0), "src/tools/query.nra:2123:10");
   E_Ordering t5578 = ((E_Ordering){.tag = narra_ordering(lstr_cmp(t5576, t5577))});
   return t5578;
 }
@@ -217770,7 +217770,7 @@ static int64_t f_0ebe9f17_runQuery(A_Array_5fce1d7c* v_arguments_23405) {
   while (1) {
     bool t360 = (v_index_23408 < (v_arguments_23405)->len);
     if (!t360) break;
-    lstr* t361 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:122:18");
+    lstr* t361 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:124:18");
     bool t362 = lstr_eq(t361, (&L117));
     if (t362) {
       int64_t t363 = narra_wrap_add(v_index_23408, INT64_C(1));
@@ -217779,7 +217779,7 @@ static int64_t f_0ebe9f17_runQuery(A_Array_5fce1d7c* v_arguments_23405) {
     bool t364 = t362;
     if (t364) {
       int64_t t365 = narra_wrap_add(v_index_23408, INT64_C(1));
-      lstr* t366 = A_Array_5fce1d7c_get(v_arguments_23405, t365, "src/tools/query.nra:123:28");
+      lstr* t366 = A_Array_5fce1d7c_get(v_arguments_23405, t365, "src/tools/query.nra:125:28");
       lstr* t367 = t366;
       lstr_retain(t367);
       lstr** t368 = &v_directory_23406;
@@ -217790,7 +217790,7 @@ static int64_t f_0ebe9f17_runQuery(A_Array_5fce1d7c* v_arguments_23405) {
       int64_t t371 = narra_wrap_add((*t370), t369);
       *t370 = t371;
     } else {
-      lstr* t372 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:125:25");
+      lstr* t372 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:127:25");
       bool t373 = lstr_eq(t372, (&L118));
       if (t373) {
         *&v_json_23407 = true;
@@ -217806,7 +217806,7 @@ static int64_t f_0ebe9f17_runQuery(A_Array_5fce1d7c* v_arguments_23405) {
   int64_t t377 = narra_wrap_sub((v_arguments_23405)->len, v_index_23408);
   bool t378 = (t377 != INT64_C(2));
   if (!t378) {
-    lstr* t379 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:132:68");
+    lstr* t379 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:134:68");
     bool t380 = f_0ebe9f17_isCommand(t379);
     t378 = (!t380);
   }
@@ -217817,12 +217817,12 @@ static int64_t f_0ebe9f17_runQuery(A_Array_5fce1d7c* v_arguments_23405) {
     lstr_release(v_directory_23406);
     return t382;
   }
-  lstr* t383 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:136:28");
+  lstr* t383 = A_Array_5fce1d7c_get(v_arguments_23405, v_index_23408, "src/tools/query.nra:138:28");
   lstr* t384 = t383;
   lstr_retain(t384);
   lstr* v_command_23409 = t384;
   int64_t t385 = narra_wrap_add(v_index_23408, INT64_C(1));
-  lstr* t386 = A_Array_5fce1d7c_get(v_arguments_23405, t385, "src/tools/query.nra:137:28");
+  lstr* t386 = A_Array_5fce1d7c_get(v_arguments_23405, t385, "src/tools/query.nra:139:28");
   lstr* t387 = t386;
   lstr_retain(t387);
   lstr* v_operand_23410 = t387;
@@ -218110,7 +218110,7 @@ static lstr* f_0ebe9f17_mergeJsonAnswers(lstr* v_command_23432, A_Array_5fce1d7c
   }
   bool t5262 = t5261;
   if (t5262) {
-    lstr* t5263 = A_Array_5fce1d7c_get(v_answers_23433, INT64_C(0), "src/tools/query.nra:235:19");
+    lstr* t5263 = A_Array_5fce1d7c_get(v_answers_23433, INT64_C(0), "src/tools/query.nra:237:19");
     lstr* t5264 = t5263;
     lstr_retain(t5264);
     lstr* t5265 = t5264;
@@ -218139,7 +218139,7 @@ static lstr* f_0ebe9f17_mergeJsonAnswers(lstr* v_command_23432, A_Array_5fce1d7c
       E_Option_89d0c73d t5272 = v_at_23439;
       bool t5273 = t5272.tag == 1;
       if (t5273) {
-        lstr* t5274 = A_Array_5fce1d7c_get(v_answers_23433, INT64_C(0), "src/tools/query.nra:242:21");
+        lstr* t5274 = A_Array_5fce1d7c_get(v_answers_23433, INT64_C(0), "src/tools/query.nra:244:21");
         lstr* t5275 = t5274;
         lstr_retain(t5275);
         lstr* t5276 = t5275;
@@ -218269,10 +218269,10 @@ static E_Result_141c4cf6 f_0ebe9f17_answerQuery(lstr* v_directory_23442, lstr* v
       *t1856 = A_Array_c4a0e9be_unique(*t1856);
     }
     for (int64_t v_index_23455 = t1854; v_index_23455 < t1855; v_index_23455++) {
-      S_0ebe9f17_ModuleView t1857 = A_Array_c4a0e9be_get(v_namedViews_23454, v_index_23455, "src/tools/query.nra:286:59");
+      S_0ebe9f17_ModuleView t1857 = A_Array_c4a0e9be_get(v_namedViews_23454, v_index_23455, "src/tools/query.nra:288:59");
       lstr* t1858 = lstr_concat_n(3, (lstr*[]){v_filePrefix_23443, (&L352), (t1857).f_file});
       int64_t t1859 = v_index_23455;
-      narra_bounds(t1859, (*&v_namedViews_23454)->len, "src/tools/query.nra:286:17");
+      narra_bounds(t1859, (*&v_namedViews_23454)->len, "src/tools/query.nra:288:17");
       S_0ebe9f17_ModuleView* t1860 = &(*&v_namedViews_23454)->items[t1859];
       lstr** t1861 = &(t1860)->f_file;
       lstr_release((*t1861));
@@ -218471,7 +218471,9 @@ static int64_t f_0ebe9f17_runHovers(lstr* v_directory_23460, bool v_json_23461, 
     S_39a7dacb_EffectState* t1706 = &v_effects_23472;
     release_S_39a7dacb_EffectState(&((*t1706)));
     *t1706 = t1705;
+    f_97cdd2a2_checkConstants(&v_checker_23470, &v_effects_23472);
   }
+  f_308c13ce_reportSharedWrites(&v_checker_23470);
   M_Map_cce735af* t1707 = M_Map_cce735af_new(0);
   E_Result_14683dc2 t1708 = f_0ebe9f17_buildViews(&v_checker_23470, &v_package_23469, t1707);
   E_Result_14683dc2 v_views_23473 = t1708;
@@ -218722,7 +218724,7 @@ static void f_0ebe9f17_putHover(A_Array_124b35af** v_hovers_23499, M_Map_9117863
       S_0ebe9f17_Hover t12825 = v_hover_23504;
       retain_S_0ebe9f17_Hover(&(t12825));
       int64_t t12826 = v_slot_23506;
-      S_0ebe9f17_Hover* t12827 = A_Array_124b35af_at(v_hovers_23499, t12826, "src/tools/query.nra:481:11");
+      S_0ebe9f17_Hover* t12827 = A_Array_124b35af_at(v_hovers_23499, t12826, "src/tools/query.nra:486:11");
       S_0ebe9f17_Hover* t12828 = t12827;
       release_S_0ebe9f17_Hover(&((*t12828)));
       *t12828 = t12825;
@@ -218740,8 +218742,8 @@ static void f_0ebe9f17_putHover(A_Array_124b35af** v_hovers_23499, M_Map_9117863
 }
 
 static lstr* f_0ebe9f17_describeVariant(const S_a8ced12f_Checker* v_checker_23507, int64_t v_enumIndex_23508, int64_t v_variantIndex_23509) {
-  S_47a61b6a_EnumInfo t12796 = A_Array_3a6f19dc_get(((*v_checker_23507)).f_enums, v_enumIndex_23508, "src/tools/query.nra:489:32");
-  S_47a61b6a_Variant t12797 = A_Array_03dba91b_get((t12796).f_variants, v_variantIndex_23509, "src/tools/query.nra:489:52");
+  S_47a61b6a_EnumInfo t12796 = A_Array_3a6f19dc_get(((*v_checker_23507)).f_enums, v_enumIndex_23508, "src/tools/query.nra:494:32");
+  S_47a61b6a_Variant t12797 = A_Array_03dba91b_get((t12796).f_variants, v_variantIndex_23509, "src/tools/query.nra:494:52");
   S_47a61b6a_Variant t12798 = t12797;
   retain_S_47a61b6a_Variant(&(t12798));
   S_47a61b6a_Variant v_variant_23510 = t12798;
@@ -218960,7 +218962,7 @@ static lstr* f_0ebe9f17_describeBuiltin(const S_a8ced12f_Checker* v_checker_2352
     lstr* t31807 = t31806;
     return t31807;
   }
-  S_9ef41083_StdFunc t31808 = A_Array_151bf77f_get((((*v_checker_23525)).f_registry).f_functions, v_builtinIndex_23528, "src/tools/query.nra:552:45");
+  S_9ef41083_StdFunc t31808 = A_Array_151bf77f_get((((*v_checker_23525)).f_registry).f_functions, v_builtinIndex_23528, "src/tools/query.nra:557:45");
   S_9ef41083_StdFunc t31809 = t31808;
   retain_S_9ef41083_StdFunc(&(t31809));
   S_9ef41083_StdFunc v_builtin_23532 = t31809;
@@ -219056,7 +219058,7 @@ static void f_0ebe9f17_collectImportNames(const S_a8ced12f_Checker* v_checker_23
         bool t24125 = (t24124 < (((*v_view_23541)).f_tokens)->len);
         if (t24125) {
           int64_t t24126 = narra_wrap_add(v_tokenIndex_23549, INT64_C(2));
-          S_e88aee75_Token t24127 = A_Array_d3c597f7_get(((*v_view_23541)).f_tokens, t24126, "src/tools/query.nra:605:41");
+          S_e88aee75_Token t24127 = A_Array_d3c597f7_get(((*v_view_23541)).f_tokens, t24126, "src/tools/query.nra:610:41");
           S_e88aee75_Token t24128 = t24127;
           retain_S_e88aee75_Token(&(t24128));
           S_e88aee75_Token v_localToken_23550 = t24128;
@@ -219178,12 +219180,12 @@ static int64_t f_0ebe9f17_findStructLiteralIndex(const S_a8ced12f_Checker* v_che
     int64_t t24008 = t24007;
     return t24008;
   }
-  S_a8ced12f_BodyInfo t24009 = A_Array_a43c5b86_get(((*v_checker_23576)).f_bodies, v_bodyIndex_23579, "src/tools/query.nra:686:30");
+  S_a8ced12f_BodyInfo t24009 = A_Array_a43c5b86_get(((*v_checker_23576)).f_bodies, v_bodyIndex_23579, "src/tools/query.nra:691:30");
   S_a8ced12f_BodyInfo t24010 = t24009;
   retain_S_a8ced12f_BodyInfo(&(t24010));
   S_a8ced12f_BodyInfo v_body_23580 = t24010;
   int64_t t24011 = f_a8ced12f_findBodySlot(&v_body_23580, ((*v_site_23578)).f_nodeId);
-  E_Option_8467503f t24012 = A_Array_e729d0b1_get((v_body_23580).f_types, t24011, "src/tools/query.nra:687:33");
+  E_Option_8467503f t24012 = A_Array_e729d0b1_get((v_body_23580).f_types, t24011, "src/tools/query.nra:692:33");
   E_Option_8467503f t24013 = t24012;
   retain_E_Option_8467503f(&(t24013));
   E_Option_8467503f v_literalType_23581 = t24013;
@@ -219230,7 +219232,7 @@ static lstr* f_0ebe9f17_describeStructLiteral(const S_a8ced12f_Checker* v_checke
 }
 
 static lstr* f_0ebe9f17_describeStructField(const S_a8ced12f_Checker* v_checker_23587, int64_t v_structIndex_23588, lstr* v_name_23589) {
-  S_47a61b6a_StructInfo t24183 = A_Array_be25afda_get(((*v_checker_23587)).f_structs, v_structIndex_23588, "src/tools/query.nra:707:55");
+  S_47a61b6a_StructInfo t24183 = A_Array_be25afda_get(((*v_checker_23587)).f_structs, v_structIndex_23588, "src/tools/query.nra:712:55");
   A_Array_b811f5c2* t24184 = (t24183).f_fields;
   A_Array_b811f5c2_retain(t24184);
   for (int64_t i24185 = 0; i24185 < t24184->len; i24185++) {
@@ -219261,7 +219263,7 @@ static int64_t f_0ebe9f17_findTokenIndex(const S_0ebe9f17_ModuleView* v_view_235
     int64_t t23929 = narra_wrap_add(v_low_23593, v_high_23594);
     int64_t t23930 = narra_div(t23929, INT64_C(2));
     int64_t v_middle_23595 = t23930;
-    S_e88aee75_Token t23931 = A_Array_d3c597f7_get(((*v_view_23591)).f_tokens, v_middle_23595, "src/tools/query.nra:721:30");
+    S_e88aee75_Token t23931 = A_Array_d3c597f7_get(((*v_view_23591)).f_tokens, v_middle_23595, "src/tools/query.nra:726:30");
     S_e88aee75_Token t23932 = t23931;
     retain_S_e88aee75_Token(&(t23932));
     S_e88aee75_Token v_token_23596 = t23932;
@@ -219323,13 +219325,13 @@ static lstr* f_0ebe9f17_findAliasUsePath(const S_a8ced12f_Checker* v_checker_236
   int64_t v_bodyIndex_23604 = t24131;
   bool t24132 = (v_bodyIndex_23604 >= INT64_C(0));
   if (t24132) {
-    S_a8ced12f_BodyInfo t24133 = A_Array_a43c5b86_get(((*v_checker_23600)).f_bodies, v_bodyIndex_23604, "src/tools/query.nra:747:32");
+    S_a8ced12f_BodyInfo t24133 = A_Array_a43c5b86_get(((*v_checker_23600)).f_bodies, v_bodyIndex_23604, "src/tools/query.nra:752:32");
     S_a8ced12f_BodyInfo t24134 = t24133;
     retain_S_a8ced12f_BodyInfo(&(t24134));
     S_a8ced12f_BodyInfo v_body_23605 = t24134;
     {
       int64_t t24135 = f_a8ced12f_findBodySlot(&v_body_23605, v_identId_23602);
-      E_a8ced12f_Ref t24136 = A_Array_60b3b543_get((v_body_23605).f_refs, t24135, "src/tools/query.nra:748:18");
+      E_a8ced12f_Ref t24136 = A_Array_60b3b543_get((v_body_23605).f_refs, t24135, "src/tools/query.nra:753:18");
       E_a8ced12f_Ref t24137 = t24136;
       retain_E_a8ced12f_Ref(&(t24137));
       E_a8ced12f_Ref t24138 = t24137;
@@ -219365,12 +219367,12 @@ static A_Array_124b35af* f_0ebe9f17_findQualifierHovers(const S_a8ced12f_Checker
     return t12835;
   }
   int64_t t12836 = narra_wrap_sub(v_index_23611, INT64_C(2));
-  S_e88aee75_Token t12837 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12836, "src/tools/query.nra:766:32");
+  S_e88aee75_Token t12837 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12836, "src/tools/query.nra:771:32");
   S_e88aee75_Token t12838 = t12837;
   retain_S_e88aee75_Token(&(t12838));
   S_e88aee75_Token v_enumToken_23612 = t12838;
   int64_t t12839 = narra_wrap_sub(v_index_23611, INT64_C(1));
-  S_e88aee75_Token t12840 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12839, "src/tools/query.nra:767:18");
+  S_e88aee75_Token t12840 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12839, "src/tools/query.nra:772:18");
   bool t12841 = (!lstr_eq((t12840).f_text, (&L3635)));
   if (!t12841) {
     t12841 = (!eq_E_e88aee75_TokenKind((v_enumToken_23612).f_kind, ((E_e88aee75_TokenKind){.tag = 2})));
@@ -219384,7 +219386,7 @@ static A_Array_124b35af* f_0ebe9f17_findQualifierHovers(const S_a8ced12f_Checker
     A_Array_124b35af_release(v_found_23610);
     return t12844;
   }
-  S_47a61b6a_EnumInfo t12845 = A_Array_3a6f19dc_get(((*v_checker_23606)).f_enums, v_enumIndex_23609, "src/tools/query.nra:771:29");
+  S_47a61b6a_EnumInfo t12845 = A_Array_3a6f19dc_get(((*v_checker_23606)).f_enums, v_enumIndex_23609, "src/tools/query.nra:776:29");
   S_47a61b6a_EnumInfo t12846 = t12845;
   retain_S_47a61b6a_EnumInfo(&(t12846));
   S_47a61b6a_EnumInfo v_info_23613 = t12846;
@@ -219393,7 +219395,7 @@ static A_Array_124b35af* f_0ebe9f17_findQualifierHovers(const S_a8ced12f_Checker
   lstr* v_declaredName_23614 = t12847;
   bool t12848 = ((v_info_23613).f_generic >= INT64_C(0));
   if (t12848) {
-    S_47a61b6a_GenericInfo t12849 = A_Array_a8644dfd_get(((*v_checker_23606)).f_generics, (v_info_23613).f_generic, "src/tools/query.nra:774:36");
+    S_47a61b6a_GenericInfo t12849 = A_Array_a8644dfd_get(((*v_checker_23606)).f_generics, (v_info_23613).f_generic, "src/tools/query.nra:779:36");
     lstr* t12850 = (t12849).f_name;
     lstr_retain(t12850);
     lstr** t12851 = &v_declaredName_23614;
@@ -219416,19 +219418,19 @@ static A_Array_124b35af* f_0ebe9f17_findQualifierHovers(const S_a8ced12f_Checker
   bool t12858 = (v_index_23611 >= INT64_C(4));
   if (t12858) {
     int64_t t12859 = narra_wrap_sub(v_index_23611, INT64_C(3));
-    S_e88aee75_Token t12860 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12859, "src/tools/query.nra:788:18");
+    S_e88aee75_Token t12860 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12859, "src/tools/query.nra:793:18");
     t12858 = lstr_eq((t12860).f_text, (&L3638));
   }
   bool t12861 = t12858;
   if (t12861) {
     int64_t t12862 = narra_wrap_sub(v_index_23611, INT64_C(4));
-    S_e88aee75_Token t12863 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12862, "src/tools/query.nra:789:18");
+    S_e88aee75_Token t12863 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12862, "src/tools/query.nra:794:18");
     t12861 = eq_E_e88aee75_TokenKind((t12863).f_kind, ((E_e88aee75_TokenKind){.tag = 2}));
   }
   bool t12864 = t12861;
   if (t12864) {
     int64_t t12865 = narra_wrap_sub(v_index_23611, INT64_C(4));
-    S_e88aee75_Token t12866 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12865, "src/tools/query.nra:791:36");
+    S_e88aee75_Token t12866 = A_Array_d3c597f7_get(((*v_view_23607)).f_tokens, t12865, "src/tools/query.nra:796:36");
     S_e88aee75_Token t12867 = t12866;
     retain_S_e88aee75_Token(&(t12867));
     S_e88aee75_Token v_moduleToken_23616 = t12867;
@@ -220100,7 +220102,7 @@ static E_Result_14683dc2 f_0ebe9f17_buildViews(const S_a8ced12f_Checker* v_check
   int64_t t4826 = INT64_C(0);
   int64_t t4827 = (((*v_package_23699)).f_modules)->len;
   for (int64_t v_index_23703 = t4826; v_index_23703 < t4827; v_index_23703++) {
-    S_8130fc1d_SourceModule t4828 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_index_23703, "src/tools/query.nra:1078:40");
+    S_8130fc1d_SourceModule t4828 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_index_23703, "src/tools/query.nra:1083:40");
     bool t4829 = (!narra_str_starts_with((t4828).f_path, (&L1068)));
     if (t4829) {
       A_Array_e7fe1e37_push(&v_order_23702, v_index_23703);
@@ -220112,7 +220114,7 @@ static E_Result_14683dc2 f_0ebe9f17_buildViews(const S_a8ced12f_Checker* v_check
   A_Array_e7fe1e37_retain(t4834);
   for (int64_t i4835 = 0; i4835 < t4834->len; i4835++) {
     int64_t v_moduleIndex_23706 = t4834->items[i4835];
-    S_8130fc1d_SourceModule t4836 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_moduleIndex_23706, "src/tools/query.nra:1087:35");
+    S_8130fc1d_SourceModule t4836 = A_Array_70a465fd_get(((*v_package_23699)).f_modules, v_moduleIndex_23706, "src/tools/query.nra:1092:35");
     S_8130fc1d_SourceModule t4837 = t4836;
     retain_S_8130fc1d_SourceModule(&(t4837));
     S_8130fc1d_SourceModule v_module_23707 = t4837;
@@ -220204,7 +220206,7 @@ static E_Result_14683dc2 f_0ebe9f17_buildViews(const S_a8ced12f_Checker* v_check
     int64_t t4866 = INT64_C(0);
     int64_t t4867 = (((*v_checker_23698)).f_bodies)->len;
     for (int64_t v_bodyIndex_23715 = t4866; v_bodyIndex_23715 < t4867; v_bodyIndex_23715++) {
-      S_a8ced12f_BodyInfo t4868 = A_Array_a43c5b86_get(((*v_checker_23698)).f_bodies, v_bodyIndex_23715, "src/tools/query.nra:1106:34");
+      S_a8ced12f_BodyInfo t4868 = A_Array_a43c5b86_get(((*v_checker_23698)).f_bodies, v_bodyIndex_23715, "src/tools/query.nra:1111:34");
       S_a8ced12f_BodyInfo t4869 = t4868;
       retain_S_a8ced12f_BodyInfo(&(t4869));
       S_a8ced12f_BodyInfo v_body_23716 = t4869;
@@ -220283,7 +220285,7 @@ static int64_t f_0ebe9f17_findNodeBody(const S_a8ced12f_Checker* v_checker_23722
   A_Array_e7fe1e37_retain(t23920);
   for (int64_t i23921 = 0; i23921 < t23920->len; i23921++) {
     int64_t v_bodyIndex_23725 = t23920->items[i23921];
-    S_a8ced12f_BodyInfo t23922 = A_Array_a43c5b86_get(((*v_checker_23722)).f_bodies, v_bodyIndex_23725, "src/tools/query.nra:1138:36");
+    S_a8ced12f_BodyInfo t23922 = A_Array_a43c5b86_get(((*v_checker_23722)).f_bodies, v_bodyIndex_23725, "src/tools/query.nra:1143:36");
     int64_t t23923 = f_a8ced12f_findBodySlot(&t23922, v_nodeId_23724);
     bool t23924 = (t23923 >= INT64_C(0));
     if (t23924) {
@@ -220306,12 +220308,12 @@ static E_a8ced12f_Ref f_0ebe9f17_findSiteRef(const S_a8ced12f_Checker* v_checker
     E_a8ced12f_Ref t12789 = ((E_a8ced12f_Ref){.tag = 0});
     return t12789;
   }
-  S_a8ced12f_BodyInfo t12790 = A_Array_a43c5b86_get(((*v_checker_23726)).f_bodies, v_bodyIndex_23729, "src/tools/query.nra:1150:30");
+  S_a8ced12f_BodyInfo t12790 = A_Array_a43c5b86_get(((*v_checker_23726)).f_bodies, v_bodyIndex_23729, "src/tools/query.nra:1155:30");
   S_a8ced12f_BodyInfo t12791 = t12790;
   retain_S_a8ced12f_BodyInfo(&(t12791));
   S_a8ced12f_BodyInfo v_body_23730 = t12791;
   int64_t t12792 = f_a8ced12f_findBodySlot(&v_body_23730, ((*v_site_23728)).f_nodeId);
-  E_a8ced12f_Ref t12793 = A_Array_60b3b543_get((v_body_23730).f_refs, t12792, "src/tools/query.nra:1151:19");
+  E_a8ced12f_Ref t12793 = A_Array_60b3b543_get((v_body_23730).f_refs, t12792, "src/tools/query.nra:1156:19");
   E_a8ced12f_Ref t12794 = t12793;
   retain_E_a8ced12f_Ref(&(t12794));
   E_a8ced12f_Ref t12795 = t12794;
@@ -220384,7 +220386,7 @@ static int64_t f_0ebe9f17_findConstIndex(const S_a8ced12f_Checker* v_checker_237
 
 static lstr* f_0ebe9f17_findConstType(const S_a8ced12f_Checker* v_checker_23743, int64_t v_index_23744) {
   {
-    S_a8ced12f_ConstInfo t24635 = A_Array_e12362b5_get(((*v_checker_23743)).f_consts, v_index_23744, "src/tools/query.nra:1181:21");
+    S_a8ced12f_ConstInfo t24635 = A_Array_e12362b5_get(((*v_checker_23743)).f_consts, v_index_23744, "src/tools/query.nra:1186:21");
     E_Option_8467503f t24636 = (t24635).f_valueType;
     retain_E_Option_8467503f(&(t24636));
     E_Option_8467503f t24637 = t24636;
@@ -220399,7 +220401,7 @@ static lstr* f_0ebe9f17_findConstType(const S_a8ced12f_Checker* v_checker_23743,
     release_E_Option_8467503f(&(t24637));
   }
   {
-    S_a8ced12f_ConstInfo t24641 = A_Array_e12362b5_get(((*v_checker_23743)).f_consts, v_index_23744, "src/tools/query.nra:1184:21");
+    S_a8ced12f_ConstInfo t24641 = A_Array_e12362b5_get(((*v_checker_23743)).f_consts, v_index_23744, "src/tools/query.nra:1189:21");
     E_Option_8467503f t24642 = (t24641).f_declaredType;
     retain_E_Option_8467503f(&(t24642));
     E_Option_8467503f t24643 = t24642;
@@ -220426,11 +220428,11 @@ static lstr* f_0ebe9f17_writeFunctionType(const S_a8ced12f_Checker* v_checker_23
   A_Array_5fce1d7c* v_parts_23751 = t31748;
   int64_t t31749 = (((*v_declaration_23748)).f_parameters)->len;
   for (int64_t v_index_23752 = 0; v_index_23752 < t31749; v_index_23752++) {
-    S_3add178c_Param t31750 = A_Array_19790e1a_get(((*v_declaration_23748)).f_parameters, v_index_23752, "src/tools/query.nra:1200:45");
+    S_3add178c_Param t31750 = A_Array_19790e1a_get(((*v_declaration_23748)).f_parameters, v_index_23752, "src/tools/query.nra:1205:45");
     S_3add178c_Param t31751 = t31750;
     retain_S_3add178c_Param(&(t31751));
     S_3add178c_Param v_parameter_23753 = t31751;
-    E_47a61b6a_Type t31752 = A_Array_34eadda8_get(((*v_checker_23747)).f_paramTypes, (v_parameter_23753).f_id, "src/tools/query.nra:1201:63");
+    E_47a61b6a_Type t31752 = A_Array_34eadda8_get(((*v_checker_23747)).f_paramTypes, (v_parameter_23753).f_id, "src/tools/query.nra:1206:63");
     lstr* t31753 = f_0ebe9f17_writeLocalType(&(*v_checker_23747), t31752, (v_parameter_23753).f_type);
     lstr* v_written_23754 = t31753;
     {
@@ -220464,7 +220466,7 @@ static lstr* f_0ebe9f17_writeFunctionType(const S_a8ced12f_Checker* v_checker_23
   lstr* v_resultText_23756 = t31762;
   bool t31763 = (v_shared_23750 >= INT64_C(0));
   if (t31763) {
-    S_3add178c_Param t31764 = A_Array_19790e1a_get(((*v_declaration_23748)).f_parameters, v_shared_23750, "src/tools/query.nra:1216:51");
+    S_3add178c_Param t31764 = A_Array_19790e1a_get(((*v_declaration_23748)).f_parameters, v_shared_23750, "src/tools/query.nra:1221:51");
     lstr* t31765 = lstr_concat_n(2, (lstr*[]){(&L8548), (t31764).f_name});
     lstr* v_marker_23757 = t31765;
     bool t31766 = (!narra_str_ends_with(v_resultText_23756, v_marker_23757));
@@ -220550,13 +220552,13 @@ static E_Option_8d59b42c f_0ebe9f17_describeCallable(const S_a8ced12f_Checker* v
     if (t24041) {
       int64_t v_index_23769 = t24039.u.v_Function.f_index;
       m24040 = true;
-      S_a8ced12f_FuncInfo t24042 = A_Array_33bde3df_get(((*v_checker_23764)).f_functions, v_index_23769, "src/tools/query.nra:1265:38");
+      S_a8ced12f_FuncInfo t24042 = A_Array_33bde3df_get(((*v_checker_23764)).f_functions, v_index_23769, "src/tools/query.nra:1270:38");
       S_3add178c_FuncDecl t24043 = (t24042).f_declaration;
       retain_S_3add178c_FuncDecl(&(t24043));
       S_3add178c_FuncDecl* t24044 = &v_declaration_23767;
       release_S_3add178c_FuncDecl(&((*t24044)));
       *t24044 = t24043;
-      S_a8ced12f_FuncInfo t24045 = A_Array_33bde3df_get(((*v_checker_23764)).f_functions, v_index_23769, "src/tools/query.nra:1266:33");
+      S_a8ced12f_FuncInfo t24045 = A_Array_33bde3df_get(((*v_checker_23764)).f_functions, v_index_23769, "src/tools/query.nra:1271:33");
       E_47a61b6a_Type t24046 = (t24045).f_result;
       retain_E_47a61b6a_Type(t24046);
       E_47a61b6a_Type* t24047 = &v_result_23768;
@@ -220570,15 +220572,15 @@ static E_Option_8d59b42c f_0ebe9f17_describeCallable(const S_a8ced12f_Checker* v
       int64_t v_block_23770 = t24039.u.v_Implementation.f_block;
       int64_t v_index_23771 = t24039.u.v_Implementation.f_index;
       m24040 = true;
-      S_47a61b6a_ImplInfo t24049 = A_Array_e1471d85_get(((*v_checker_23764)).f_implementations, v_block_23770, "src/tools/query.nra:1269:44");
-      S_47a61b6a_ImplFunc t24050 = A_Array_1bde14bf_get((t24049).f_functions, v_index_23771, "src/tools/query.nra:1269:61");
+      S_47a61b6a_ImplInfo t24049 = A_Array_e1471d85_get(((*v_checker_23764)).f_implementations, v_block_23770, "src/tools/query.nra:1274:44");
+      S_47a61b6a_ImplFunc t24050 = A_Array_1bde14bf_get((t24049).f_functions, v_index_23771, "src/tools/query.nra:1274:61");
       S_3add178c_FuncDecl t24051 = (t24050).f_declaration;
       retain_S_3add178c_FuncDecl(&(t24051));
       S_3add178c_FuncDecl* t24052 = &v_declaration_23767;
       release_S_3add178c_FuncDecl(&((*t24052)));
       *t24052 = t24051;
-      S_47a61b6a_ImplInfo t24053 = A_Array_e1471d85_get(((*v_checker_23764)).f_implementations, v_block_23770, "src/tools/query.nra:1270:39");
-      S_47a61b6a_ImplFunc t24054 = A_Array_1bde14bf_get((t24053).f_functions, v_index_23771, "src/tools/query.nra:1270:56");
+      S_47a61b6a_ImplInfo t24053 = A_Array_e1471d85_get(((*v_checker_23764)).f_implementations, v_block_23770, "src/tools/query.nra:1275:39");
+      S_47a61b6a_ImplFunc t24054 = A_Array_1bde14bf_get((t24053).f_functions, v_index_23771, "src/tools/query.nra:1275:56");
       E_47a61b6a_Type t24055 = (t24054).f_result;
       retain_E_47a61b6a_Type(t24055);
       E_47a61b6a_Type* t24056 = &v_result_23768;
@@ -220688,7 +220690,7 @@ static lstr* f_0ebe9f17_writeLocalType(const S_a8ced12f_Checker* v_checker_23776
 }
 
 static E_Option_50b42ef5 f_0ebe9f17_findLocalAnnotation(const S_a8ced12f_Checker* v_checker_23780, const S_0ebe9f17_ModuleView* v_view_23781, int64_t v_bodyIndex_23782, int64_t v_localIndex_23783) {
-  S_a8ced12f_BodyInfo t24067 = A_Array_a43c5b86_get(((*v_checker_23780)).f_bodies, v_bodyIndex_23782, "src/tools/query.nra:1318:30");
+  S_a8ced12f_BodyInfo t24067 = A_Array_a43c5b86_get(((*v_checker_23780)).f_bodies, v_bodyIndex_23782, "src/tools/query.nra:1323:30");
   S_a8ced12f_BodyInfo t24068 = t24067;
   retain_S_a8ced12f_BodyInfo(&(t24068));
   S_a8ced12f_BodyInfo v_body_23784 = t24068;
@@ -220709,7 +220711,7 @@ static E_Option_50b42ef5 f_0ebe9f17_findLocalAnnotation(const S_a8ced12f_Checker
     int64_t v_slot_23786 = t24074;
     bool t24075 = (v_slot_23786 >= INT64_C(0));
     if (t24075) {
-      int64_t t24076 = A_Array_e7fe1e37_get((v_body_23784).f_declared, v_slot_23786, "src/tools/query.nra:1324:35");
+      int64_t t24076 = A_Array_e7fe1e37_get((v_body_23784).f_declared, v_slot_23786, "src/tools/query.nra:1329:35");
       t24075 = (t24076 == v_localIndex_23783);
     }
     bool t24077 = t24075;
@@ -220760,17 +220762,17 @@ static E_Option_8d59b42c f_0ebe9f17_describeSite(S_a8ced12f_Checker* v_checker_2
     E_Option_8d59b42c t12887 = ((E_Option_8d59b42c){.tag = 1});
     return t12887;
   }
-  S_a8ced12f_BodyInfo t12888 = A_Array_a43c5b86_get(((*v_checker_23787)).f_bodies, v_bodyIndex_23793, "src/tools/query.nra:1350:35");
+  S_a8ced12f_BodyInfo t12888 = A_Array_a43c5b86_get(((*v_checker_23787)).f_bodies, v_bodyIndex_23793, "src/tools/query.nra:1355:35");
   S_a8ced12f_BodyInfo t12889 = t12888;
   NARRA_COPY_GRANTED(retain_S_a8ced12f_BodyInfo(&(t12889)); NARRA_COPY_CREDIT(if (((t12889).f_root).u) { narra_copy_credit(((t12889).f_root).u); NARRA_COPY_BRAND((t12889).f_root); } credit_E_a8ced12f_BodyRoot((t12889).f_root);));
   S_a8ced12f_BodyInfo v_body_23794 = t12889;
   int64_t t12890 = f_a8ced12f_findBodySlot(&v_body_23794, ((*v_site_23791)).f_nodeId);
   int64_t v_slot_23795 = t12890;
-  E_a8ced12f_Ref t12891 = A_Array_60b3b543_get((v_body_23794).f_refs, v_slot_23795, "src/tools/query.nra:1352:24");
+  E_a8ced12f_Ref t12891 = A_Array_60b3b543_get((v_body_23794).f_refs, v_slot_23795, "src/tools/query.nra:1357:24");
   E_a8ced12f_Ref t12892 = t12891;
   retain_E_a8ced12f_Ref(&(t12892));
   E_a8ced12f_Ref v_ref_23796 = t12892;
-  E_Option_8467503f t12893 = A_Array_e729d0b1_get((v_body_23794).f_types, v_slot_23795, "src/tools/query.nra:1353:30");
+  E_Option_8467503f t12893 = A_Array_e729d0b1_get((v_body_23794).f_types, v_slot_23795, "src/tools/query.nra:1358:30");
   E_Option_8467503f t12894 = t12893;
   retain_E_Option_8467503f(&(t12894));
   E_Option_8467503f v_nodeType_23797 = t12894;
@@ -221041,11 +221043,11 @@ static E_Option_8d59b42c f_0ebe9f17_describeSite(S_a8ced12f_Checker* v_checker_2
     bool t12988 = t12915.tag == 2;
     if (t12988) {
       m12916 = true;
-      int64_t t12989 = A_Array_e7fe1e37_get((v_body_23794).f_declared, v_slot_23795, "src/tools/query.nra:1437:34");
+      int64_t t12989 = A_Array_e7fe1e37_get((v_body_23794).f_declared, v_slot_23795, "src/tools/query.nra:1442:34");
       int64_t v_local_23816 = t12989;
       bool t12990 = (v_local_23816 >= INT64_C(0));
       if (t12990) {
-        S_a8ced12f_LocalInfo t12991 = A_Array_eebd8a11_get((v_body_23794).f_locals, v_local_23816, "src/tools/query.nra:1439:38");
+        S_a8ced12f_LocalInfo t12991 = A_Array_eebd8a11_get((v_body_23794).f_locals, v_local_23816, "src/tools/query.nra:1444:38");
         E_47a61b6a_Type t12992 = (t12991).f_localType;
         retain_E_47a61b6a_Type(t12992);
         E_47a61b6a_Type v_localType_23817 = t12992;
@@ -221108,7 +221110,7 @@ static E_Option_8d59b42c f_0ebe9f17_describeSite(S_a8ced12f_Checker* v_checker_2
 }
 
 static E_Option_8d59b42c f_0ebe9f17_describeDeclaration(const S_a8ced12f_Checker* v_checker_23819, const S_39a7dacb_EffectState* v_effects_23820, const S_0ebe9f17_ModuleView* v_view_23821, const S_fb9cdaf5_Site* v_site_23822) {
-  E_3add178c_Decl t23949 = A_Array_f8a96a30_get(((((*v_view_23821)).f_module).f_ast).f_declarations, ((*v_site_23822)).f_declaration, "src/tools/query.nra:1461:51");
+  E_3add178c_Decl t23949 = A_Array_f8a96a30_get(((((*v_view_23821)).f_module).f_ast).f_declarations, ((*v_site_23822)).f_declaration, "src/tools/query.nra:1466:51");
   E_3add178c_Decl t23950 = t23949;
   retain_E_3add178c_Decl(t23950);
   E_3add178c_Decl v_declaration_23823 = t23950;
@@ -221168,7 +221170,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryType(S_a8ced12f_Checker* v_checker_2382
     return t5312;
   }
   int64_t t5313 = narra_wrap_sub(v_count_23833, INT64_C(2));
-  lstr* t5314 = A_Array_5fce1d7c_get(v_parts_23832, t5313, "src/tools/query.nra:1489:31");
+  lstr* t5314 = A_Array_5fce1d7c_get(v_parts_23832, t5313, "src/tools/query.nra:1494:31");
   int64_t t5315 = 0;
   lstr* t5316 = NULL;
   bool t5317 = narra_int_parse(t5314, INT64_C(10), &t5315, &t5316);
@@ -221180,7 +221182,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryType(S_a8ced12f_Checker* v_checker_2382
   }
   E_Result_6ed4633a v_line_23834 = t5318;
   int64_t t5319 = narra_wrap_sub(v_count_23833, INT64_C(1));
-  lstr* t5320 = A_Array_5fce1d7c_get(v_parts_23832, t5319, "src/tools/query.nra:1490:33");
+  lstr* t5320 = A_Array_5fce1d7c_get(v_parts_23832, t5319, "src/tools/query.nra:1495:33");
   int64_t t5321 = 0;
   lstr* t5322 = NULL;
   bool t5323 = narra_int_parse(t5320, INT64_C(10), &t5321, &t5322);
@@ -221231,7 +221233,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryType(S_a8ced12f_Checker* v_checker_2382
   int64_t t5337 = narra_wrap_sub(v_count_23833, INT64_C(2));
   int64_t t5338 = t5337;
   for (int64_t v_index_23841 = t5336; v_index_23841 < t5338; v_index_23841++) {
-    lstr* t5339 = A_Array_5fce1d7c_get(v_parts_23832, v_index_23841, "src/tools/query.nra:1505:41");
+    lstr* t5339 = A_Array_5fce1d7c_get(v_parts_23832, v_index_23841, "src/tools/query.nra:1510:41");
     lstr* t5340 = t5339;
     lstr_retain(t5340);
     A_Array_5fce1d7c_push(&v_fileParts_23840, t5340);
@@ -221243,7 +221245,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryType(S_a8ced12f_Checker* v_checker_2382
   int64_t t5343 = INT64_C(0);
   int64_t t5344 = ((v_query_23830).f_views)->len;
   for (int64_t v_index_23844 = t5343; v_index_23844 < t5344; v_index_23844++) {
-    S_0ebe9f17_ModuleView t5345 = A_Array_c4a0e9be_get((v_query_23830).f_views, v_index_23844, "src/tools/query.nra:1510:20");
+    S_0ebe9f17_ModuleView t5345 = A_Array_c4a0e9be_get((v_query_23830).f_views, v_index_23844, "src/tools/query.nra:1515:20");
     bool t5346 = lstr_eq((t5345).f_file, v_file_23842);
     if (t5346) {
       *&v_viewIndex_23843 = v_index_23844;
@@ -221263,7 +221265,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryType(S_a8ced12f_Checker* v_checker_2382
   }
   S_3add178c_Pos t5351 = ((S_3add178c_Pos){.f_line = v_lineNumber_23836, .f_column = v_columnNumber_23837});
   S_3add178c_Pos v_cursor_23845 = t5351;
-  S_0ebe9f17_ModuleView t5352 = A_Array_c4a0e9be_get((v_query_23830).f_views, v_viewIndex_23843, "src/tools/query.nra:1518:72");
+  S_0ebe9f17_ModuleView t5352 = A_Array_c4a0e9be_get((v_query_23830).f_views, v_viewIndex_23843, "src/tools/query.nra:1523:72");
   E_0ebe9f17_TypeAt t5353 = f_0ebe9f17_findTypeAt(v_checker_23828, v_effects_23829, true, &t5352, v_cursor_23845);
   E_0ebe9f17_TypeAt t5354 = t5353;
   bool m5355 = false;
@@ -221341,7 +221343,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryType(S_a8ced12f_Checker* v_checker_2382
   release_E_Result_6ed4633a(v_column_23835);
   release_E_Result_6ed4633a(v_line_23834);
   A_Array_5fce1d7c_release(v_parts_23832);
-  narra_panic("src/tools/query.nra:1477:1", "internal compiler error: function ended without returning a value");
+  narra_panic("src/tools/query.nra:1482:1", "internal compiler error: function ended without returning a value");
   return (E_Result_318dd3bc){0};
 }
 
@@ -221377,7 +221379,7 @@ static E_0ebe9f17_TypeAt f_0ebe9f17_findTypeAt(S_a8ced12f_Checker* v_checker_238
   while (1) {
     bool t16878 = (v_index_23853 >= INT64_C(0));
     if (!t16878) break;
-    S_fb9cdaf5_Site t16879 = A_Array_2268588c_get(((*v_view_23850)).f_sites, v_index_23853, "src/tools/query.nra:1572:28");
+    S_fb9cdaf5_Site t16879 = A_Array_2268588c_get(((*v_view_23850)).f_sites, v_index_23853, "src/tools/query.nra:1577:28");
     S_fb9cdaf5_Site t16880 = t16879;
     retain_S_fb9cdaf5_Site(&(t16880));
     S_fb9cdaf5_Site v_site_23854 = t16880;
@@ -221440,7 +221442,7 @@ static A_Array_aa50b068* f_0ebe9f17_listDeclarations(S_0ebe9f17_Query v_query_23
   int64_t t17124 = INT64_C(0);
   int64_t t17125 = ((v_query_23860).f_views)->len;
   for (int64_t v_viewIndex_23862 = t17124; v_viewIndex_23862 < t17125; v_viewIndex_23862++) {
-    S_0ebe9f17_ModuleView t17126 = A_Array_c4a0e9be_get((v_query_23860).f_views, v_viewIndex_23862, "src/tools/query.nra:1592:29");
+    S_0ebe9f17_ModuleView t17126 = A_Array_c4a0e9be_get((v_query_23860).f_views, v_viewIndex_23862, "src/tools/query.nra:1597:29");
     S_0ebe9f17_ModuleView t17127 = t17126;
     retain_S_0ebe9f17_ModuleView(&(t17127));
     S_0ebe9f17_ModuleView v_view_23863 = t17127;
@@ -221452,7 +221454,7 @@ static A_Array_aa50b068* f_0ebe9f17_listDeclarations(S_0ebe9f17_Query v_query_23
       if (t17130) {
         continue;
       }
-      E_3add178c_Decl t17131 = A_Array_f8a96a30_get((((v_view_23863).f_module).f_ast).f_declarations, (v_site_23864).f_declaration, "src/tools/query.nra:1597:55");
+      E_3add178c_Decl t17131 = A_Array_f8a96a30_get((((v_view_23863).f_module).f_ast).f_declarations, (v_site_23864).f_declaration, "src/tools/query.nra:1602:55");
       E_3add178c_Decl t17132 = t17131;
       retain_E_3add178c_Decl(t17132);
       E_3add178c_Decl v_declaration_23865 = t17132;
@@ -221487,7 +221489,7 @@ static A_Array_aa50b068* f_0ebe9f17_listDeclarations(S_0ebe9f17_Query v_query_23
           }
         }
       }
-      lstr* t17145 = A_Array_5fce1d7c_get(v_names_23867, INT64_C(0), "src/tools/query.nra:1607:46");
+      lstr* t17145 = A_Array_5fce1d7c_get(v_names_23867, INT64_C(0), "src/tools/query.nra:1612:46");
       lstr* t17146 = lstr_concat_n(3, (lstr*[]){(v_view_23863).f_path, (&L5826), t17145});
       lstr* v_qualified_23869 = t17146;
       lstr* t17147 = v_qualified_23869;
@@ -221587,7 +221589,7 @@ static E_Result_676745ae f_0ebe9f17_findOneDeclared(S_0ebe9f17_Query v_query_238
     return t16979;
     A_Array_5fce1d7c_release(v_names_23878);
   }
-  S_0ebe9f17_Declared t16980 = A_Array_aa50b068_get(v_matches_23877, INT64_C(0), "src/tools/query.nra:1653:20");
+  S_0ebe9f17_Declared t16980 = A_Array_aa50b068_get(v_matches_23877, INT64_C(0), "src/tools/query.nra:1658:20");
   S_0ebe9f17_Declared t16981 = t16980;
   retain_S_0ebe9f17_Declared(&(t16981));
   Q_Result_676745ae* q16982 = narra_alloc(sizeof(Q_Result_676745ae));
@@ -221663,7 +221665,7 @@ static lstr* f_0ebe9f17_describeImplementation(const S_a8ced12f_Checker* v_check
   A_Array_e1471d85_retain(t24618);
   for (int64_t i24619 = 0; i24619 < t24618->len; i24619++) {
     S_47a61b6a_ImplInfo v_impl_23888 = t24618->items[i24619];
-    S_a8ced12f_ModScope t24620 = A_Array_e1077a1e_get(((*v_checker_23885)).f_scopes, (v_impl_23888).f_scope, "src/tools/query.nra:1687:23");
+    S_a8ced12f_ModScope t24620 = A_Array_e1077a1e_get(((*v_checker_23885)).f_scopes, (v_impl_23888).f_scope, "src/tools/query.nra:1692:23");
     bool t24621 = (!lstr_eq((t24620).f_path, v_module_23886));
     if (t24621) {
       continue;
@@ -221675,7 +221677,7 @@ static lstr* f_0ebe9f17_describeImplementation(const S_a8ced12f_Checker* v_check
       bool t24624 = eq_S_3add178c_Pos(((v_implFunc_23889).f_declaration).f_pos, ((*v_declaration_23887)).f_pos);
       if (t24624) {
         lstr* t24625 = f_a8ced12f_typeString(&(*v_checker_23885), (v_impl_23888).f_forType);
-        S_47a61b6a_TraitInfo t24626 = A_Array_1bb29c02_get(((*v_checker_23885)).f_traits, (v_impl_23888).f_traitIndex, "src/tools/query.nra:1692:70");
+        S_47a61b6a_TraitInfo t24626 = A_Array_1bb29c02_get(((*v_checker_23885)).f_traits, (v_impl_23888).f_traitIndex, "src/tools/query.nra:1697:70");
         lstr* t24627 = lstr_concat_n(5, (lstr*[]){t24625, (&L7192), (t24626).f_name, (&L7193), (v_implFunc_23889).f_name});
         lstr* t24628 = t24627;
         lstr_release(t24625);
@@ -221694,7 +221696,7 @@ static lstr* f_0ebe9f17_describeImplementation(const S_a8ced12f_Checker* v_check
 }
 
 static lstr* f_0ebe9f17_describeBody(const S_a8ced12f_Checker* v_checker_23890, int64_t v_bodyIndex_23891) {
-  S_a8ced12f_BodyInfo t17076 = A_Array_a43c5b86_get(((*v_checker_23890)).f_bodies, v_bodyIndex_23891, "src/tools/query.nra:1702:30");
+  S_a8ced12f_BodyInfo t17076 = A_Array_a43c5b86_get(((*v_checker_23890)).f_bodies, v_bodyIndex_23891, "src/tools/query.nra:1707:30");
   S_a8ced12f_BodyInfo t17077 = t17076;
   retain_S_a8ced12f_BodyInfo(&(t17077));
   S_a8ced12f_BodyInfo v_body_23892 = t17077;
@@ -221741,11 +221743,11 @@ static lstr* f_0ebe9f17_describeBody(const S_a8ced12f_Checker* v_checker_23890, 
 }
 
 static E_Result_70c6b834 f_0ebe9f17_findTarget(const S_a8ced12f_Checker* v_checker_23894, S_0ebe9f17_Query v_query_23895, const S_0ebe9f17_Declared* v_declared_23896) {
-  S_0ebe9f17_ModuleView t16985 = A_Array_c4a0e9be_get((v_query_23895).f_views, ((*v_declared_23896)).f_view, "src/tools/query.nra:1722:27");
+  S_0ebe9f17_ModuleView t16985 = A_Array_c4a0e9be_get((v_query_23895).f_views, ((*v_declared_23896)).f_view, "src/tools/query.nra:1727:27");
   S_0ebe9f17_ModuleView t16986 = t16985;
   retain_S_0ebe9f17_ModuleView(&(t16986));
   S_0ebe9f17_ModuleView v_view_23897 = t16986;
-  E_3add178c_Decl t16987 = A_Array_f8a96a30_get((((v_view_23897).f_module).f_ast).f_declarations, ((*v_declared_23896)).f_declaration, "src/tools/query.nra:1723:38");
+  E_3add178c_Decl t16987 = A_Array_f8a96a30_get((((v_view_23897).f_module).f_ast).f_declarations, ((*v_declared_23896)).f_declaration, "src/tools/query.nra:1728:38");
   E_3add178c_Decl t16988 = t16987;
   retain_E_3add178c_Decl(t16988);
   bool m16989 = false;
@@ -221885,7 +221887,7 @@ static bool f_0ebe9f17_isTargetRef(const S_a8ced12f_Checker* v_checker_23906, co
           if (t24612) {
             int64_t v_enumIndex_23915 = t24611.u.v_Constructor.f_enumIndex;
             int64_t v_found_23916 = t24611.u.v_Constructor.f_variant;
-            S_47a61b6a_EnumInfo t24613 = A_Array_3a6f19dc_get(((*v_checker_23906)).f_enums, v_enumIndex_23915, "src/tools/query.nra:1766:35");
+            S_47a61b6a_EnumInfo t24613 = A_Array_3a6f19dc_get(((*v_checker_23906)).f_enums, v_enumIndex_23915, "src/tools/query.nra:1771:35");
             S_47a61b6a_EnumInfo t24614 = t24613;
             retain_S_47a61b6a_EnumInfo(&(t24614));
             S_47a61b6a_EnumInfo v_info_23917 = t24614;
@@ -221912,7 +221914,7 @@ static bool f_0ebe9f17_isTargetRef(const S_a8ced12f_Checker* v_checker_23906, co
   }
   bool t24617 = r24600;
   return t24617;
-  narra_panic("src/tools/query.nra:1755:1", "internal compiler error: function ended without returning a value");
+  narra_panic("src/tools/query.nra:1760:1", "internal compiler error: function ended without returning a value");
   return (bool){0};
 }
 
@@ -221942,9 +221944,9 @@ static void f_0ebe9f17_insertUse(A_Array_e3911bd1** v_places_23918, const S_0ebe
   while (1) {
     bool t17100 = (v_index_23922 > INT64_C(0));
     if (t17100) {
-      S_0ebe9f17_Use t17101 = A_Array_e3911bd1_get((*v_places_23918), v_index_23922, "src/tools/query.nra:1785:36");
+      S_0ebe9f17_Use t17101 = A_Array_e3911bd1_get((*v_places_23918), v_index_23922, "src/tools/query.nra:1790:36");
       int64_t t17102 = narra_wrap_sub(v_index_23922, INT64_C(1));
-      S_0ebe9f17_Use t17103 = A_Array_e3911bd1_get((*v_places_23918), t17102, "src/tools/query.nra:1785:51");
+      S_0ebe9f17_Use t17103 = A_Array_e3911bd1_get((*v_places_23918), t17102, "src/tools/query.nra:1790:51");
       bool t17104 = f_0ebe9f17_isUseBefore(&t17101, &t17103);
       t17100 = t17104;
     }
@@ -221955,16 +221957,16 @@ static void f_0ebe9f17_insertUse(A_Array_e3911bd1** v_places_23918, const S_0ebe
       A_Array_e3911bd1** t17106 = v_places_23918;
       *t17106 = A_Array_e3911bd1_unique(*t17106);
     }
-    S_0ebe9f17_Use t17107 = A_Array_e3911bd1_get((*v_places_23918), v_index_23922, "src/tools/query.nra:1788:24");
+    S_0ebe9f17_Use t17107 = A_Array_e3911bd1_get((*v_places_23918), v_index_23922, "src/tools/query.nra:1793:24");
     S_0ebe9f17_Use t17108 = t17107;
     retain_S_0ebe9f17_Use(&(t17108));
     S_0ebe9f17_Use v_swap_23923 = t17108;
     int64_t t17109 = narra_wrap_sub(v_index_23922, INT64_C(1));
-    S_0ebe9f17_Use t17110 = A_Array_e3911bd1_get((*v_places_23918), t17109, "src/tools/query.nra:1789:27");
+    S_0ebe9f17_Use t17110 = A_Array_e3911bd1_get((*v_places_23918), t17109, "src/tools/query.nra:1794:27");
     S_0ebe9f17_Use t17111 = t17110;
     retain_S_0ebe9f17_Use(&(t17111));
     int64_t t17112 = v_index_23922;
-    narra_bounds(t17112, (*v_places_23918)->len, "src/tools/query.nra:1789:11");
+    narra_bounds(t17112, (*v_places_23918)->len, "src/tools/query.nra:1794:11");
     S_0ebe9f17_Use* t17113 = &(*v_places_23918)->items[t17112];
     S_0ebe9f17_Use* t17114 = t17113;
     release_S_0ebe9f17_Use(&((*t17114)));
@@ -221973,7 +221975,7 @@ static void f_0ebe9f17_insertUse(A_Array_e3911bd1** v_places_23918, const S_0ebe
     retain_S_0ebe9f17_Use(&(t17115));
     int64_t t17116 = narra_wrap_sub(v_index_23922, INT64_C(1));
     int64_t t17117 = t17116;
-    narra_bounds(t17117, (*v_places_23918)->len, "src/tools/query.nra:1790:11");
+    narra_bounds(t17117, (*v_places_23918)->len, "src/tools/query.nra:1795:11");
     S_0ebe9f17_Use* t17118 = &(*v_places_23918)->items[t17117];
     S_0ebe9f17_Use* t17119 = t17118;
     release_S_0ebe9f17_Use(&((*t17119)));
@@ -222110,7 +222112,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryParameterRefs(const S_a8ced12f_Checker*
     return t16929;
   }
   bool v_hasParameter_23941 = false;
-  S_a8ced12f_FuncInfo t16930 = A_Array_33bde3df_get(((*v_checker_23931)).f_functions, v_wanted_23938, "src/tools/query.nra:1847:58");
+  S_a8ced12f_FuncInfo t16930 = A_Array_33bde3df_get(((*v_checker_23931)).f_functions, v_wanted_23938, "src/tools/query.nra:1852:58");
   A_Array_19790e1a* t16931 = ((t16930).f_declaration).f_parameters;
   A_Array_19790e1a_retain(t16931);
   for (int64_t i16932 = 0; i16932 < t16931->len; i16932++) {
@@ -222135,7 +222137,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryParameterRefs(const S_a8ced12f_Checker*
   int64_t t16939 = INT64_C(0);
   int64_t t16940 = ((v_query_23932).f_views)->len;
   for (int64_t v_viewIndex_23944 = t16939; v_viewIndex_23944 < t16940; v_viewIndex_23944++) {
-    S_0ebe9f17_ModuleView t16941 = A_Array_c4a0e9be_get((v_query_23932).f_views, v_viewIndex_23944, "src/tools/query.nra:1858:29");
+    S_0ebe9f17_ModuleView t16941 = A_Array_c4a0e9be_get((v_query_23932).f_views, v_viewIndex_23944, "src/tools/query.nra:1863:29");
     S_0ebe9f17_ModuleView t16942 = t16941;
     retain_S_0ebe9f17_ModuleView(&(t16942));
     S_0ebe9f17_ModuleView v_view_23945 = t16942;
@@ -222209,7 +222211,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryRefs(const S_a8ced12f_Checker* v_checke
     bool t5405 = ((v_parts_23952)->len > INT64_C(1));
     if (t5405) {
       int64_t t5406 = narra_wrap_sub((v_parts_23952)->len, INT64_C(1));
-      lstr* t5407 = A_Array_5fce1d7c_get(v_parts_23952, t5406, "src/tools/query.nra:1891:34");
+      lstr* t5407 = A_Array_5fce1d7c_get(v_parts_23952, t5406, "src/tools/query.nra:1896:34");
       lstr* t5408 = t5407;
       lstr_retain(t5408);
       lstr* v_parameterName_23953 = t5408;
@@ -222300,7 +222302,7 @@ static A_Array_e3911bd1* f_0ebe9f17_findUses(const S_a8ced12f_Checker* v_checker
   int64_t t17014 = INT64_C(0);
   int64_t t17015 = ((v_query_23961).f_views)->len;
   for (int64_t v_viewIndex_23964 = t17014; v_viewIndex_23964 < t17015; v_viewIndex_23964++) {
-    S_0ebe9f17_ModuleView t17016 = A_Array_c4a0e9be_get((v_query_23961).f_views, v_viewIndex_23964, "src/tools/query.nra:1922:29");
+    S_0ebe9f17_ModuleView t17016 = A_Array_c4a0e9be_get((v_query_23961).f_views, v_viewIndex_23964, "src/tools/query.nra:1927:29");
     S_0ebe9f17_ModuleView t17017 = t17016;
     retain_S_0ebe9f17_ModuleView(&(t17017));
     S_0ebe9f17_ModuleView v_view_23965 = t17017;
@@ -222400,7 +222402,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryCallers(const S_a8ced12f_Checker* v_che
     release_E_Result_676745ae(v_declared_23973);
     return t5456;
   }
-  S_a8ced12f_FuncInfo t5457 = A_Array_33bde3df_get(((*v_checker_23969)).f_functions, v_wanted_23976, "src/tools/query.nra:1963:41");
+  S_a8ced12f_FuncInfo t5457 = A_Array_33bde3df_get(((*v_checker_23969)).f_functions, v_wanted_23976, "src/tools/query.nra:1968:41");
   lstr* t5458 = ((t5457).f_declaration).f_name;
   lstr_retain(t5458);
   lstr* v_functionName_23979 = t5458;
@@ -222416,21 +222418,21 @@ static E_Result_318dd3bc f_0ebe9f17_queryCallers(const S_a8ced12f_Checker* v_che
     if (t5464) {
       continue;
     }
-    S_a8ced12f_BodyInfo t5465 = A_Array_a43c5b86_get(((*v_checker_23969)).f_bodies, (v_call_23981).f_body, "src/tools/query.nra:1969:53");
+    S_a8ced12f_BodyInfo t5465 = A_Array_a43c5b86_get(((*v_checker_23969)).f_bodies, (v_call_23981).f_body, "src/tools/query.nra:1974:53");
     int64_t t5466 = f_0ebe9f17_findView(v_query_23971, (t5465).f_module);
     int64_t v_viewIndex_23982 = t5466;
     bool t5467 = (v_viewIndex_23982 < INT64_C(0));
     if (t5467) {
       continue;
     }
-    S_0ebe9f17_ModuleView t5468 = A_Array_c4a0e9be_get((v_query_23971).f_views, v_viewIndex_23982, "src/tools/query.nra:1975:24");
+    S_0ebe9f17_ModuleView t5468 = A_Array_c4a0e9be_get((v_query_23971).f_views, v_viewIndex_23982, "src/tools/query.nra:1980:24");
     lstr* t5469 = (t5468).f_file;
     lstr_retain(t5469);
     int64_t t5470 = narra_wrap_add(((v_call_23981).f_pos).f_column, narra_str_char_count(v_functionName_23979));
     S_3add178c_Pos t5471 = ((S_3add178c_Pos){.f_line = ((v_call_23981).f_pos).f_line, .f_column = t5470});
     S_3410919a_Location t5472 = ((S_3410919a_Location){.f_file = t5469, .f_start = (v_call_23981).f_pos, .f_end = t5471});
     S_3410919a_Location v_location_23983 = t5472;
-    S_0ebe9f17_ModuleView t5473 = A_Array_c4a0e9be_get((v_query_23971).f_views, v_viewIndex_23982, "src/tools/query.nra:1979:49");
+    S_0ebe9f17_ModuleView t5473 = A_Array_c4a0e9be_get((v_query_23971).f_views, v_viewIndex_23982, "src/tools/query.nra:1984:49");
     A_Array_2268588c* t5474 = (t5473).f_sites;
     A_Array_2268588c_retain(t5474);
     for (int64_t i5475 = 0; i5475 < t5474->len; i5475++) {
@@ -222441,7 +222443,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryCallers(const S_a8ced12f_Checker* v_che
       }
       bool t5477 = t5476;
       if (t5477) {
-        S_0ebe9f17_ModuleView t5478 = A_Array_c4a0e9be_get((v_query_23971).f_views, v_viewIndex_23982, "src/tools/query.nra:1981:44");
+        S_0ebe9f17_ModuleView t5478 = A_Array_c4a0e9be_get((v_query_23971).f_views, v_viewIndex_23982, "src/tools/query.nra:1986:44");
         S_3410919a_Location t5479 = f_0ebe9f17_siteLocation(&t5478, &v_site_23984);
         S_3410919a_Location* t5480 = &v_location_23983;
         release_S_3410919a_Location(&((*t5480)));
@@ -222542,7 +222544,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryInterface(const S_a8ced12f_Checker* v_c
     E_Result_318dd3bc t5498 = t5497;
     return t5498;
   }
-  S_0ebe9f17_ModuleView t5499 = A_Array_c4a0e9be_get((v_query_23992).f_views, v_viewIndex_23994, "src/tools/query.nra:2024:27");
+  S_0ebe9f17_ModuleView t5499 = A_Array_c4a0e9be_get((v_query_23992).f_views, v_viewIndex_23994, "src/tools/query.nra:2029:27");
   S_0ebe9f17_ModuleView t5500 = t5499;
   retain_S_0ebe9f17_ModuleView(&(t5500));
   S_0ebe9f17_ModuleView v_view_23995 = t5500;
@@ -222562,7 +222564,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryInterface(const S_a8ced12f_Checker* v_c
     if (t5506) {
       continue;
     }
-    E_3add178c_Decl t5507 = A_Array_f8a96a30_get((((v_view_23995).f_module).f_ast).f_declarations, (v_entry_23998).f_declaration, "src/tools/query.nra:2031:80");
+    E_3add178c_Decl t5507 = A_Array_f8a96a30_get((((v_view_23995).f_module).f_ast).f_declarations, (v_entry_23998).f_declaration, "src/tools/query.nra:2036:80");
     lstr* t5508 = f_0ebe9f17_findSignature(&(*v_checker_23991), &v_view_23995, t5507);
     lstr* v_signature_23999 = t5508;
     bool t5509 = lstr_eq(v_signature_23999, (&L1256));
@@ -222570,7 +222572,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryInterface(const S_a8ced12f_Checker* v_c
       lstr_release(v_signature_23999);
       continue;
     }
-    lstr* t5510 = A_Array_5fce1d7c_get((v_entry_23998).f_names, INT64_C(0), "src/tools/query.nra:2036:24");
+    lstr* t5510 = A_Array_5fce1d7c_get((v_entry_23998).f_names, INT64_C(0), "src/tools/query.nra:2041:24");
     lstr* t5511 = t5510;
     lstr_retain(t5511);
     lstr* t5512 = (v_entry_23998).f_kind;
@@ -222620,10 +222622,10 @@ static S_Tuple2_d1a9c059 f_0ebe9f17_findCalleeDeclaration(const S_a8ced12f_Check
     if (t17176) {
       int64_t v_index_24003 = t17174.u.v_Function.f_index;
       m17175 = true;
-      S_a8ced12f_FuncInfo t17177 = A_Array_33bde3df_get(((*v_checker_24001)).f_functions, v_index_24003, "src/tools/query.nra:2052:24");
+      S_a8ced12f_FuncInfo t17177 = A_Array_33bde3df_get(((*v_checker_24001)).f_functions, v_index_24003, "src/tools/query.nra:2057:24");
       lstr* t17178 = (t17177).f_module;
       lstr_retain(t17178);
-      S_a8ced12f_FuncInfo t17179 = A_Array_33bde3df_get(((*v_checker_24001)).f_functions, v_index_24003, "src/tools/query.nra:2053:24");
+      S_a8ced12f_FuncInfo t17179 = A_Array_33bde3df_get(((*v_checker_24001)).f_functions, v_index_24003, "src/tools/query.nra:2058:24");
       S_Tuple2_d1a9c059 t17180 = ((S_Tuple2_d1a9c059){.f_0 = t17178, .f_1 = ((t17179).f_declaration).f_pos});
       r17173 = t17180;
     }
@@ -222634,12 +222636,12 @@ static S_Tuple2_d1a9c059 f_0ebe9f17_findCalleeDeclaration(const S_a8ced12f_Check
       int64_t v_block_24004 = t17174.u.v_Implementation.f_block;
       int64_t v_index_24005 = t17174.u.v_Implementation.f_index;
       m17175 = true;
-      S_47a61b6a_ImplInfo t17182 = A_Array_e1471d85_get(((*v_checker_24001)).f_implementations, v_block_24004, "src/tools/query.nra:2056:45");
-      S_a8ced12f_ModScope t17183 = A_Array_e1077a1e_get(((*v_checker_24001)).f_scopes, (t17182).f_scope, "src/tools/query.nra:2056:21");
+      S_47a61b6a_ImplInfo t17182 = A_Array_e1471d85_get(((*v_checker_24001)).f_implementations, v_block_24004, "src/tools/query.nra:2061:45");
+      S_a8ced12f_ModScope t17183 = A_Array_e1077a1e_get(((*v_checker_24001)).f_scopes, (t17182).f_scope, "src/tools/query.nra:2061:21");
       lstr* t17184 = (t17183).f_path;
       lstr_retain(t17184);
-      S_47a61b6a_ImplInfo t17185 = A_Array_e1471d85_get(((*v_checker_24001)).f_implementations, v_block_24004, "src/tools/query.nra:2057:30");
-      S_47a61b6a_ImplFunc t17186 = A_Array_1bde14bf_get((t17185).f_functions, v_index_24005, "src/tools/query.nra:2057:47");
+      S_47a61b6a_ImplInfo t17185 = A_Array_e1471d85_get(((*v_checker_24001)).f_implementations, v_block_24004, "src/tools/query.nra:2062:30");
+      S_47a61b6a_ImplFunc t17186 = A_Array_1bde14bf_get((t17185).f_functions, v_index_24005, "src/tools/query.nra:2062:47");
       S_Tuple2_d1a9c059 t17187 = ((S_Tuple2_d1a9c059){.f_0 = t17184, .f_1 = ((t17186).f_declaration).f_pos});
       r17173 = t17187;
     }
@@ -222657,7 +222659,7 @@ static S_Tuple2_d1a9c059 f_0ebe9f17_findCalleeDeclaration(const S_a8ced12f_Check
   }
   S_Tuple2_d1a9c059 t17192 = r17173;
   return t17192;
-  narra_panic("src/tools/query.nra:2049:1", "internal compiler error: function ended without returning a value");
+  narra_panic("src/tools/query.nra:2054:1", "internal compiler error: function ended without returning a value");
   return (S_Tuple2_d1a9c059){0};
 }
 
@@ -222677,12 +222679,12 @@ static E_Result_318dd3bc f_0ebe9f17_queryRecursion(const S_a8ced12f_Checker* v_c
   M_Map_91178635* v_nodeIndex_24012 = t5528;
   M_Map_16683c1c* t5529 = M_Map_16683c1c_new(0);
   M_Map_16683c1c* v_bodyNodes_24013 = t5529;
-  S_0ebe9f17_ModuleView t5530 = A_Array_c4a0e9be_get((v_query_24008).f_views, v_viewIndex_24010, "src/tools/query.nra:2079:52");
+  S_0ebe9f17_ModuleView t5530 = A_Array_c4a0e9be_get((v_query_24008).f_views, v_viewIndex_24010, "src/tools/query.nra:2084:52");
   A_Array_e7fe1e37* t5531 = (t5530).f_bodies;
   A_Array_e7fe1e37_retain(t5531);
   for (int64_t i5532 = 0; i5532 < t5531->len; i5532++) {
     int64_t v_bodyIndex_24014 = t5531->items[i5532];
-    S_a8ced12f_BodyInfo t5533 = A_Array_a43c5b86_get(((*v_checker_24006)).f_bodies, v_bodyIndex_24014, "src/tools/query.nra:2080:32");
+    S_a8ced12f_BodyInfo t5533 = A_Array_a43c5b86_get(((*v_checker_24006)).f_bodies, v_bodyIndex_24014, "src/tools/query.nra:2085:32");
     S_a8ced12f_BodyInfo t5534 = t5533;
     retain_S_a8ced12f_BodyInfo(&(t5534));
     S_a8ced12f_BodyInfo v_body_24015 = t5534;
@@ -222765,7 +222767,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryRecursion(const S_a8ced12f_Checker* v_c
             if (t5564) {
               int64_t v_to_24023 = t5563.u.v_Some.f_value;
               int64_t t5565 = v_caller_24020;
-              A_Array_e7fe1e37** t5566 = A_Array_803a839a_at(&v_edges_24017, t5565, "src/tools/query.nra:2100:36");
+              A_Array_e7fe1e37** t5566 = A_Array_803a839a_at(&v_edges_24017, t5565, "src/tools/query.nra:2105:36");
               A_Array_e7fe1e37_push(t5566, v_to_24023);
             }
           }
@@ -222786,7 +222788,7 @@ static E_Result_318dd3bc f_0ebe9f17_queryRecursion(const S_a8ced12f_Checker* v_c
     A_Array_e7fe1e37_retain(t5571);
     for (int64_t i5572 = 0; i5572 < t5571->len; i5572++) {
       int64_t v_node_24027 = t5571->items[i5572];
-      lstr* t5573 = A_Array_5fce1d7c_get(v_nodeNames_24011, v_node_24027, "src/tools/query.nra:2111:43");
+      lstr* t5573 = A_Array_5fce1d7c_get(v_nodeNames_24011, v_node_24027, "src/tools/query.nra:2116:43");
       lstr* t5574 = t5573;
       lstr_retain(t5574);
       A_Array_5fce1d7c_push(&v_names_24026, t5574);

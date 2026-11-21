@@ -12,7 +12,7 @@ On Windows, other systems and building from source, see [docs/install.md](docs/i
 
 ## What Narra is
 
-Narra is a compiled language with TypeScript-style syntax and Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C.
+Narra is a compiled language with Rust-style semantics. It is memory safe without a garbage collector, and builds native binaries through C. Its syntax looks familiar to TypeScript programmers, but Narra is a separate language: TypeScript code does not compile as Narra.
 
 The name comes from the narra, the national tree of the Philippines, a hardwood known for lasting a long time.
 

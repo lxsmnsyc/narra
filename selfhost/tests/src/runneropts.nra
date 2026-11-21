@@ -15,6 +15,8 @@
 //   outside-test    Test.golden outside a test block does not compile
 //   redirect        `narrac run` with stdout and stderr sent to one file keeps
 //                   both streams, stdout first
+//   append          narrac's own output appended to a file (`>>`) keeps what
+//                   the file held
 import { substring } from "testrunner/textops"
 import * as Arrays from "std/array"
 import * as Path from "std/path"
@@ -33,6 +35,7 @@ const CASES = [
   "arguments",
   "outside-test",
   "redirect",
+  "append",
 ]
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
@@ -40,7 +43,7 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
   const folder = Path.join(context.testdata, "runner-cases")
   for (const name of Arrays.values(CASES)) {
     let variants = ["debug", "release"]
-    if (name == "arguments" || name == "redirect") {
+    if (name == "arguments" || name == "redirect" || name == "append") {
       variants = ["release"]
     }
     if (name == "outside-test") {
@@ -116,6 +119,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   if (name == "redirect") {
     return runRedirect(context, Path.join(folder, "both_streams.nra"))
   }
+  if (name == "append") {
+    return runAppend(context)
+  }
   return runOutsideTest(context, Path.join(folder, "golden_outside_test.nra"))
 }
 
@@ -131,6 +137,27 @@ function runRedirect(context: Context, path: string): Result<bool, string> uses 
   const ran = Shell.runScript(script, [logPath, context.narrac, "run", "-release", path])
   Scratch.removeScratch(scratch)
   return Common.expectRun(ran, 0, "out line\nerr line\n")
+}
+
+function runAppend(context: Context): Result<bool, string> uses io, alloc {
+  const made = Scratch.makeScratch()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const scratch = made.value
+  const logPath = Path.join(scratch.work, "appended.log")
+  // Opening /dev/stdout by name with mode "wb" truncates the file on Linux, and fails when stdout
+  // is a socket, as Node gives a child process. narrac writes descriptor 1 instead.
+  const script = "log=$1; shift; printf 'kept\\n' > \"$log\"; \"$@\" >> \"$log\" || exit $?; cat \"$log\""
+  const ran = Shell.runScript(script, [logPath, context.narrac, "--version"])
+  Scratch.removeScratch(scratch)
+  if (ran.code != 0) {
+    return Common.expectRun(ran, 0, "")
+  }
+  if (!Str.startsWith(ran.output, "kept\n") || Str.length(ran.output) <= 5) {
+    return Err(`want "kept" then the version, got: ${ran.output}`)
+  }
+  return Ok(true)
 }
 
 function runFilterAndTime(

@@ -277,6 +277,36 @@ export async function queryHovers(samples: Map<number, Sample>): Promise<Map<num
   return result;
 }
 
+/** The `// error: LINE:COLUMN: MESSAGE` lines at the top of a `narra error` sample. */
+export function readAnnouncements(content: string): string[] {
+  const announced: string[] = [];
+  for (const line of content.split('\n')) {
+    if (!line.startsWith('// error:')) {
+      break;
+    }
+    announced.push(line.slice('// error:'.length).trim());
+  }
+  return announced;
+}
+
+/** The announcements of a `narra error` sample that no diagnostic of narrac matches. */
+export function findMissing(kind: FenceKind, content: string, answer: Answer): string[] {
+  if (kind !== 'error') {
+    return [];
+  }
+  const missing: string[] = [];
+  for (const want of readAnnouncements(content)) {
+    let found = false;
+    for (const diagnostic of answer.diagnostics) {
+      found ||= `${diagnostic.line}:${diagnostic.column}: ${diagnostic.message}`.includes(want);
+    }
+    if (!found) {
+      missing.push(want);
+    }
+  }
+  return missing;
+}
+
 /**
  * The diagnostics of a sample that its fence does not announce. A `narra error` fence announces
  * its diagnostics in the `// error: LINE:COLUMN: MESSAGE` lines at its top, one per diagnostic; a
@@ -284,15 +314,7 @@ export async function queryHovers(samples: Map<number, Sample>): Promise<Map<num
  * the guide suite applies when it runs the same samples.
  */
 export function findUnexpected(kind: FenceKind, content: string, answer: Answer): Diagnostic[] {
-  const expected: string[] = [];
-  if (kind === 'error') {
-    for (const line of content.split('\n')) {
-      if (!line.startsWith('// error:')) {
-        break;
-      }
-      expected.push(line.slice('// error:'.length).trim());
-    }
-  }
+  const expected = kind === 'error' ? readAnnouncements(content) : [];
   const unexpected: Diagnostic[] = [];
   for (const diagnostic of answer.diagnostics) {
     const text = `${diagnostic.line}:${diagnostic.column}: ${diagnostic.message}`;
@@ -418,7 +440,7 @@ function writeLine(inner: string, marks: LineMarks): string {
  * hovered token, an `tw-err` underline under each error, and an error line after the line it
  * belongs to. The text of the code stays the same, so the copy button copies what the sample says.
  */
-export function annotate(html: string, answer: Answer, showErrors: boolean): string {
+export function annotate(html: string, answer: Answer, showErrors: boolean, hiddenLines = 0): string {
   const open = html.indexOf('<code>');
   const close = html.lastIndexOf('</code>');
   if (open === -1 || close === -1) {
@@ -450,6 +472,11 @@ export function annotate(html: string, answer: Answer, showErrors: boolean): str
   }
   let output = '';
   for (const [index, line] of lines.entries()) {
+    // The announcement lines of an error sample are left out: the error lines below the code
+    // say the same. The positions of narrac still count them.
+    if (index < hiddenLines) {
+      continue;
+    }
     const number = index + 1;
     const wrapper = /^(<span class="l">)([\s\S]*)(<\/span>)$/.exec(line);
     const written = wrapper && marks[number] ? wrapper[1] + writeLine(wrapper[2]!, marks[number]!) + wrapper[3] : line;

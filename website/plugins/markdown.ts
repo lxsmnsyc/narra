@@ -13,7 +13,15 @@ import { language as lua } from '../src/highlight/lua.ts';
 import { language as narra } from '../src/highlight/narra.ts';
 import { language as sh } from '../src/highlight/sh.ts';
 import { language as toml } from '../src/highlight/toml.ts';
-import { annotate, collectSamples, findUnexpected, queryHovers, readFenceKind } from './twoslash.ts';
+import {
+  annotate,
+  collectSamples,
+  findMissing,
+  findUnexpected,
+  queryHovers,
+  readAnnouncements,
+  readFenceKind,
+} from './twoslash.ts';
 import type { Answer } from './twoslash.ts';
 
 const REPOSITORY = 'https://github.com/lxsmnsyc/narra';
@@ -128,7 +136,8 @@ function createRenderer(from: string): MarkdownIt {
     // The answers of narrac were collected before the render; a sample without one stays plain.
     const answer = kind ? (env as { answers?: Map<number, Answer> }).answers?.get(index) : undefined;
     if (answer) {
-      block = annotate(block, answer, kind === 'error');
+      const hidden = kind === 'error' ? readAnnouncements(token.content).length : 0;
+      block = annotate(block, answer, kind === 'error', hidden);
     }
     const label =
       language && language !== 'text'
@@ -204,11 +213,14 @@ function checkDiagnostics(
     }
     for (const diagnostic of findUnexpected(kind, fence.content, answer)) {
       const place = `${diagnostic.line}:${diagnostic.column}`;
-      problems.push(`${from}, fence \`${fence.info}\`, ${place}: ${diagnostic.message}`);
+      problems.push(`${from}, fence \`${fence.info}\`, ${place}: ${diagnostic.message} (not announced)`);
+    }
+    for (const want of findMissing(kind, fence.content, answer)) {
+      problems.push(`${from}, fence \`${fence.info}\`, ${want} (announced, narrac does not report it)`);
     }
   }
   if (problems.length > 0) {
-    throw new Error(`a sample shows a diagnostic its fence does not announce:\n${problems.join('\n')}`);
+    throw new Error(`a sample's diagnostics differ from what its fence announces:\n${problems.join('\n')}`);
   }
 }
 

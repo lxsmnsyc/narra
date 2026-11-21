@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  # A pull request that changes the release path builds and smoke-tests every archive under a
+  # test version. Only a tag publishes.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release-build.sh
+      - install.sh
+      - install.ps1
 
 permissions:
   contents: read
@@ -20,8 +28,8 @@ jobs:
           # The other rows are cross builds with zig cc and do not run the tests. The glibc
           # Linux rows are always built with zig against glibc 2.28. The smoke job runs every
           # archive before the release job publishes.
-          - { os: macos-14, row: MacOS-Arm64, cross: false }
-          - { os: macos-14, row: MacOS-X86_64, cross: true }
+          - { os: macos-26, row: MacOS-Arm64, cross: false }
+          - { os: macos-26, row: MacOS-X86_64, cross: true }
           - { os: ubuntu-24.04, row: Linux-X86_64, cross: false }
           - { os: ubuntu-24.04, row: Linux-Arm64, cross: true }
           - { os: ubuntu-24.04, row: Linux-X86_64-musl, cross: true }
@@ -35,9 +43,11 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/zig"
           "$RUNNER_TEMP/zig/bin/python3" -m pip install ziglang==0.17.1
           echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+      - name: Show the C compiler
+        run: cc --version
       - name: Build, test and pack
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-test' }}
           ROW: ${{ matrix.row }}
         run: sh scripts/release-build.sh --target "$ROW" "${TAG#v}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -56,8 +66,8 @@ jobs:
         include:
           # Each archive runs on a machine of its own processor. The Linux rows run in a
           # container: Debian 12 for the glibc rows, Alpine for the musl rows.
-          - { os: macos-14, row: MacOS-Arm64, platform: macos-arm64 }
-          - { os: macos-14, row: MacOS-X86_64, platform: macos-x86_64, prefix: "arch -x86_64" }
+          - { os: macos-26, row: MacOS-Arm64, platform: macos-arm64 }
+          - { os: macos-26, row: MacOS-X86_64, platform: macos-x86_64, prefix: "arch -x86_64" }
           - { os: ubuntu-24.04, row: Linux-X86_64, platform: linux-x86_64, image: "debian:12" }
           - { os: ubuntu-24.04-arm, row: Linux-Arm64, platform: linux-arm64, image: "debian:12" }
           - { os: ubuntu-24.04, row: Linux-X86_64-musl, platform: linux-x86_64-musl, image: "alpine:3.20" }
@@ -72,7 +82,7 @@ jobs:
       - name: Run the archive (host)
         if: runner.os == 'macOS'
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-test' }}
           PLATFORM: ${{ matrix.platform }}
           NARRA_RUN_PREFIX: ${{ matrix.prefix }}
         run: |
@@ -80,7 +90,7 @@ jobs:
       - name: Run the archive (container)
         if: runner.os == 'Linux'
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-test' }}
           PLATFORM: ${{ matrix.platform }}
           IMAGE: ${{ matrix.image }}
         run: |
@@ -95,7 +105,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-test' }}
           CC: gcc
         run: |
           $version = $env:TAG -replace '^v', ''
@@ -111,6 +121,7 @@ jobs:
   release:
     name: release
     needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write

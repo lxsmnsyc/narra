@@ -142,8 +142,9 @@ static bool narra_fs_read_bytes(lstr* path, lstr** out, lstr** err) {
 
 static bool narra_fs_write(lstr* path, lstr* text, int64_t* written, lstr** err) {
   if (!narra_io_no_nul(path, err)) return false;
-#if defined(__wasi__) || defined(_WIN32)
-  // WASI and Windows have no /dev: the two standard output paths write descriptors 1 and 2.
+  // The two standard output paths write descriptors 1 and 2. WASI and Windows have no /dev, and
+  // on Linux opening them by name truncates a file that stdout appends to and fails with ENXIO
+  // when stdout is a socket.
   FILE* standard = NULL;
   if (strcmp(path->data, "/dev/stdout") == 0) standard = stdout;
   if (strcmp(path->data, "/dev/stderr") == 0) standard = stderr;
@@ -157,7 +158,6 @@ static bool narra_fs_write(lstr* path, lstr* text, int64_t* written, lstr** err)
     *written = text->len;
     return true;
   }
-#endif
   FILE* f = fopen(path->data, "wb");
   if (!f) {
     *err = narra_io_fail(path->data, path->len, strerror(errno));

@@ -1,7 +1,7 @@
 ---
 id: first-release
 title: "First release tag"
-status: todo
+status: done
 priority: could
 type: chore
 story:
@@ -17,7 +17,7 @@ spike: false
 hypothesis:
 verify: 
 exclusive: []
-fulfilled_by:
+fulfilled_by: "v0.1.0"
 gate: true
 added: 2026-11-16
 spent:

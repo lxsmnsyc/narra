@@ -1,4 +1,0 @@
-- Plan: depload.nra finds the workspace in prepareDependencies, resolves from every member manifest (git requirements only), writes the root lock, and returns the members the built package reaches plus the reachable git packages.
-- Built with depload.nra, diagnostics rows, 8 fixtures testdata/workspaces/load_*, cases in selfhost/tests/src/packages.nra. Targeted run: 8 cases pass. Full run started.
-- Review fix 1: fixture load_error_git_member_transitive (http requires json from git, json is a member) failed on c80ee92c: build exit 0, no error. Fixed with an E0450 check on every resolved git package.
-- Review item 2: not a bug. checkLockCovers only gets the roots made by keepGitDependencies, which drop workspace = true entries; a standalone package with one fails with E0484 before the lock is read.

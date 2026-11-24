@@ -13,8 +13,8 @@ function createCopyButton(block: HTMLElement): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'copy-button';
-  button.setAttribute('aria-label', 'Copy the code');
-  button.title = 'Copy the code';
+  button.setAttribute('aria-label', 'Copy');
+  button.title = 'Copy';
   button.innerHTML = `<span class="swap"><span class="swap-item">${COPY_ICON}</span><span class="swap-item" aria-hidden="true">${CHECK_ICON}</span><span class="swap-item" aria-hidden="true">${ALERT_ICON}</span></span>`;
   let timer = 0;
   button.addEventListener('click', async () => {
@@ -40,9 +40,9 @@ function createCopyButton(block: HTMLElement): HTMLButtonElement {
       alertItem?.setAttribute('aria-hidden', 'true');
       button.dataset.copied = 'false';
       button.dataset.failed = 'false';
-      button.setAttribute('aria-label', 'Copy the code');
-      button.title = 'Copy the code';
-    }, 1600);
+      button.setAttribute('aria-label', 'Copy');
+      button.title = 'Copy';
+    }, 1500);
   });
   return button;
 }
@@ -71,9 +71,10 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
 
   function placeIndicator() {
     const link = links.get(current);
-    // The bar moves and stretches to the link; only transform changes.
+    // The pill slides to the link; only transform animates, and the height snaps.
     if (indicator && link) {
-      indicator.style.transform = `translateY(${link.offsetTop}px) scaleY(${link.offsetHeight})`;
+      indicator.style.transform = `translateY(${link.offsetTop}px)`;
+      indicator.style.height = `${link.offsetHeight}px`;
       indicator.dataset.shown = 'true';
     }
   }

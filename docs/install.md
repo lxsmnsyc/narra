@@ -1,5 +1,7 @@
 # Installing Narra
 
+This page installs `narrac`, the Narra compiler, with one command on macOS, Linux or Windows, checks that it works, and shows how to build it from source.
+
 ## Install
 
 On macOS and Linux, run this in a terminal:

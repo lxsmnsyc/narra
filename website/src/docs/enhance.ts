@@ -66,7 +66,6 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
     links.set(decodeURIComponent(link.hash.slice(1)), link);
   }
   const indicator = outline.querySelector<HTMLElement>('.toc-indicator');
-  const visible = new Set<string>();
   let current = '';
 
   function placeIndicator() {
@@ -75,7 +74,12 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
     if (indicator && link) {
       indicator.style.transform = `translateY(${link.offsetTop}px)`;
       indicator.style.height = `${link.offsetHeight}px`;
-      indicator.dataset.shown = 'true';
+      // The first placement shows the pill where it is; later ones slide.
+      if (indicator.dataset.shown !== 'true') {
+        requestAnimationFrame(() => {
+          indicator.dataset.shown = 'true';
+        });
+      }
     }
   }
 
@@ -104,43 +108,44 @@ export function followHeadings(root: HTMLElement, outline: HTMLElement): () => v
     }
   }
 
-  // The band that counts as "in view" starts under the sticky header.
+  // The band that counts as "in view" runs from under the sticky header to 45% of the window.
+  // The first heading in the band wins. With none in it, the last one above the band does. The
+  // headings are read on each scrolled frame, not from intersection events: a fast scroll,
+  // PageDown or a reload can carry a heading across the band between two frames, and no event
+  // fires for that.
   const bandTop = 64;
-  const observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        const id = (entry.target as HTMLElement).id;
-        if (entry.isIntersecting) {
-          visible.add(id);
-        } else {
-          visible.delete(id);
-        }
+  let frame = 0;
+
+  function update() {
+    frame = 0;
+    const bandBottom = window.innerHeight * 0.45;
+    let above = '';
+    for (const heading of headings) {
+      const top = heading.getBoundingClientRect().top;
+      if (top >= bandTop && top < bandBottom) {
+        mark(heading.id);
+        return;
       }
-      // The first heading in the band wins. With none in it, the last one above the band does,
-      // including a heading that has just left the band and still sits under the header.
-      for (const heading of headings) {
-        if (visible.has(heading.id)) {
-          mark(heading.id);
-          return;
-        }
+      if (top >= bandTop) {
+        break;
       }
-      let above = '';
-      for (const heading of headings) {
-        if (heading.getBoundingClientRect().top < bandTop) {
-          above = heading.id;
-        }
-      }
-      if (above) {
-        mark(above);
-      }
-    },
-    { rootMargin: `-${bandTop}px 0px -55% 0px` },
-  );
-  for (const heading of headings) {
-    observer.observe(heading);
+      above = heading.id;
+    }
+    // Above the first heading, the first section is the one in view.
+    mark(above || (headings[0]?.id ?? ''));
   }
+
+  function schedule() {
+    if (frame === 0) {
+      frame = requestAnimationFrame(update);
+    }
+  }
+
+  window.addEventListener('scroll', schedule, { passive: true });
+  update();
   return () => {
-    observer.disconnect();
+    cancelAnimationFrame(frame);
+    window.removeEventListener('scroll', schedule);
     window.removeEventListener('resize', placeIndicator);
   };
 }

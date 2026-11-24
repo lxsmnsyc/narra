@@ -23,6 +23,8 @@ export enum NormalForm derives Show, Equatable {
 }
 ```
 
+The normalization forms of UAX #15: canonical (NFD, NFC) or compatibility (NFKD, NFKC) decomposition, with canonical composition after it in NFC and NFKC.
+
 Functions: [`normalize`](#normalize), [`isNormalized`](#isnormalized).
 
 ## Functions
@@ -33,6 +35,8 @@ Functions: [`normalize`](#normalize), [`isNormalized`](#isnormalized).
 export function* graphemes(text: string): Generator<string> uses alloc
 ```
 
+Yields the extended grapheme clusters of the text, in order.
+
 Effects: `alloc`.
 
 ### graphemeCount
@@ -40,6 +44,8 @@ Effects: `alloc`.
 ```narra fragment
 export function graphemeCount(text: string): int
 ```
+
+Returns the number of extended grapheme clusters in the text.
 
 Effects: none.
 
@@ -49,6 +55,8 @@ Effects: none.
 export function displayWidth(text: string): int
 ```
 
+Returns the number of terminal columns the text takes, summed for each cluster.
+
 Effects: none.
 
 ### toUpperCase
@@ -56,6 +64,8 @@ Effects: none.
 ```narra fragment
 export function toUpperCase(text: string): string uses alloc
 ```
+
+Maps the text to upper case with the full mappings, so sharp s (U+00DF) becomes "SS".
 
 Effects: `alloc`.
 
@@ -65,6 +75,8 @@ Effects: `alloc`.
 export function toLowerCase(text: string): string uses alloc
 ```
 
+Maps the text to lower case. A capital sigma at the end of a word becomes the final sigma (U+03C2).
+
 Effects: `alloc`.
 
 ### foldCase
@@ -72,6 +84,8 @@ Effects: `alloc`.
 ```narra fragment
 export function foldCase(text: string): string uses alloc
 ```
+
+Maps the text to its case folding, so `foldCase(a) == foldCase(b)` compares without case.
 
 Effects: `alloc`.
 
@@ -81,6 +95,8 @@ Effects: `alloc`.
 export function normalize(text: string, form: NormalForm): string uses alloc
 ```
 
+Returns the text in the normal form. Text that is already in it, such as any ASCII text, comes back as the same string with no allocation.
+
 Effects: `alloc`.
 
 ### isNormalized
@@ -88,5 +104,7 @@ Effects: `alloc`.
 ```narra fragment
 export function isNormalized(text: string, form: NormalForm): bool uses alloc
 ```
+
+Tells whether `normalize` would give the text back unchanged.
 
 Effects: `alloc`.

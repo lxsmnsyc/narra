@@ -22,6 +22,8 @@ export enum Stream {
 }
 ```
 
+The three standard streams of the program.
+
 Functions: [`isTerminal`](#isterminal), [`columns`](#columns), [`useColor`](#usecolor).
 
 ### Color
@@ -50,6 +52,8 @@ export enum Color {
 }
 ```
 
+A text color: the default, one of the 16 named colors, an index into the 256-color table, or an RGB value.
+
 ### Style
 
 ```narra fragment
@@ -65,6 +69,8 @@ export struct Style {
 }
 ```
 
+A set of text attributes and colors for `style`. A field left as its default adds nothing.
+
 Functions: [`style`](#style-1).
 
 ## Functions
@@ -75,6 +81,8 @@ Functions: [`style`](#style-1).
 export function isTerminal(stream: Stream): bool uses io
 ```
 
+Tells whether the stream is connected to a terminal.
+
 Effects: `io`.
 
 ### columns
@@ -82,6 +90,8 @@ Effects: `io`.
 ```narra fragment
 export function columns(stream: Stream): Option<int> uses io
 ```
+
+Gives the width in columns of the terminal on the stream, or `None` when the stream is not a terminal or reports no width.
 
 Effects: `io`.
 
@@ -91,6 +101,8 @@ Effects: `io`.
 export function useColor(stream: Stream): bool uses io, alloc
 ```
 
+Tells whether to style output for the stream: a non-empty `NO_COLOR` says no, then a `FORCE_COLOR` other than empty or `0` says yes, then `TERM=dumb` says no, and otherwise the stream must be a terminal.
+
 Effects: `io`, `alloc`.
 
 ### bold
@@ -98,6 +110,8 @@ Effects: `io`, `alloc`.
 ```narra fragment
 export function bold(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it bold. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -107,6 +121,8 @@ Effects: `alloc`.
 export function dim(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it dim. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### italic
@@ -114,6 +130,8 @@ Effects: `alloc`.
 ```narra fragment
 export function italic(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it italic. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -123,6 +141,8 @@ Effects: `alloc`.
 export function underline(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it underlined. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### inverse
@@ -130,6 +150,8 @@ Effects: `alloc`.
 ```narra fragment
 export function inverse(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that swap its foreground and background colors. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -139,6 +161,8 @@ Effects: `alloc`.
 export function strikethrough(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it struck through. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### black
@@ -146,6 +170,8 @@ Effects: `alloc`.
 ```narra fragment
 export function black(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it in black. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -155,6 +181,8 @@ Effects: `alloc`.
 export function red(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it in red. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### green
@@ -162,6 +190,8 @@ Effects: `alloc`.
 ```narra fragment
 export function green(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it in green. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -171,6 +201,8 @@ Effects: `alloc`.
 export function yellow(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it in yellow. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### blue
@@ -178,6 +210,8 @@ Effects: `alloc`.
 ```narra fragment
 export function blue(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it in blue. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -187,6 +221,8 @@ Effects: `alloc`.
 export function magenta(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it in magenta. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### cyan
@@ -194,6 +230,8 @@ Effects: `alloc`.
 ```narra fragment
 export function cyan(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it in cyan. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -203,6 +241,8 @@ Effects: `alloc`.
 export function white(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it in white. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### gray
@@ -210,6 +250,8 @@ Effects: `alloc`.
 ```narra fragment
 export function gray(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it in gray, the bright black of the 16 colors. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -219,6 +261,8 @@ Effects: `alloc`.
 export function bgBlack(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it on a black background. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### bgRed
@@ -226,6 +270,8 @@ Effects: `alloc`.
 ```narra fragment
 export function bgRed(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it on a red background. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -235,6 +281,8 @@ Effects: `alloc`.
 export function bgGreen(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it on a green background. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### bgYellow
@@ -242,6 +290,8 @@ Effects: `alloc`.
 ```narra fragment
 export function bgYellow(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it on a yellow background. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -251,6 +301,8 @@ Effects: `alloc`.
 export function bgBlue(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it on a blue background. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### bgMagenta
@@ -258,6 +310,8 @@ Effects: `alloc`.
 ```narra fragment
 export function bgMagenta(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it on a magenta background. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -267,6 +321,8 @@ Effects: `alloc`.
 export function bgCyan(text: string): string uses alloc
 ```
 
+Wraps the text in the codes that show it on a cyan background. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### bgWhite
@@ -274,6 +330,8 @@ Effects: `alloc`.
 ```narra fragment
 export function bgWhite(text: string): string uses alloc
 ```
+
+Wraps the text in the codes that show it on a white background. It adds the codes even when the output is not a terminal, so check `useColor` first.
 
 Effects: `alloc`.
 
@@ -283,6 +341,8 @@ Effects: `alloc`.
 export function style(text: string, look: Style): string uses alloc
 ```
 
+Wraps the text in the codes for every attribute and color of the style. It adds the codes even when the output is not a terminal, so check `useColor` first.
+
 Effects: `alloc`.
 
 ### stripStyles
@@ -290,5 +350,7 @@ Effects: `alloc`.
 ```narra fragment
 export function stripStyles(text: string): string uses alloc
 ```
+
+Removes the SGR sequences (`ESC [ <digits and semicolons> m`) and keeps everything else.
 
 Effects: `alloc`.

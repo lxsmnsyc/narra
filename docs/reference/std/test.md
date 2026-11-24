@@ -20,6 +20,8 @@ Details for every function below: only inside a test block.
 export function eq<T: Equatable & Show>(actual: T, expected: T) uses alloc
 ```
 
+Fails the test unless `actual` equals `expected`, and shows both values in the message. The test stops at the first failure.
+
 Effects: `alloc`.
 
 ### golden
@@ -27,6 +29,8 @@ Effects: `alloc`.
 ```narra fragment
 export function golden(name: string, actual: string) uses io
 ```
+
+Fails the test unless `actual` equals the file `<name>.golden`, beside the source file or in the package's `testdata` folder. Run with `NARRA_UPDATE_GOLDEN=1` to write the file instead.
 
 Effects: `io`.
 
@@ -36,6 +40,8 @@ Effects: `io`.
 export function ne<T: Equatable & Show>(actual: T, other: T) uses alloc
 ```
 
+Fails the test when `actual` equals `other`, and shows the value in the message.
+
 Effects: `alloc`.
 
 ### panics
@@ -44,6 +50,8 @@ Effects: `alloc`.
 export function panics(body: () => void) uses io
 ```
 
+Fails the test unless `body` panics. The body runs in a child process, so what it changes is not seen afterwards.
+
 Effects: `io`.
 
 ### panicsWith
@@ -51,5 +59,7 @@ Effects: `io`.
 ```narra fragment
 export function panicsWith(body: () => void, message: string) uses io
 ```
+
+Fails the test unless `body` panics with a message that contains `message`. The body runs in a child process, so what it changes is not seen afterwards.
 
 Effects: `io`.

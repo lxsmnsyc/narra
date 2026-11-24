@@ -22,6 +22,8 @@ export struct TomlError derives Show, Equatable {
 }
 ```
 
+A parse error: the line and column where it was found, both from 1, and the reason.
+
 Functions: [`parse`](#parse), [`formatError`](#formaterror).
 
 ## Functions
@@ -32,6 +34,8 @@ Functions: [`parse`](#parse), [`formatError`](#formaterror).
 export function parse(text: string): Result<Value, TomlError> uses alloc
 ```
 
+parse reads a TOML document into a Record. Tables and arrays nested deeper than 512 levels are an error.
+
 Effects: `alloc`.
 
 ### formatError
@@ -39,6 +43,8 @@ Effects: `alloc`.
 ```narra fragment
 export function formatError(error: TomlError): string uses alloc
 ```
+
+formatError writes an error as `<line>:<column>: <reason>`.
 
 Effects: `alloc`.
 
@@ -48,6 +54,8 @@ Effects: `alloc`.
 export function decode<T: Shape>(text: string): Result<T, string> uses alloc
 ```
 
+decode reads TOML text as a T: `Toml.decode<Manifest>(text)`. A parse error reads as formatError writes it; a shape error as `<path>: <reason>`.
+
 Effects: `alloc`.
 
 ### encode
@@ -56,6 +64,8 @@ Effects: `alloc`.
 export function encode<T: Shape>(value: T): Result<string, string> uses alloc
 ```
 
+encode writes any value that implements Shape as a TOML document. It fails as stringify does, on a null and on a value that is not a record.
+
 Effects: `alloc`.
 
 ### stringify
@@ -63,5 +73,7 @@ Effects: `alloc`.
 ```narra fragment
 export function stringify(value: Value): Result<string, string> uses alloc
 ```
+
+stringify writes a Record as a TOML document: the plain keys of each table before its sub-tables, and a List of Records as `[[name]]` tables. It fails on Null, which TOML cannot write, and on a root that is not a Record.
 
 Effects: `alloc`.

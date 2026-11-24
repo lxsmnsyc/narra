@@ -1,25 +1,10 @@
 # 9. Memory and `mutable`
 
-You never free memory in Narra, and a change to a value never shows up through another name by surprise. What you decide is where a value is copied and where it may change. This chapter follows a player in a small game. It shows how the game's values are stored and why the compiler refuses some writes. It then covers how a function changes the player and what a closure may capture. It ends with closures that share changing state, and with the loops of shared handles that leak memory.
-
-## Why copies are cheap
-
-Chapters 2 and 4 showed `copy(...)`. After `const snapshot = copy(prices)`, pushing to `prices` leaves `snapshot` as it was, and after `let moreTea = copy(tea)`, changing `moreTea` leaves `tea` alone. So when you pass a value to a function, it comes back unchanged, unless the call marks it `mutable`.
-
-Copying a large array every time would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values are kept on the heap. The heap is memory set aside apart from the variable, which lives until nothing uses it. The variable holds a reference to it. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are referenced one by one.
-
-Each heap value counts the references to it, which is called reference counting. In chapter 2's example:
-
-1. `const snapshot = copy(prices)` copies nothing yet. Both names refer to the same array, and its count goes up to 2.
-2. `Arrays.push(mutable prices, 400)` sees the count of 2. Writing in place would change `snapshot` too, so it copies the array first and writes to the copy.
-3. When a value's count is 1, a write changes it in place with no copy.
-4. When the count drops to 0, the value is freed.
-
-So a loop that changes an array held by one name writes in place every time. Had a second name held the array, the first write would copy it once. `copy(...)` is where you ask for that second name. When you write it, you choose to pay for the copy.
+You never free memory in Narra, and a change to a value never shows up through another name by surprise. What you decide is where a value is copied and where it may change. This chapter follows a player in a small game. It shows why the compiler refuses some writes and how the game's values are stored. It then covers how a function changes the player and what a closure may capture. It ends with closures that share changing state, and with the loops of shared handles that leak memory.
 
 ## A second name for a value
 
-Now take the second name without `copy`. Say the game keeps a backup of the hero to show on the results screen, and the backup is taken by plain assignment:
+Chapters 2 and 4 showed `copy(...)`. After `const snapshot = copy(prices)`, pushing to `prices` leaves `snapshot` as it was. Now take the second name without `copy`. Say the game keeps a backup of the hero to show on the results screen, and the backup is taken by plain assignment:
 
 ```narra error
 // error: 9:16: backup would be a second name for the struct in hero; use hero, or copy(hero) for a struct of its own
@@ -63,6 +48,19 @@ export function run(args: Array<string>): int {
 ```
 
 `narrac apply-fix` writes this change for you.
+
+## Why copies are cheap
+
+Each name now holds a player of its own, and a value you pass to a function comes back unchanged unless the call marks it `mutable`. Copying a large array every time would be slow, so Narra copies only when it has to. Arrays, maps, strings, closures, enum variants with fields and `Box` values are kept on the heap. The heap is memory set aside apart from the variable, which lives until nothing uses it. The variable holds a reference to it. Numbers, `bool`, `char` and structs live directly in the variable, and a struct's heap fields are referenced one by one.
+
+Each heap value counts the references to it, which is called reference counting. In chapter 2's example:
+
+1. `const snapshot = copy(prices)` copies nothing yet. Both names refer to the same array, and its count goes up to 2.
+2. `Arrays.push(mutable prices, 400)` sees the count of 2. Writing in place would change `snapshot` too, so it copies the array first and writes to the copy.
+3. When a value's count is 1, a write changes it in place with no copy.
+4. When the count drops to 0, the value is freed.
+
+So a loop that changes an array held by one name writes in place every time. Had a second name held the array, the first write would copy it once. `copy(...)` is where you ask for that second name. When you write it, you choose to pay for the copy.
 
 ## Writing to a shared value
 

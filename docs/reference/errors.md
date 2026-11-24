@@ -140,12 +140,6 @@ Arrays are written `Array<T>`, not `T[]`.
 
 Fix: `xs: int[]` becomes `xs: Array<int>`.
 
-#### E0022
-
-```text
-retired: generators are compiled now, so this error is no longer reported
-```
-
 #### E0023
 
 ```text
@@ -227,12 +221,6 @@ a map key that is not a literal is written [key]: value
 
 ```text
 a struct literal has at most one spread, and it comes first
-```
-
-#### E0037
-
-```text
-retired: a struct literal accepts field shorthand now, so this error is no longer reported
 ```
 
 #### E0038
@@ -1640,7 +1628,7 @@ Fix: give the field a type that implements Shape, or write an `implement Shape` 
 %s derives Shape, so %s.%s cannot have a field named "type": the encoding writes the constructor name there
 ```
 
-A derived Shape writes an enum value as a Record whose "type" entry names the constructor, as a TypeScript discriminated union does. A constructor field named type would take the same key.
+A derived Shape writes an enum value as a Record whose "type" entry names the constructor. A constructor field named type would take the same key.
 
 Fix: rename the field, or write an `implement Shape` block for the enum.
 
@@ -2700,7 +2688,7 @@ Example: write the arrow function `(items) => Arrays.length(items)` instead of `
 #### E1014
 
 ```text
-cannot implement %s for %s: %s on a distinct type compares the base value (D62)
+cannot implement %s for %s: %s on a distinct type compares the base value
 ```
 
 `==`, `!=` and map keys on a distinct type compare and hash the base value, so an `implement Equatable` or `implement Hashable` block for it would never run and is rejected. Write the comparison as a function of the declaring module, or wrap the value in a struct.
@@ -2771,42 +2759,6 @@ Example: `const item: Dynamic<Show> = Dynamic.of(42)`.
 Every copy of a Dynamic shares one stored value, so a trait function that takes `mutable value: Self` cannot be called through a Dynamic: the change would reach the other copies.
 
 Example: call the function on the concrete value before wrapping it with `Dynamic.of`.
-
-#### E1030
-
-```text
-retired: this error is no longer reported
-```
-
-#### E1031
-
-```text
-retired: this error is no longer reported
-```
-
-#### E1032
-
-```text
-retired: this error is no longer reported
-```
-
-#### E1033
-
-```text
-retired: this error is no longer reported
-```
-
-#### E1034
-
-```text
-retired: this error is no longer reported
-```
-
-#### E1035
-
-```text
-retired: this error is no longer reported
-```
 
 #### E1050
 
@@ -2956,14 +2908,6 @@ cannot use == on %s: a stream is shared by identity; read the values and compare
 A handle is an identity type: copies share one task, so == and a map key would compare tasks, not values.
 
 Fix: await the handles and compare or key by the values.
-
-#### E1107
-
-```text
-retired: async generators are compiled now, so this error is no longer reported
-```
-
-retired: `async function*` declares an async generator now (D110), so this error is no longer reported.
 
 #### E1108
 
@@ -3204,7 +3148,7 @@ Fix: convert the value inside the `${}`, for example `${Int.toString(count)}`.
 a template at the start of a line is not tagged by the name that ends the line before; join the lines to tag it
 ```
 
-A line break ends the statement, so a template at the start of a line is not tagged by the name at the end of the line before, as it would be in TypeScript.
+A line break ends the statement, so a template at the start of a line is not tagged by the name at the end of the line before.
 
 Fix: write the tag and the template on one line, `const x = tag`a``, or remove the template.
 

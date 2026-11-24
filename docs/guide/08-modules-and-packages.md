@@ -104,7 +104,7 @@ export function run(args: Array<string>): int {
 
 The same goes for the other prelude types. Their modules are imported as `Arrays` (`std/array`), `Maps` (`std/map`), `Ranges` (`std/range`), `Boxes` (`std/box`), `Options` (`std/option`) and `Results` (`std/result`).
 
-The compiler accepts 55 standard modules. Importing a path that does not exist is an error that lists them all. Here they are in groups, each with one line. Later chapters teach most of them.
+The compiler accepts 54 standard modules. Importing a path that does not exist is an error that lists them all. Here they are in groups, each with one line. Later chapters teach most of them.
 
 Numbers and text:
 

@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import brumate from 'brumate/vite';
 import { defineConfig } from 'vite';
+import bench from './plugins/bench.ts';
 import markdown from './plugins/markdown.ts';
 import search from './plugins/search.ts';
 
@@ -22,6 +23,7 @@ export default defineConfig({
   plugins: [
     markdown(),
     search(),
+    bench(),
     // Every page is written as a static file.
     brumate({ prerender: { paths: ['/'] } }),
   ],

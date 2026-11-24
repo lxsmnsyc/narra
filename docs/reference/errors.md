@@ -1536,11 +1536,19 @@ Fix: remove the names, and pass the arguments in order.
 the entry function must be `export function %s(args: Array<string>): int`
 ```
 
+The entry function starts the program. It takes the command-line arguments as one `Array<string>` and returns the exit code as an `int`. It may be `async`.
+
+Fix: write it as `export function run(args: Array<string>): int`.
+
 #### E0401
 
 ```text
 unknown module %q; package %s has no file src/%s.nra
 ```
+
+An import path that starts with the package name points at a file under `src/`. The path `app/util` is the file `src/util.nra`, and that file does not exist.
+
+Fix: correct the path, or create the file.
 
 #### E0402
 
@@ -1548,11 +1556,19 @@ unknown module %q; package %s has no file src/%s.nra
 %q is not exported by module %q; add `export` to its declaration
 ```
 
+Other modules can use only the declarations marked `export`.
+
+Fix: add `export` before the declaration, or stop importing the name.
+
 #### E0403
 
 ```text
 unknown module %q in type %s; import it with `import * as %s from "..."`
 ```
+
+A type written as `Name.Type` must start with the alias of an imported module. No import in this file has that alias.
+
+Fix: import the module with `import * as Name from "..."`, or correct the alias.
 
 #### E0404
 
@@ -1560,11 +1576,19 @@ unknown module %q in type %s; import it with `import * as %s from "..."`
 %s is not a type
 ```
 
+The module exports this name, but it is a function or a constant. Only a struct, enum, distinct type or type alias can be used as a type.
+
+Fix: use the name of a type that the module exports.
+
 #### E0405
 
 ```text
 expected `]]`
 ```
+
+In `narra.toml`, a line that starts with `[[` opens an array of tables, such as `[[binary]]`, and must end with `]]`.
+
+Fix: end the line with `]]`.
 
 #### E0406
 
@@ -1572,11 +1596,19 @@ expected `]]`
 expected `]`
 ```
 
+In `narra.toml`, a line that starts with `[` names a table, such as `[package]`, and must end with `]`.
+
+Fix: end the line with `]`.
+
 #### E0408
 
 ```text
 expected `key = value`
 ```
+
+In a known table of `narra.toml`, every line that is not a table header or a comment must be `key = value`.
+
+Fix: add the `=` and the value, or delete the line.
 
 #### E0409
 
@@ -1584,11 +1616,19 @@ expected `key = value`
 %s: %v
 ```
 
+A value in `narra.toml` could not be read. A value is a quoted string, an array of strings, or an inline table in `[dependencies]` and `[overrides]`. The message says what is wrong, for example a string that is not closed.
+
+Fix: write the value in one of these forms, such as `version = "1.0.0"`.
+
 #### E0410
 
 ```text
 package name must be a string of letters, digits and `_`, starting with a letter
 ```
+
+The package name is the first part of every import path of the package. It must be letters, digits and `_`, and start with a letter.
+
+Fix: `name = "my-app"` becomes `name = "my_app"`.
 
 #### E0411
 
@@ -1596,11 +1636,19 @@ package name must be a string of letters, digits and `_`, starting with a letter
 package name "std" is reserved for the standard library
 ```
 
+Import paths that start with `std` name the standard library, so a package cannot have that name.
+
+Fix: choose another `name` in `[package]`.
+
 #### E0412
 
 ```text
 %s must be a string
 ```
+
+This key takes one string. The `version` of `[package]` and the `name` and `entry` of a `[[binary]]` are strings.
+
+Fix: `entry = ["main.run"]` becomes `entry = "main.run"`.
 
 #### E0413
 
@@ -1608,11 +1656,19 @@ package name "std" is reserved for the standard library
 %s must be an array of strings
 ```
 
+The `search` key of `[link]` takes an array of strings, even for one folder.
+
+Fix: `search = "/opt/lib"` becomes `search = ["/opt/lib"]`.
+
 #### E0414
 
 ```text
 [package] needs a name
 ```
+
+Every package needs a name in its `[package]` table. Only a workspace root without a `[package]` table can leave it out.
+
+Fix: add `name = "app"` under `[package]`.
 
 #### E0415
 
@@ -1620,11 +1676,19 @@ package name "std" is reserved for the standard library
 each [[binary]] needs a name and an entry such as "cli.run"
 ```
 
+Each `[[binary]]` table makes one program. It needs the `name` of the executable and the `entry`, the function that starts it, written as `"module.function"` with the module path relative to `src/`.
+
+Fix: add both keys, for example `name = "app"` and `entry = "main.run"`.
+
 #### E0416
 
 ```text
 two [[binary]] entries are named %q
 ```
+
+Each `[[binary]]` builds an executable named by its `name`, so two tables with one name would write the same file.
+
+Fix: rename one of the binaries.
 
 #### E0417
 
@@ -1632,11 +1696,19 @@ two [[binary]] entries are named %q
 modules %q and %q have the same C name hash; rename one file
 ```
 
+Each module gets a short hash that is part of its names in the generated C code. Two modules of the build got the same hash, so their names would clash.
+
+Fix: rename one of the two files.
+
 #### E0418
 
 ```text
 import cycle: %s
 ```
+
+Modules cannot import each other in a cycle. The message lists the modules in the cycle.
+
+Fix: move the shared declarations into a new module that both import, or merge the modules.
 
 #### E0419
 
@@ -1644,11 +1716,19 @@ import cycle: %s
 no entry function; declare `export function run(args: Array<string>): int`
 ```
 
+A program built from one file starts at an exported function `run`, and the file has none.
+
+Fix: add `export function run(args: Array<string>): int`. Its result is the exit code.
+
 #### E0420
 
 ```text
 binary %q: no entry function %q; declare `export function %s(args: Array<string>): int` in module %q
 ```
+
+The `entry` of a `[[binary]]` names a module and a function, as in `"main.run"`. That module has no exported function with that name.
+
+Fix: declare `export function start(args: Array<string>): int` in the module, or correct the `entry`.
 
 #### E0421
 
@@ -1656,11 +1736,19 @@ binary %q: no entry function %q; declare `export function %s(args: Array<string>
 the import alias %s is also a type name; rename it, for example `import * as %s from %q`
 ```
 
+An import alias has the name of a type of this module. Both are written before a `.`, as in `Shape.Circle`, so the compiler could not tell them apart.
+
+Fix: rename the alias, for example `import * as Shapes from "..."`. The compiler offers this fix.
+
 #### E0422
 
 ```text
 two imports use the alias %s; give one of them another alias
 ```
+
+Each alias in a file names one module. Two imports with one alias would make `Alias.name` ambiguous.
+
+Fix: give one of the imports another alias.
 
 #### E0423
 
@@ -1668,11 +1756,19 @@ two imports use the alias %s; give one of them another alias
 imported name %q is already declared in this module; rename the import with `as`
 ```
 
+A name imported with `import { name }` has the name of a function, constant or alias of this module.
+
+Fix: rename the import with `as`, as in `import { length as textLength } from "std/string"`.
+
 #### E0424
 
 ```text
 imported name %q is already imported from another module; rename one with `as`
 ```
+
+Two imports bring in the same name from different modules, so a call to that name would be ambiguous.
+
+Fix: rename one of them with `as`, as in `import { parse as parseJson } from "..."`.
 
 #### E0425
 
@@ -1690,11 +1786,19 @@ Fix: `import { Teacher }` becomes `import { SchoolPerson }`, and uses become `Sc
 dependency %s needs a git and a version
 ```
 
+A dependency is downloaded from a git repository at a tagged version, so its inline table needs both `git` and `version`.
+
+Example: `json = { git = "https://example.com/narra-json", version = "1.2.0" }`.
+
 #### E0431
 
 ```text
 version %q is not MAJOR.MINOR.PATCH
 ```
+
+A version has three numbers, `MAJOR.MINOR.PATCH`.
+
+Fix: `"1.0"` becomes `"1.0.0"`.
 
 #### E0432
 
@@ -1702,11 +1806,19 @@ version %q is not MAJOR.MINOR.PATCH
 dependency %s has an unknown or repeated key %q; it takes git and version
 ```
 
+The inline table of a dependency takes `git` and `version`, each once. A member of the same workspace takes `workspace = true` alone.
+
+Fix: remove the unknown or repeated key.
+
 #### E0433
 
 ```text
 a dependency cannot be named %s: it is the standard library or this package
 ```
+
+`std` is the standard library, which every package can import, and a package cannot depend on itself.
+
+Fix: remove the entry from `[dependencies]` or `[overrides]`.
 
 #### E0434
 
@@ -1714,11 +1826,19 @@ a dependency cannot be named %s: it is the standard library or this package
 two dependencies are named %q
 ```
 
+The name of a dependency is the first part of its import paths, so it can stand for one package only.
+
+Fix: delete one of the two entries.
+
 #### E0435
 
 ```text
 dependency %s is not a valid inline table: %s
 ```
+
+A dependency is an inline table of quoted strings, such as `{ git = "...", version = "1.2.0" }`, or `{ workspace = true }`. The value could not be read as one. A trailing comma or an unquoted value also causes this error.
+
+Fix: write the table in that form.
 
 #### E0436
 
@@ -1726,11 +1846,19 @@ dependency %s is not a valid inline table: %s
 dependency name %q must be letters, digits and `_`, starting with a letter
 ```
 
+The name of a dependency is the first part of its import paths. It must be letters, digits and `_`, and start with a letter.
+
+Fix: use the `name` from the `[package]` table of the dependency.
+
 #### E0437
 
 ```text
 bad line: %s
 ```
+
+A line of `narra.lock` is not `[[package]]` or `key = "value"`, or a value has the wrong form. `narrac build` writes this file, and it is not meant to be edited by hand.
+
+Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it again.
 
 #### E0438
 
@@ -1741,11 +1869,19 @@ entry %s repeats the key %s
 entry %s has the tag %s, which is not the tag of version %s
 ```
 
+An entry of `narra.lock` has an unknown, missing or repeated key, or a `tag` that does not belong to its `version`. `narrac build` writes this file.
+
+Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it again.
+
 #### E0439
 
 ```text
 two entries are named %q
 ```
+
+Two entries of `narra.lock` have the same name. Each package has one entry.
+
+Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it again.
 
 #### E0440
 
@@ -1753,11 +1889,19 @@ two entries are named %q
 git was not found on PATH
 ```
 
+`narrac` runs `git` to fetch dependencies, and found no `git` program on `PATH`.
+
+Fix: install git, or add its folder to `PATH`.
+
 #### E0441
 
 ```text
 cannot read the repository %s: %s
 ```
+
+`narrac` could not list the tags of the repository with `git ls-remote`. The URL or path may be wrong, the network may be down, or the repository may need access rights. The message shows the first line of the git error.
+
+Fix: check the `git` value of the dependency, and that git can reach the repository.
 
 #### E0442
 
@@ -1765,11 +1909,19 @@ cannot read the repository %s: %s
 the repository %s has no tag %s
 ```
 
+A version is fetched by its tag, and the repository has no tag with that name. The tag is `v1.2.0` for version `1.2.0`, or `json/v1.2.0` in a repository that holds several packages.
+
+Fix: check the version, or push the tag to the repository.
+
 #### E0443
 
 ```text
 the cached version %s has tree %s, but %s was expected
 ```
+
+A version in the cache has a `.hash` file next to it that records its commit and tree hashes. That file is missing or damaged, or the tree hash differs from the one `narra.lock` records.
+
+Fix: delete the cached folder and its `.hash` file, then run `narrac build` to fetch it again.
 
 #### E0444
 
@@ -1777,11 +1929,19 @@ the cached version %s has tree %s, but %s was expected
 no cache folder: set NARRA_CACHE or HOME
 ```
 
+Dependencies are cached in `$NARRA_CACHE`, or in `$HOME/.cache/narra` when that variable is not set. Neither variable is set.
+
+Fix: set `NARRA_CACHE` or `HOME`.
+
 #### E0445
 
 ```text
 cannot check out %s of %s: %s
 ```
+
+Fetching a version into the cache failed while creating a folder, cloning the repository or checking out the tag. The message gives the step and the error.
+
+Fix: check the free disk space and the permissions of the cache folder, then build again.
 
 #### E0450
 
@@ -1790,11 +1950,19 @@ package %s is required from two repositories, %s and %s, and [overrides] has no 
 package %s is a member of the workspace and is also required from %s
 ```
 
+A package name stands for one source in a build. Here two packages require it from different repositories, or a workspace member has the name and a git dependency asks for it too.
+
+Fix: add an entry for the package to `[overrides]` in the root `narra.toml`, or depend on the member with `{ workspace = true }`.
+
 #### E0451
 
 ```text
 the repository %s has no tag for version %s of %s
 ```
+
+The repository has no tag for the version asked for, neither `v1.2.0` nor `json/v1.2.0` for version `1.2.0` of `json`.
+
+Fix: check the `version` of the dependency, or tag that version in the repository.
 
 #### E0452
 
@@ -1802,11 +1970,19 @@ the repository %s has no tag for version %s of %s
 narra.lock records commit %s and tree %s for %s %s, but the repository has commit %s and tree %s
 ```
 
+`narra.lock` records the commit and tree hash of each version. The repository now has other hashes for the same tag, for example because the tag was moved. The build stops so that changed code is not used without notice.
+
+Fix: find out why the tag changed. If the new code is trusted, delete `narra.lock` and run `narrac build` to record the new hashes.
+
 #### E0453
 
 ```text
 the manifest of %s %s names the package %q
 ```
+
+The `narra.toml` of the fetched version has a `[package]` name that differs from the key in `[dependencies]`.
+
+Fix: use the name of the package as the key, or check the `git` URL.
 
 #### E0454
 
@@ -1814,11 +1990,19 @@ the manifest of %s %s names the package %q
 [overrides] is allowed in the root manifest of a build only, not in %s
 ```
 
+Only the root `narra.toml` of a build may replace repositories with `[overrides]`. A dependency or a workspace member cannot.
+
+Fix: move the entries to the `narra.toml` of the root.
+
 #### E0455
 
 ```text
 [overrides] has an entry for %s, but no package requires it
 ```
+
+An entry of `[overrides]` names a package that no package in the build requires.
+
+Fix: delete the entry, or correct its name.
 
 #### E0456
 
@@ -1826,11 +2010,19 @@ the manifest of %s %s names the package %q
 the override for %s names version %s, which has no tag in %s
 ```
 
+The version that an override names has no tag in the repository of the override.
+
+Fix: change the version, or tag it in that repository.
+
 #### E0457
 
 ```text
 %s has no narra.toml
 ```
+
+The fetched version has no `narra.toml` where the package should be, so it is not a Narra package.
+
+Fix: check the `git` URL and the `version` of the dependency.
 
 #### E0458
 
@@ -1838,11 +2030,19 @@ the override for %s names version %s, which has no tag in %s
 cannot read or write %s: %s
 ```
 
+`narrac` could not read or write `narra.toml` or `narra.lock`. The message gives the path and the system error.
+
+Fix: check that the file exists and that you may read and write it.
+
 #### E0460
 
 ```text
 %s %s is not in the cache; run narrac build to fetch it
 ```
+
+`narra.lock` names a version that is not in the cache. Tools that read the cache without fetching, such as `narrac lsp`, report this.
+
+Fix: run `narrac build` to fetch it.
 
 #### E0461
 
@@ -1850,11 +2050,19 @@ cannot read or write %s: %s
 narra.lock has no entry for %s %s from %s; run narrac build to update it
 ```
 
+A dependency has no matching entry in `narra.lock`, often after `[dependencies]` changed. Tools that do not fetch, such as `narrac lsp`, report this.
+
+Fix: run `narrac build` to update the lock.
+
 #### E0462
 
 ```text
 the dependency %s has no .nra files in src/
 ```
+
+A dependency must hold Narra code, at least one `.nra` file under `src/`.
+
+Fix: check the `git` URL and the `version` of the dependency.
 
 #### E0463
 
@@ -1862,11 +2070,19 @@ the dependency %s has no .nra files in src/
 package %s imports %s, but its narra.toml has no [dependencies] entry for it
 ```
 
+A package may import only itself, `std` and the packages in its own `[dependencies]`. A package that another dependency brings in does not count.
+
+Fix: add the package to `[dependencies]` of the importing package.
+
 #### E0470
 
 ```text
 export key %s must be the package name %s or start with %s
 ```
+
+A key of `[exports]` is the import path that other packages write. It must be the package name, or start with the package name and `/`.
+
+Fix: in package `json`, `"stream" = "src/stream.nra"` becomes `"json/stream" = "src/stream.nra"`.
 
 #### E0471
 
@@ -1876,11 +2092,19 @@ export %s must be a string, the module file such as "src/index.nra"
 export %s names %s, but the package has no such file
 ```
 
+A value of `[exports]` is the module file, a string that starts with `src/` and ends with `.nra`. The file must exist.
+
+Fix: write the path of an existing module, such as `"src/index.nra"`.
+
 #### E0472
 
 ```text
 two exports are named %q
 ```
+
+Two keys of `[exports]` are the same import path.
+
+Fix: delete or rename one of them.
 
 #### E0473
 
@@ -1888,11 +2112,19 @@ two exports are named %q
 %s does not expose %s; it exposes %s
 ```
 
+The package has an `[exports]` table, so other packages may import only the paths it lists. The message shows them.
+
+Fix: import one of the listed paths, or add the module to `[exports]` of that package.
+
 #### E0474
 
 ```text
 %s is internal to the standard library
 ```
+
+Modules under `std/internal/` and `std/ext/` are parts of the standard library that only the library itself imports. The message lists the modules you can import.
+
+Fix: import one of those modules instead.
 
 #### E0480
 
@@ -1903,6 +2135,10 @@ two exports are named %q
 the member entry %q must be a relative path, with `*` only as a whole segment and no `..`
 ```
 
+`[workspace]` takes one key, `members`, an array of folders relative to the root. `*` may stand for one whole folder name, and `..` is not allowed.
+
+Example: `members = ["packages/*", "tools/lint"]`.
+
 #### E0481
 
 ```text
@@ -1910,11 +2146,19 @@ the member %s has no narra.toml
 the member %s has its own [workspace]
 ```
 
+Each member folder needs a `narra.toml` with a `[package]` table. A member cannot have a `[workspace]` of its own.
+
+Fix: add the `narra.toml`, remove the inner `[workspace]`, or remove the folder from `members`.
+
 #### E0482
 
 ```text
 two members are named %q: %s and %s
 ```
+
+Members are known by the name in their `[package]` table, and two members have the same name.
+
+Fix: rename one of the packages.
 
 #### E0483
 
@@ -1924,6 +2168,10 @@ dependency %s: workspace must be true
 override %s takes git and version, not workspace
 ```
 
+`workspace = true` names a member of the same workspace, so it takes no other key and no value but `true`. `[overrides]` takes `git` and `version` only.
+
+Fix: write `core = { workspace = true }`, or `git` and `version` for an override.
+
 #### E0484
 
 ```text
@@ -1931,17 +2179,29 @@ override %s takes git and version, not workspace
 %s depends on %s with workspace = true, but it is not a member of a workspace
 ```
 
+`workspace = true` must name a member of the workspace that holds this package. Here no member has that name, or the package is not in a workspace.
+
+Fix: correct the name, add the folder to `members`, or depend on the package with `git` and `version`.
+
 #### E0485
 
 ```text
 %s is inside the member %s; the workspace keeps one lock at %s
 ```
 
+A workspace keeps one `narra.lock`, at its root, and a member has a lock file of its own.
+
+Fix: delete the `narra.lock` of the member.
+
 #### E0486
 
 ```text
 the checkout of %s %s has no package named %s
 ```
+
+The fetched repository is a workspace, and no package in it has the name asked for.
+
+Fix: check the name and the `git` URL of the dependency.
 
 #### E0487
 
@@ -1950,11 +2210,19 @@ the checkout of %s %s has no package named %s
 %s needs %s %s, but the repository %s has no tag for it
 ```
 
+A fetched package depends on another member of its own workspace with `workspace = true`. That member has no `version` in its `narra.toml`, or the repository has no tag for its version.
+
+Fix: the problem is in the repository of the dependency. Use another version, or ask its authors to set and tag the version.
+
 #### E0488
 
 ```text
 the members %s and %s both have a binary named %s; binary names must be unique in a workspace
 ```
+
+Two members of the workspace have a `[[binary]]` with the same name, so a build of both would write two executables with one name.
+
+Fix: rename one of the binaries.
 
 #### E0489
 
@@ -1963,11 +2231,19 @@ the members %s and %s both have a binary named %s; binary names must be unique i
 %s needs the directory of a workspace member; %s is the workspace root, which covers every member
 ```
 
+`-dependents` and `-dependencies` start from one member, so they need the folder of a member. The path given is not a member, or it is the workspace root, which already covers every member.
+
+Fix: pass the folder of a member.
+
 #### E0490
 
 ```text
 the member %s depends on itself through workspace = true dependencies
 ```
+
+Members depend on each other in a cycle through `workspace = true`, so no member can be built first.
+
+Fix: move the code they share into a member that the others depend on.
 
 ## E0500 to E0599: Traits
 
@@ -1977,11 +2253,19 @@ the member %s depends on itself through workspace = true dependencies
 %q is declared twice
 ```
 
+A trait has the name of another trait or a type of this module, or of an imported trait.
+
+Fix: rename one of them.
+
 #### E0501
 
 ```text
 %s is listed twice in `implements`
 ```
+
+A trait appears twice in the `implements` list of a type.
+
+Fix: delete the second one.
 
 #### E0502
 
@@ -1995,11 +2279,19 @@ derives Shape is not supported by this compiler yet
 %s cannot be derived; only Equatable, Hashable, Ordered, Show and Shape can. List it in `implements` and write `implement %s for %s`
 ```
 
+Only Equatable, Hashable, Ordered, Show and Shape can be derived. The compiler writes them from the fields. Any other trait needs its functions written by hand.
+
+Fix: move the trait from `derives` to `implements` and write an `implement T for A` block.
+
 #### E0504
 
 ```text
 %s is listed twice in `derives`
 ```
+
+A trait appears twice in the `derives` list of a type.
+
+Fix: delete the second one.
 
 #### E0505
 
@@ -2007,11 +2299,19 @@ derives Shape is not supported by this compiler yet
 unknown trait %q
 ```
 
+No trait with this name is visible here. It is not a standard trait, not declared in this module and not imported.
+
+Fix: correct the name, or import the trait from its module.
+
 #### E0506
 
 ```text
 %s is listed twice in the constraint of %s
 ```
+
+A trait appears twice in the constraint of one type parameter, as in `<T: Show & Show>`.
+
+Fix: delete the second one.
 
 #### E0507
 
@@ -2020,11 +2320,19 @@ unknown trait %q
 %s implements %s but has no `implement %s for %s` block or `derives %s`
 ```
 
+`implements T` in a declaration needs an `implement T for A` block in the same module, and the block is missing.
+
+Fix: write the block. For Equatable, Hashable, Ordered, Show and Shape, `derives T` also works.
+
 #### E0508
 
 ```text
 %s both derives and implements %s; keep one
 ```
+
+A type gets each trait one way, derived from its fields or written in an `implement` block.
+
+Fix: remove the trait from `derives`, or delete the `implement` block.
 
 #### E0509
 
@@ -2032,11 +2340,19 @@ unknown trait %q
 cannot derive %s for %s: field %q has type %s, which does not implement %s
 ```
 
+A derived trait applies the trait to each field, so every field type must implement it. A function type does not implement Equatable, for example.
+
+Fix: change the field type, write an `implement` block, or remove the trait from `derives`.
+
 #### E0510
 
 ```text
 trait functions cannot have type parameters in this compiler yet
 ```
+
+A function declared in a trait cannot have type parameters of its own. This compiler does not support them there.
+
+Fix: remove the type parameters and use concrete types.
 
 #### E0511
 
@@ -2044,11 +2360,19 @@ trait functions cannot have type parameters in this compiler yet
 %s declares function %q twice
 ```
 
+A trait declares each function name once.
+
+Fix: rename or delete one of the two functions.
+
 #### E0512
 
 ```text
 %s.%s must use Self in a parameter or its result, so a call can tell which implementation to run
 ```
+
+A call such as `T.f(x)` picks the implementation from the type that `Self` stands for. A trait function that does not mention `Self` gives the call nothing to pick with.
+
+Fix: use `Self` in a parameter or the result, as in `function f(x: Self): int`.
 
 #### E0513
 
@@ -2056,11 +2380,21 @@ trait functions cannot have type parameters in this compiler yet
 cannot implement %s for %s: the type is declared in another module; wrap it in a struct
 ```
 
+An `implement` block must be in the module that declares the type. A type of another module, or a built-in type such as `string`, cannot get one here.
+
+Fix: wrap the value in a struct of this module and implement the trait for that struct.
+
+Example: `struct Name implements T { text: string }`.
+
 #### E0515
 
 ```text
 %s does not list %s in `implements`; add `implements %s` to its declaration
 ```
+
+An `implement T for A` block needs `implements T` in the declaration of `A`.
+
+Fix: add `implements T` to the declaration, as in `struct A implements T { ... }`.
 
 #### E0516
 
@@ -2068,11 +2402,19 @@ cannot implement %s for %s: the type is declared in another module; wrap it in a
 %s is implemented twice for %s
 ```
 
+A type has one `implement` block for each trait.
+
+Fix: merge the two blocks into one.
+
 #### E0517
 
 ```text
 functions in an implement block cannot have type parameters in this compiler yet
 ```
+
+A function in an `implement` block cannot have type parameters of its own. This compiler does not support them there.
+
+Fix: remove the type parameters and use concrete types.
 
 #### E0518
 
@@ -2080,11 +2422,19 @@ functions in an implement block cannot have type parameters in this compiler yet
 trait %s has no function %q
 ```
 
+An `implement` block or a call `T.name(...)` names a function that the trait does not declare.
+
+Fix: correct the name, or add the function to the trait.
+
 #### E0519
 
 ```text
 function %q is implemented twice
 ```
+
+An `implement` block defines each function of the trait once.
+
+Fix: delete one of the two definitions.
 
 #### E0520
 
@@ -2092,11 +2442,19 @@ function %q is implemented twice
 %s.%s for %s must be `%s`
 ```
 
+Each function of an `implement` block has the signature of the trait function, with `Self` replaced by the type. The message shows the signature it must have.
+
+Fix: change the parameters or the result to match.
+
 #### E0521
 
 ```text
 implement %s for %s is missing function %s
 ```
+
+An `implement` block must define every function that the trait declares.
+
+Fix: add the missing function.
 
 #### E0522
 
@@ -2104,11 +2462,19 @@ implement %s for %s is missing function %s
 cannot tell which type's %s.%s to call here; add a type annotation
 ```
 
+A call `T.f(...)` picks the implementation from the type that `Self` stands for. The arguments here do not show that type, for example an empty array literal.
+
+Fix: give the argument a type, or name the type as in `T.f<A>(...)`.
+
 #### E0523
 
 ```text
 %s.%s needs %s to implement %s; declare it as <%s: %s>
 ```
+
+Inside a generic function, a type parameter implements a trait only when its declaration says so.
+
+Fix: `function g<X>(x: X)` becomes `function g<X: T>(x: X)`.
 
 #### E0524
 
@@ -2116,11 +2482,19 @@ cannot tell which type's %s.%s to call here; add a type annotation
 %s does not implement %s
 ```
 
+The type of the value does not implement the trait that the call needs.
+
+Fix: implement the trait for the type, or pass a value of a type that implements it. A standard trait can be derived with `derives`.
+
 #### E0525
 
 ```text
 %s does not implement %s, which %s needs for type parameter %s
 ```
+
+The generic function requires this type parameter to implement a trait, and the type passed for it does not.
+
+Fix: implement the trait for that type, or call the function with a type that implements it.
 
 #### E0526
 
@@ -2128,17 +2502,29 @@ cannot tell which type's %s.%s to call here; add a type annotation
 cannot use == on %s: it contains a function
 ```
 
+Functions cannot be compared, so a value that holds a function has no `==`.
+
+Fix: compare the fields that are not functions.
+
 #### E0527
 
 ```text
 == on %s needs Equatable; declare the type parameter as <T: Equatable>
 ```
 
+`==` on a value of a type parameter needs the parameter to be Equatable.
+
+Fix: `<T>` becomes `<T: Equatable>`.
+
 #### E0528
 
 ```text
 %s does not implement Equatable
 ```
+
+This type has no `==`. A struct or enum is Equatable when all its fields are, but a Map, a Range, a Generator and a Dynamic value are not.
+
+Fix: compare the parts by hand, for example the entries of a Map.
 
 #### E0529
 
@@ -2198,17 +2584,29 @@ Fix: convert the value in the declaring module, or write an `implement Shape` bl
 only a parameter with a function type can be escaping
 ```
 
+`escaping` applies only to a parameter with a function type.
+
+Fix: remove `escaping`.
+
 #### E0601
 
 ```text
 parameter %q cannot escape: it can only be called or passed to a function parameter that is not escaping; declare it as `escaping %s` to store, return or capture it
 ```
 
+A function parameter that is not `escaping` can only be called, or passed on to a function parameter that is not escaping. It cannot be stored, returned or captured, because the function it holds may be gone after the call.
+
+Fix: declare it as `escaping rule: (x: int) => int`.
+
 #### E0602
 
 ```text
 a closure cannot capture parameter %q because it is not escaping; declare it as `escaping %s`
 ```
+
+A closure can outlive the call, so it cannot capture a function parameter that is not `escaping`.
+
+Fix: declare the parameter as `escaping`.
 
 #### E0603
 
@@ -2228,6 +2626,10 @@ a closure cannot capture %q because it is declared with let; closures capture on
 function %s has a mutable parameter, so it cannot be used as a value
 ```
 
+A function with a `mutable` parameter changes its argument in place, and a function value cannot take `mutable` arguments.
+
+Fix: call the function directly, or write a version that returns the new value.
+
 #### E0606
 
 ```text
@@ -2235,11 +2637,19 @@ function %s has a mutable parameter, so it cannot be used as a value
 %q is a %s, not a function; if `<` is a comparison, wrap it in parentheses, as in `(%s < %s)`
 ```
 
+Only a function can be called, and this name holds a value that is not a function. When the `<` after the name is a comparison, it was read as the start of type arguments.
+
+Fix: remove the call, or put the comparison in parentheses, as in `(a < b)`.
+
 #### E0607
 
 ```text
 this expression cannot be called
 ```
+
+This expression is not a function, so it cannot be called.
+
+Fix: call a function, or a value whose type is a function type.
 
 #### E0608
 
@@ -2247,11 +2657,19 @@ this expression cannot be called
 a function value takes no mutable arguments; remove `mutable`
 ```
 
+A function value cannot take `mutable` arguments.
+
+Fix: remove `mutable` from the argument.
+
 #### E0609
 
 ```text
 %q is passed as mutable inside this call, so it cannot also hold the function being called
 ```
+
+A `mutable` argument could change or free the variable that holds the function being called, while the call runs.
+
+Fix: make the two steps separate statements, as in `const n = change(mutable h)` followed by `h.f(n)`.
 
 #### E0610
 
@@ -2259,17 +2677,29 @@ a function value takes no mutable arguments; remove `mutable`
 this arrow function takes %d parameters, but the expected function takes %d
 ```
 
+An arrow function passed where a function type is expected takes as many parameters as that type.
+
+Fix: add or remove parameters to match.
+
 #### E0611
 
 ```text
 cannot tell the type of parameter %q; write it as `%s: Type`
 ```
 
+An arrow function takes its parameter types from the function type it is passed to. With no expected type, each parameter needs a written type.
+
+Fix: `(x) => x + 1` becomes `(x: int) => x + 1`.
+
 #### E0612
 
 ```text
 a closure cannot capture %q because it is declared with let, unless it is passed straight to a function parameter that is not escaping; to share state that changes with an escaping closure, keep it in a Cell from std/cell
 ```
+
+A closure can capture a `let` variable only when it is passed straight to a function parameter that is not escaping. A stored or returned closure may run after the variable is gone.
+
+Fix: capture a `const` copy of the value, or keep the changing value in a `Cell` from `std/cell`.
 
 #### E0613
 
@@ -2278,17 +2708,29 @@ a closure cannot capture mutable parameter %q unless it is passed straight to a 
 a closure cannot capture loop element %q, which is changed in place, unless it is passed straight to a function parameter that is not escaping; copy it first with `copy(%s)`
 ```
 
+A closure can capture a `mutable` parameter only when it is passed straight to a function parameter that is not escaping. The same holds for a loop element changed in place.
+
+Fix: copy the value first with `copy(name)` and capture the copy.
+
 #### E0614
 
 ```text
 %q is assigned by a closure passed to this call, so no other argument can use it
 ```
 
+A closure passed to this call assigns the variable while the call runs. The other arguments are passed by reference, so the function could read the variable while the closure changes it.
+
+Fix: read the variable into a `const` before the call and pass that.
+
 #### E0615
 
 ```text
 parameter %q of generator %s has a function type, so it must be `escaping`: the generator outlives the call
 ```
+
+A generator runs its body each time it is resumed, after the call that created it has returned. So a function parameter of a generator must be `escaping`.
+
+Fix: `function* g(f: () => int)` becomes `function* g(escaping f: () => int)`.
 
 ## E0700 to E0799: Patterns and match
 
@@ -2298,11 +2740,19 @@ parameter %q of generator %s has a function type, so it must be `escaping`: the 
 %s is not a constructor of %s; a name that binds starts with a lowercase letter
 ```
 
+In a pattern, a name that starts with a capital letter is a constructor, and a lowercase name binds the value. The value here has no constructor with this name.
+
+Fix: write the binding in lowercase, or match a value of the enum that has this constructor.
+
 #### E0701
 
 ```text
 %q is bound twice in this pattern
 ```
+
+A pattern binds each name once.
+
+Fix: rename one of them, or write `_` for a value you do not need.
 
 #### E0702
 
@@ -2310,11 +2760,19 @@ parameter %q of generator %s has a function type, so it must be `escaping`: the 
 constructor pattern %s needs an enum value, found %s
 ```
 
+A constructor pattern such as `Shape.Circle(r)` matches an enum value, and the value here is not an enum.
+
+Fix: match the value with a pattern of its own type.
+
 #### E0703
 
 ```text
 %s.%s does not match a value of type %s
 ```
+
+The constructor belongs to another enum than the type of the value.
+
+Fix: use a constructor of the value's enum.
 
 #### E0704
 
@@ -2322,11 +2780,19 @@ constructor pattern %s needs an enum value, found %s
 %s has %d fields, the pattern lists %d
 ```
 
+A constructor pattern lists one pattern for each field of the constructor.
+
+Fix: add or remove patterns. Write `_` for a field you do not need.
+
 #### E0705
 
 ```text
 a struct pattern needs a struct value, found %s
 ```
+
+A struct pattern such as `{ name, quantity }` matches a struct value, and the value here is not a struct.
+
+Fix: match the value with a pattern of its own type.
 
 #### E0706
 
@@ -2334,11 +2800,19 @@ a struct pattern needs a struct value, found %s
 field %q is listed twice
 ```
 
+A struct pattern lists each field once.
+
+Fix: delete the second one.
+
 #### E0707
 
 ```text
 a tuple pattern needs a tuple value, found %s
 ```
+
+A tuple pattern such as `#[a, b]` matches a tuple value, and the value here is not a tuple.
+
+Fix: match the value with a pattern of its own type.
 
 #### E0708
 
@@ -2346,11 +2820,19 @@ a tuple pattern needs a tuple value, found %s
 %s has %d elements, the pattern lists %d
 ```
 
+A tuple pattern lists one pattern for each element of the tuple.
+
+Fix: add or remove patterns. Write `_` for an element you do not need.
+
 #### E0709
 
 ```text
 a literal pattern needs an int, f64, bool, char or string value, found %s
 ```
+
+A literal pattern such as `1` or `"add"` matches a number, `bool`, `char` or `string` value.
+
+Fix: match the value with a pattern of its own type.
 
 #### E0710
 
@@ -2358,11 +2840,19 @@ a literal pattern needs an int, f64, bool, char or string value, found %s
 an `is` pattern can only bind names when it is the whole condition of an if or a conditional expression
 ```
 
+A name bound by `x is Some(v)` can be used only where the test is known to have passed. The test must be the whole condition of an `if` or of `? :`.
+
+Fix: write `if (x is Some(v)) { ... }` or `x is Some(v) ? v : 0`, or use `match`.
+
 #### E0711
 
 ```text
 match needs a value, found void
 ```
+
+The value after `match` is an expression with no value, such as a call to a function that returns nothing.
+
+Fix: match a value.
 
 #### E0712
 
@@ -2376,11 +2866,19 @@ a match used as a value needs a single expression in each arm
 match does not cover every %s value; add a `_` arm
 ```
 
+A `match` must handle every value of its subject, and the arms do not cover every value of this type, for example every `int`.
+
+Fix: add a `_` arm.
+
 #### E0714
 
 ```text
 match does not cover %s; add the cases or a `_` arm
 ```
+
+A `match` must handle every value of its subject. The arms miss the cases in the message.
+
+Fix: add arms for them, or a `_` arm.
 
 #### E0715
 
@@ -2388,11 +2886,19 @@ match does not cover %s; add the cases or a `_` arm
 this pattern does not match every %s; use match or `is` to test a value
 ```
 
+A destructuring declaration such as `const [a] = xs` has no other branch, so its pattern must match every value of the type. This pattern can fail, for example on an array of another length.
+
+Fix: use `match`, or test with `if (xs is [a]) { ... }`.
+
 #### E0716
 
 ```text
 a spread needs a struct value, found %s
 ```
+
+The spread `...value` in a struct literal copies the fields of a struct, and the value here is not a struct.
+
+Fix: spread a struct value, or write the fields one by one.
 
 #### E0717
 
@@ -2400,11 +2906,19 @@ a spread needs a struct value, found %s
 cannot spread %s into a %s literal; the spread must have the literal's type
 ```
 
+The spread in a struct literal must have the type of the literal.
+
+Fix: spread a value of the literal's type, or write the fields one by one.
+
 #### E0718
 
 ```text
 a tuple type needs at least two element types, found %d
 ```
+
+A tuple type has at least two element types. For one value, use its type directly.
+
+Fix: `#[int]` becomes `int`.
 
 #### E0719
 
@@ -2412,17 +2926,29 @@ a tuple type needs at least two element types, found %d
 a tuple needs at least two elements, found %d
 ```
 
+A tuple has at least two elements. For one value, use the value directly.
+
+Fix: `#[x]` becomes `x`.
+
 #### E0720
 
 ```text
 cannot match the fields of %s: it is an opaque struct of module %q
 ```
 
+An opaque struct hides its fields from other modules, so a struct pattern cannot read them there.
+
+Fix: read the value with the functions that its module exports.
+
 #### E0722
 
 ```text
 `...` must be the last element of an array pattern, and appear once
 ```
+
+`...` in an array pattern matches the elements left at the end, so it comes last and once.
+
+Fix: match the start, as in `[first, ...rest]`, and read later elements by index.
 
 #### E0723
 
@@ -2431,17 +2957,29 @@ cannot match the fields of %s: it is an opaque struct of module %q
 the length of %s is a constant parameter, so only `[..._]` matches every value; use match or `is` to test the length
 ```
 
+A FixedArray has a known length, and the pattern matches another number of elements. When the length is a constant parameter, only `[..._]` matches every value.
+
+Fix: list one pattern for each element, use `match` or `is` to test the length, or end the pattern with `..._`.
+
 #### E0724
 
 ```text
 the rest of a %s pattern cannot have a name, since its length would be N minus the elements before it; write `..._` and index the array
 ```
 
+The rest of a FixedArray pattern would have the length N minus the elements before it, so it cannot get a name.
+
+Fix: write `..._` and read the elements by index.
+
 #### E0726
 
 ```text
 an array pattern needs an Array or FixedArray value, found %s
 ```
+
+An array pattern such as `[first, ...rest]` matches an Array or FixedArray value, and the value here is neither.
+
+Fix: match the value with a pattern of its own type.
 
 ## E0800 to E0899: Effects
 
@@ -2453,11 +2991,19 @@ the implementation of `%s` declares `uses %s`, but the trait function does not; 
 the implementation of `%s` uses `%s`%s, but the trait function does not declare it; an implementation may use only the effects its trait function declares
 ```
 
+An exported function declares its effects with `uses`, and so does a private function that writes a `uses` list. The body has an effect that the list leaves out. The message names the call that causes it. An implementation of a trait function may use only the effects that the trait function declares.
+
+Fix: add the effect, as in `uses io`. For an implementation, add it to the trait function.
+
 #### E0801
 
 ```text
 unknown effect `%s`; the effects are alloc, io and unsafe, or an effect variable declared as `<effect %s>`
 ```
+
+The effects are `alloc`, `io` and `unsafe`. Any other name in a `uses` list must be an effect variable declared with the type parameters, as in `<effect E>`.
+
+Fix: correct the name, or declare the variable.
 
 #### E0802
 
@@ -2465,11 +3011,19 @@ unknown effect `%s`; the effects are alloc, io and unsafe, or an effect variable
 effect variable `%s` in the `uses` list of `%s` must appear in the function or generator type of a parameter
 ```
 
+An effect variable stands for the effects of a function the caller passes in. It must appear in the `uses` of a parameter's function type.
+
+Example: `function each<effect E>(xs: Array<int>, visit: (x: int) => void uses E) uses E`.
+
 #### E0803
 
 ```text
 the argument for `%s` of `%s` uses `%s`, but its function type does not declare it; write `uses %s` in the type, or `uses E` with `<effect E>` on `%s`
 ```
+
+A parameter whose function type has no `uses` accepts only functions without effects. The argument has the effects in the message.
+
+Fix: add them to the parameter type, as in `uses io`. Or use an effect variable: `<effect E>` on the function, and `uses E` on the parameter type and the function.
 
 ## E0900 to E0999: Standard library
 

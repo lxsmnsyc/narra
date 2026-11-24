@@ -24,6 +24,8 @@ export struct Flag derives Show, Equatable {
 }
 ```
 
+A flag. An empty value is a flag without a value; any other text names the value in the help (`--output <path>`). short is one character or empty. A flag given more than once is an error unless repeated is true.
+
 ### Rest
 
 ```narra fragment
@@ -34,6 +36,8 @@ export enum Rest derives Show, Equatable {
 }
 ```
 
+What a command does with positionals after the declared ones: an error (None), collect them (Positionals, flags after them still parse), or keep everything after the declared positionals as written (Raw).
+
 ### Entry
 
 ```narra fragment
@@ -42,6 +46,8 @@ export struct Entry derives Show, Equatable {
   value: string
 }
 ```
+
+One flag or positional as given. A flag without a value has the value "".
 
 ### Command
 
@@ -56,6 +62,8 @@ export struct Command derives Show, Equatable {
 }
 ```
 
+A command: its name, a summary for the help, its flags, its declared positionals, what it does with extra positionals, and its subcommands.
+
 Functions: [`parse`](#parse), [`help`](#help).
 
 ### Parsed
@@ -68,6 +76,8 @@ export struct Parsed derives Show, Equatable {
   rest: Array<string>
 }
 ```
+
+A parsed command line: the path of command names, the flags and positionals as given, and the rest.
 
 Functions: [`parse`](#parse), [`has`](#has), [`value`](#value), [`values`](#values), [`positional`](#positional), [`rest`](#rest-1), [`commandPath`](#commandpath).
 
@@ -88,6 +98,8 @@ export enum ArgsError derives Show, Equatable {
 }
 ```
 
+The ways a parse fails. closest is the nearest known name for a hint, or "". UnknownFlag and MissingValue name the flag as it was typed (`-o` or `--output`); UnexpectedValue and Repeated give its long name.
+
 Functions: [`parse`](#parse), [`formatError`](#formaterror).
 
 ## Functions
@@ -98,6 +110,8 @@ Functions: [`parse`](#parse), [`formatError`](#formaterror).
 export function parse(command: Command, arguments: Array<string>): Result<Parsed, ArgsError> uses alloc
 ```
 
+Parses the arguments that `run` receives, the program name first, against the command. `-h` and `--help` give `Err(ArgsError.Help(path))`, so the caller prints `help` and exits 0.
+
 Effects: `alloc`.
 
 ### has
@@ -105,6 +119,8 @@ Effects: `alloc`.
 ```narra fragment
 export function has(parsed: Parsed, name: string): bool
 ```
+
+Tells whether the flag, named by its long name, was given.
 
 Effects: none.
 
@@ -114,6 +130,8 @@ Effects: none.
 export function value(parsed: Parsed, name: string): Option<string> uses alloc
 ```
 
+value returns the last value given for the flag name.
+
 Effects: `alloc`.
 
 ### values
@@ -121,6 +139,8 @@ Effects: `alloc`.
 ```narra fragment
 export function values(parsed: Parsed, name: string): Array<string> uses alloc
 ```
+
+Gives every value given for the flag, in the order given.
 
 Effects: `alloc`.
 
@@ -130,6 +150,8 @@ Effects: `alloc`.
 export function positional(parsed: Parsed, name: string): Option<string> uses alloc
 ```
 
+Gives the value of the declared positional with that name, or `None` for a name the command does not declare.
+
 Effects: `alloc`.
 
 ### rest
@@ -137,6 +159,8 @@ Effects: `alloc`.
 ```narra fragment
 export function rest(parsed: Parsed): Array<string> uses alloc
 ```
+
+Gives the arguments after the declared positionals that the command's `rest` kept. With `Rest.None` it is always empty.
 
 Effects: `alloc`.
 
@@ -146,6 +170,8 @@ Effects: `alloc`.
 export function commandPath(parsed: Parsed): Array<string> uses alloc
 ```
 
+Gives the names from the top command to the chosen subcommand, such as `["narrac", "build"]`.
+
 Effects: `alloc`.
 
 ### help
@@ -154,6 +180,8 @@ Effects: `alloc`.
 export function help(command: Command, path: Array<string>): string uses alloc
 ```
 
+help writes the help of the command at path (`["narrac", "build"]`): the usage line, the summary, the flags and the subcommands, in aligned columns.
+
 Effects: `alloc`.
 
 ### formatError
@@ -161,5 +189,7 @@ Effects: `alloc`.
 ```narra fragment
 export function formatError(error: ArgsError): string uses alloc
 ```
+
+formatError writes the message line of an error, with a hint when a known name is close (`unknown flag --relase; did you mean --release?`).
 
 Effects: `alloc`.

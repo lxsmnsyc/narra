@@ -20,6 +20,8 @@ export struct Instant {
 }
 ```
 
+A point on the monotonic clock, for measuring time. It has no meaning as a date.
+
 Functions: [`now`](#now), [`elapsed`](#elapsed), [`between`](#between).
 
 ### Duration
@@ -29,6 +31,8 @@ export struct Duration {
   nanos: int
 }
 ```
+
+A span of time in nanoseconds.
 
 Functions: [`elapsed`](#elapsed), [`between`](#between), [`sleep`](#sleep), [`nanoseconds`](#nanoseconds), [`milliseconds`](#milliseconds), [`seconds`](#seconds), [`asNanoseconds`](#asnanoseconds), [`asMilliseconds`](#asmilliseconds).
 
@@ -40,6 +44,8 @@ Functions: [`elapsed`](#elapsed), [`between`](#between), [`sleep`](#sleep), [`na
 export function now(): Instant uses io
 ```
 
+Reads the monotonic clock, which never goes back.
+
 Effects: `io`.
 
 ### elapsed
@@ -47,6 +53,8 @@ Effects: `io`.
 ```narra fragment
 export function elapsed(since: Instant): Duration uses io
 ```
+
+Gives the time from `since` to now on the monotonic clock.
 
 Effects: `io`.
 
@@ -56,6 +64,8 @@ Effects: `io`.
 export function between(earlier: Instant, later: Instant): Duration
 ```
 
+Gives the time from `earlier` to `later`, which is negative when `later` comes first.
+
 Effects: none.
 
 ### unixMillis
@@ -63,6 +73,8 @@ Effects: none.
 ```narra fragment
 export function unixMillis(): int uses io
 ```
+
+Reads the wall clock as milliseconds since 1970-01-01 UTC. The wall clock can jump, so measure with `now` and `elapsed` instead.
 
 Effects: `io`.
 
@@ -72,6 +84,8 @@ Effects: `io`.
 export async function sleep(duration: Duration): Result<Duration, AsyncError> uses io, alloc
 ```
 
+Waits at least the duration without blocking other tasks, and gives the time slept. A cancel of the task ends it with `Err(AsyncError.Cancelled)`.
+
 Effects: `io`, `alloc`.
 
 ### nanoseconds
@@ -79,6 +93,8 @@ Effects: `io`, `alloc`.
 ```narra fragment
 export function nanoseconds(count: int): Duration
 ```
+
+Gives a duration of `count` nanoseconds.
 
 Effects: none.
 
@@ -88,6 +104,8 @@ Effects: none.
 export function milliseconds(count: int): Duration
 ```
 
+Gives a duration of `count` milliseconds.
+
 Effects: none.
 
 ### seconds
@@ -95,6 +113,8 @@ Effects: none.
 ```narra fragment
 export function seconds(count: int): Duration
 ```
+
+Gives a duration of `count` seconds.
 
 Effects: none.
 
@@ -104,6 +124,8 @@ Effects: none.
 export function asNanoseconds(duration: Duration): int
 ```
 
+Gives the duration in nanoseconds.
+
 Effects: none.
 
 ### asMilliseconds
@@ -111,5 +133,7 @@ Effects: none.
 ```narra fragment
 export function asMilliseconds(duration: Duration): int
 ```
+
+Gives the duration in whole milliseconds, dropping the rest.
 
 Effects: none.

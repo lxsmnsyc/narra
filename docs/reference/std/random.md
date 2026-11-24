@@ -20,6 +20,8 @@ export struct Random {
 }
 ```
 
+A generator's state. Each call that takes it as `mutable` moves it to the next number.
+
 Functions: [`seeded`](#seeded), [`fromSystem`](#fromsystem), [`nextBits`](#nextbits), [`nextInt`](#nextint), [`nextFloat`](#nextfloat), [`shuffle`](#shuffle).
 
 ## Functions
@@ -30,6 +32,8 @@ Functions: [`seeded`](#seeded), [`fromSystem`](#fromsystem), [`nextBits`](#nextb
 export function seeded(seed: int): Random
 ```
 
+Makes a generator from a seed. The same seed gives the same numbers on every run and platform.
+
 Effects: none.
 
 ### fromSystem
@@ -37,6 +41,8 @@ Effects: none.
 ```narra fragment
 export function fromSystem(): Random uses io
 ```
+
+Makes a generator seeded from the system's entropy, so each run gives different numbers.
 
 Effects: `io`.
 
@@ -46,6 +52,8 @@ Effects: `io`.
 export function nextBits(mutable random: Random): u64
 ```
 
+Gives the next 64 random bits.
+
 Effects: none.
 
 ### nextInt
@@ -53,6 +61,8 @@ Effects: none.
 ```narra fragment
 export function nextInt(mutable random: Random, low: int, high: int): Option<int>
 ```
+
+Gives a random `int` from `low` up to but not including `high`, every value equally likely. Gives `None` when `low` is not below `high`.
 
 Effects: none.
 
@@ -62,6 +72,8 @@ Effects: none.
 export function nextFloat(mutable random: Random): f64
 ```
 
+Gives a random `f64` from 0.0 up to but not including 1.0.
+
 Effects: none.
 
 ### shuffle
@@ -69,5 +81,7 @@ Effects: none.
 ```narra fragment
 export function shuffle<T>(mutable random: Random, mutable items: Array<T>)
 ```
+
+Puts the items in a random order in place, every order equally likely.
 
 Effects: none.

@@ -21,6 +21,8 @@ export struct RegexError derives Show, Equatable {
 }
 ```
 
+A pattern error from `compile`: `position` is the byte offset of the mistake and `reason` says what is wrong.
+
 Functions: [`compile`](#compile), [`formatError`](#formaterror).
 
 ### Match
@@ -34,6 +36,8 @@ export struct Match derives Show, Equatable {
   names: Array<string>
 }
 ```
+
+One match: the byte offsets `start` and `end`, its `text`, and the text of each group. Read the groups with `group` or `namedGroup`.
 
 Functions: [`find`](#find), [`findFrom`](#findfrom), [`findAll`](#findall), [`group`](#group), [`namedGroup`](#namedgroup), [`replaceWith`](#replacewith).
 
@@ -54,6 +58,8 @@ export struct Regex {
 }
 ```
 
+A compiled pattern, made by `compile` or `checked`. `source` holds the pattern text.
+
 Functions: [`compile`](#compile), [`checked`](#checked), [`matches`](#matches), [`find`](#find), [`findFrom`](#findfrom), [`findAll`](#findall), [`replace`](#replace), [`replaceAll`](#replaceall), [`replaceWith`](#replacewith), [`split`](#split).
 
 ## Functions
@@ -64,6 +70,8 @@ Functions: [`compile`](#compile), [`checked`](#checked), [`matches`](#matches), 
 export function compile(pattern: string): Result<Regex, RegexError> uses alloc
 ```
 
+Compiles a pattern into a `Regex`, or gives the first error in it.
+
 Effects: `alloc`.
 
 ### checked
@@ -71,6 +79,8 @@ Effects: `alloc`.
 ```narra fragment
 export function checked(pattern: string): Regex uses alloc
 ```
+
+Compiles a pattern while the program is compiled, so a bad pattern is a compile error. It may only be the value of a top-level `const`.
 
 Effects: `alloc`.
 
@@ -80,6 +90,8 @@ Effects: `alloc`.
 export function formatError(error: RegexError): string uses alloc
 ```
 
+Writes an error as `<position>: <reason>`, where the position is the byte offset of the mistake in the pattern.
+
 Effects: `alloc`.
 
 ### matches
@@ -87,6 +99,8 @@ Effects: `alloc`.
 ```narra fragment
 export function matches(regex: Regex, text: string): bool uses alloc
 ```
+
+Tells whether the regex matches anywhere in the text.
 
 Effects: `alloc`.
 
@@ -96,6 +110,8 @@ Effects: `alloc`.
 export function find(regex: Regex, text: string): Option<Match> from regex uses alloc
 ```
 
+Returns the first match in the text, or `None`.
+
 Effects: `alloc`.
 
 ### findFrom
@@ -103,6 +119,8 @@ Effects: `alloc`.
 ```narra fragment
 export function findFrom(regex: Regex, text: string, start: int): Option<Match> from regex uses alloc
 ```
+
+Returns the first match that starts at or after the byte offset `start`. A start inside a character moves to the next character, and a start outside the text finds nothing.
 
 Effects: `alloc`.
 
@@ -112,6 +130,8 @@ Effects: `alloc`.
 export function* findAll(regex: Regex, text: string): Generator<Match> uses alloc
 ```
 
+Yields every match from left to right, without overlaps. After an empty match the search goes on one character later.
+
 Effects: `alloc`.
 
 ### group
@@ -119,6 +139,8 @@ Effects: `alloc`.
 ```narra fragment
 export function group(found: Match, index: int): Option<string>
 ```
+
+Returns the text of a group, where 0 is the whole match. A group that took no part in the match, or one the pattern does not have, gives `None`.
 
 Effects: none.
 
@@ -128,6 +150,8 @@ Effects: none.
 export function namedGroup(found: Match, name: string): Option<string>
 ```
 
+Returns the text of the group written `(?<name>...)`, or `None` when that group took no part in the match or no group has the name.
+
 Effects: none.
 
 ### replace
@@ -135,6 +159,8 @@ Effects: none.
 ```narra fragment
 export function replace(regex: Regex, text: string, replacement: string): string uses alloc
 ```
+
+Replaces the first match with the replacement as plain text, so `$1` stays `$1`. With no match the text comes back unchanged.
 
 Effects: `alloc`.
 
@@ -144,6 +170,8 @@ Effects: `alloc`.
 export function replaceAll(regex: Regex, text: string, replacement: string): string uses alloc
 ```
 
+Replaces every match, found as `findAll` finds them, with the replacement as plain text.
+
 Effects: `alloc`.
 
 ### replaceWith
@@ -152,6 +180,8 @@ Effects: `alloc`.
 export function replaceWith<effect E>(regex: Regex, text: string, change: (Match) => string uses E): string uses E, alloc
 ```
 
+Replaces every match, found as `findAll` finds them, with the text the callback returns for it.
+
 Effects: `E`, `alloc`.
 
 ### split
@@ -159,5 +189,7 @@ Effects: `E`, `alloc`.
 ```narra fragment
 export function split(regex: Regex, text: string): Array<string> uses alloc
 ```
+
+Cuts the text at every match and returns the pieces, without the groups. An empty match next to the last cut or at the end of the text does not cut, and an empty text that the regex matches gives `[]`.
 
 Effects: `alloc`.

@@ -23,6 +23,8 @@ export enum Os derives Show, Equatable {
 }
 ```
 
+The operating systems a program can be built for.
+
 ### Arch
 
 ```narra fragment
@@ -33,6 +35,8 @@ export enum Arch derives Show, Equatable {
 }
 ```
 
+The processor architectures a program can be built for.
+
 ### Target
 
 ```narra fragment
@@ -41,6 +45,8 @@ export struct Target {
   arch: Arch
 }
 ```
+
+An operating system and an architecture.
 
 Functions: [`hostTarget`](#hosttarget).
 
@@ -52,17 +58,23 @@ Functions: [`hostTarget`](#hosttarget).
 export const os: Os
 ```
 
+The operating system of the build target. The compiler sets it for each build, so an `if` on it keeps only one branch.
+
 ### arch
 
 ```narra fragment
 export const arch: Arch
 ```
 
+The architecture of the build target. The compiler sets it for each build, so an `if` on it keeps only one branch.
+
 ### debug
 
 ```narra fragment
 export const debug: bool
 ```
+
+Tells whether this is a debug build: `true` by default and `false` in a `-release` build.
 
 ## Functions
 
@@ -71,5 +83,7 @@ export const debug: bool
 ```narra fragment
 export function hostTarget(): Option<Target>
 ```
+
+Gives the target the C compiler built this program for, or `None` on a system that `Os` and `Arch` do not list, such as WASI.
 
 Effects: none.

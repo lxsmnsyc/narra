@@ -59,6 +59,7 @@ A location. `end` is the position after the last character.
 - `refs` finds functions, constants and enum variants. Any other kind exits 1.
 - `callers` has one entry per call site: a function that calls twice is listed twice. The location is the callee's name in the call, or the whole template when `inTemplate` is set. Test bodies count as callers, named `<module>.test "<test name>"`. `recursion` counts only functions and implement block functions.
 - `interface` prints each signature from the source as written: type names keep the spelling they have there (aliases and qualified names included), field defaults and bodies are left out, opaque types hide their fields or base, and implement blocks show only through a type's `implements` list.
+- `interface --json` gives a declaration a `doc` field when it has one: the run of `//` lines right above it in the source, joined into one line, or the doc of a std builtin. A blank line ends the run. The field is absent when there is no doc. The text form leaves docs out.
 - Nested function types with `uses` are ambiguous as text (in `(() => int uses io) => int uses alloc`, a reader cannot tell from the text alone which function each `uses` belongs to). A consumer that needs the structure must not parse `type` or `signature`.
 
 Errors with `--json`: exit 1 and one object `{"error": "<message>"}`, or for load and check errors `{"errors": [<diagnostic objects as narra check --json>]}`. Until the self-hosted checker has diagnostic codes, `code` is the placeholder `E0000` and `range` is empty (start equals end) at the error's position. A load error with no file, such as a package directory that does not exist, leaves out `file` and `range`. A usage error prints the usage text on stderr and exits 2, also with `--json`.
@@ -81,3 +82,4 @@ None. Consumers can build against the JSON examples above.
 
 - v1: initial draft, written while refining query-cli.
 - v2 (from the query-cli change request): the type-of rule for `type` and `effects`, `inTemplate`, diagnostics without file and range, the `E0000` and empty-range placeholders, `local` and `parameter` reserved, the ambiguity, call site and test caller rules, and notes on `interface` text, nested `uses` text and the FILE spelling.
+- v3: the `doc` field of `interface --json`.

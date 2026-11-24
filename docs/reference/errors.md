@@ -1931,11 +1931,19 @@ the argument for `%s` of `%s` uses `%s`, but its function type does not declare 
 %s cannot be a map key: %s
 ```
 
+A map compares and hashes its keys by value. Floats, void, functions, maps, ranges, generators, pointers, Dynamic values and Cells cannot be keys, and neither can a struct, tuple or enum that holds one. A type that implements only one of Equatable and Hashable cannot be a key either.
+
+Fix: key the map by a type that can be hashed, such as an int, a string or a struct of them.
+
 #### E0901
 
 ```text
 the type of Map {} is unknown; add a type annotation
 ```
+
+An empty `Map {}` has no entries to take the key and value types from.
+
+Fix: annotate the target, as in `const ages: Map<string, int> = Map {}`.
 
 #### E0902
 
@@ -1943,11 +1951,19 @@ the type of Map {} is unknown; add a type annotation
 %s needs a map, found %s
 ```
 
+This std/map function takes a map as this argument, and the value passed is not one.
+
+Fix: pass a `Map<K, V>`.
+
 #### E0903
 
 ```text
 Map.remove changes the map; write Map.remove(mutable m, key)
 ```
+
+`Maps.remove` and `Maps.update` change the map they are given, so the call marks it `mutable`.
+
+Fix: `Maps.remove(ages, key)` becomes `Maps.remove(mutable ages, key)`.
 
 #### E0904
 
@@ -1955,11 +1971,19 @@ Map.remove changes the map; write Map.remove(mutable m, key)
 %s needs an array, found %s
 ```
 
+`Arrays.length`, `Arrays.values` and `Arrays.entries` take an array, and the value passed is not one.
+
+Fix: pass an `Array<T>`.
+
 #### E0905
 
 ```text
 Array.push changes the array; write Array.push(mutable items, value)
 ```
+
+`Arrays.push` and `Arrays.truncate` change the array they are given, so the call marks it `mutable`.
+
+Fix: `Arrays.push(items, 3)` becomes `Arrays.push(mutable items, 3)`.
 
 #### E0906
 
@@ -1967,17 +1991,29 @@ Array.push changes the array; write Array.push(mutable items, value)
 %s needs an array, found %s
 ```
 
+The first argument of `Arrays.push` or `Arrays.truncate` is the array to change, and the value passed is not an array.
+
+Fix: pass an `Array<T>`, marked `mutable`.
+
 #### E0907
 
 ```text
 %s can only be called inside a `test` block
 ```
 
+The functions of std/test, such as `Test.eq`, are assertions for test blocks. A call outside a `test` block is an error. The import itself may stay in a file that is also built as a program.
+
+Fix: move the call into a `test "name" { ... }` block.
+
 #### E0908
 
 ```text
 %s.%s needs an import; add `import * as %s from %q`
 ```
+
+`Array`, `Map`, `Box`, `Option`, `Range` and `Result` are types, not modules. Their functions live in a std module that must be imported.
+
+Fix: add `import * as Arrays from "std/array"` and call `Arrays.length(items)`. `narrac apply-fix` adds the import.
 
 #### E0909
 
@@ -1991,11 +2027,19 @@ Array.push changes the array; write Array.push(mutable items, value)
 %s needs a Result<T, E>, found %s
 ```
 
+The std/result functions, such as `Results.map` and `Results.withDefault`, take a `Result<T, E>` as their first argument, and the value passed is not one.
+
+Fix: pass a Result.
+
 #### E0911
 
 ```text
 %s needs a function as argument %d, found %s
 ```
+
+This argument of a std/result or std/map function is called as a function, so it must be one.
+
+Fix: pass an arrow function or a function name, as in `Results.map(result, (value: int) => value + 1)`.
 
 #### E0912
 
@@ -2003,17 +2047,29 @@ Array.push changes the array; write Array.push(mutable items, value)
 %s needs a function that returns %s, found one that returns %s
 ```
 
+The callback of `Results.andThen` returns the next Result. A callback that returns a plain value fits `Results.map`.
+
+Fix: return a Result from the callback, as in `(value: int): Result<int, string> => Ok(value + 1)`, or call `Results.map`.
+
 #### E0913
 
 ```text
 %s needs a function that returns a value
 ```
 
+The value the callback returns goes into the result of the call, so a callback that returns nothing has no value to give.
+
+Fix: return a value from the callback.
+
 #### E0914
 
 ```text
 %s.%s names a type; this module imports %q as %s
 ```
+
+A type name is not a module. The std module for this type is already imported, under another name.
+
+Fix: call the function through that import's name, as in `Arrays.length(items)`. `narrac apply-fix` makes the change.
 
 #### E0915
 
@@ -2022,11 +2078,19 @@ mutable parameter %q cannot be returned or stored; copy it first with `copy(%s)`
 loop element %q is changed in place, so it cannot be returned or stored; copy it first with `copy(%s)`
 ```
 
+A `mutable` parameter and a `for (mutable ...)` loop element refer to a value that the caller or the loop owns. Returning one or storing it in another value would keep that reference after the call or loop ends.
+
+Fix: return or store `copy(name)`.
+
 #### E0916
 
 ```text
 no enclosing loop is labeled %q
 ```
+
+A labeled `break` or `continue` names a loop around it, and no enclosing loop has this label.
+
+Fix: correct the label, or put it on the loop, as in `outer: for (...)`.
 
 #### E0917
 
@@ -2034,11 +2098,19 @@ no enclosing loop is labeled %q
 label %q is already used by an enclosing loop
 ```
 
+Each label names one loop, so an inner loop cannot reuse the label of a loop around it.
+
+Fix: give the inner loop another label.
+
 #### E0918
 
 ```text
 label %q must be on a for or while loop
 ```
+
+Only a `for` or `while` loop can carry a label, because only loops are left with `break label` and `continue label`.
+
+Fix: remove the label, or move it to a loop.
 
 #### E0920
 
@@ -2046,17 +2118,29 @@ label %q must be on a for or while loop
 %s can only be the source of a for ... of loop; use the array itself
 ```
 
+`Arrays.values(items)` and `Arrays.entries(items)` can only be the source of a `for ... of` loop.
+
+Fix: anywhere else, pass `items` itself, as in `Arrays.length(items)`.
+
 #### E0921
 
 ```text
 %q is never read; remove it, or name it %q to mark it as unused on purpose
 ```
 
+A local whose value is never read is dead code or a mistake. A name that starts with `_` is exempt.
+
+Fix: remove the local, or rename it to `_name` when it is unused on purpose. `narrac apply-fix` renames it.
+
 #### E0922
 
 ```text
 parameter %q is never read; remove it, or name it %q to mark it as unused on purpose
 ```
+
+A parameter whose value is never read is dead code or a mistake. A name that starts with `_` is exempt.
+
+Fix: remove the parameter, or rename it to `_name` when a function type requires it. `narrac apply-fix` renames it.
 
 #### E0923
 
@@ -2120,6 +2204,12 @@ Narra has no `this`. A function gets the value as a parameter.
 %q is passed as mutable in one call, so the rest of the expression cannot use it
 ```
 
+A call that takes a name as `mutable` may change it, so the rest of the same expression cannot read or pass that name.
+
+Fix: read what you need into a local first, then make the call. `narrac apply-fix` does this when it can.
+
+Example: `const total = x.n + bump(mutable x)` becomes `const before = x.n` and `const total = before + bump(mutable x)`.
+
 #### E0930
 
 ```text
@@ -2140,17 +2230,29 @@ Example: `function run() { function add(a: int): int { return a + 1 } }` becomes
 a block expression must end every path with `return value`
 ```
 
+A block expression gives its value with `return`, so every path through it ends in `return value`. A bare `return` gives no value.
+
+Fix: end each path with `return value`, also after an `if` without an `else`.
+
 #### E0932
 
 ```text
 %s cannot leave a block expression; it can only leave a loop inside the block
 ```
 
+`break` and `continue` cannot jump from a block expression to a loop outside it. A loop inside the block can still be left.
+
+Fix: move the `break` or `continue` out of the block expression, into the loop body.
+
 #### E0933
 
 ```text
 a block expression needs `return value`; Narra has no object literals, so write a struct literal such as `Point { x: 1 }`
 ```
+
+A `{ ... }` in value position is a block expression, and it gives its value with `return`. `{ a }` does not build a value from `a`.
+
+Fix: write a struct literal, such as `Point { x: 1 }`, or end the block with `return value`.
 
 #### E0934
 
@@ -2161,11 +2263,19 @@ both branches of a conditional expression must have a value
 the value of a conditional expression must be used; write an `if` statement instead
 ```
 
+A conditional expression is `cond ? a : b`. It needs the `:` and both values, and its value must be used. A line that starts with `?` or `:` begins a new statement, so a conditional expression that spans lines is wrapped in parentheses.
+
+Fix: write `(cond ? a : b)` across lines, and an `if` statement when no value is used.
+
 #### E0940
 
 ```text
 %s cannot take %s without loss; use %s.tryFrom or %s.wrap
 ```
+
+`from` converts only when every value of the source type fits the target type. `u32` to `i32` and `i8` to `u8` can lose a value.
+
+Fix: call `tryFrom`, which returns an Option, or `wrap`, which keeps the low bits, as in `I32.tryFrom(big)`.
 
 #### E0941
 
@@ -2174,11 +2284,19 @@ the value of a conditional expression must be used; write an `if` statement inst
 %s takes %s or an integer, found %s
 ```
 
+The integer conversion functions, such as `I32.from` and `U8.wrap`, take an integer. `F32.from` and `Float.from` also take the other float type.
+
+Fix: pass an integer. Parse a string into a number first.
+
 #### E0946
 
 ```text
 %q is imported but never used; remove it, or import it as %q to mark it as unused on purpose
 ```
+
+An import that nothing uses is dead code. A name that starts with `_` is exempt.
+
+Fix: remove the import, or the unused name from it. `narrac apply-fix` removes it.
 
 #### E0947
 
@@ -2186,17 +2304,29 @@ the value of a conditional expression must be used; write an `if` statement inst
 private function %q is never used; remove it, or name it %q to mark it as unused on purpose
 ```
 
+A private function that nothing calls is dead code. A name that starts with `_` is exempt.
+
+Fix: remove the function, export it, or rename it to `_name`. `narrac apply-fix` renames it.
+
 #### E0948
 
 ```text
 a mutable parameter needs a type whose contents change in place (a struct, Array, Map, Box, StringBuilder or Generator), found %s; return the new value instead
 ```
 
+`mutable` lets a function change the contents of the caller's value in place. Only a struct, Array, Map, Box, StringBuilder or Generator has such contents. An int, a string or an enum has none.
+
+Fix: take the value as a plain parameter and return the new value.
+
 #### E0949
 
 ```text
 mutable parameter %q cannot be assigned whole; `mutable` reaches its fields and elements, so return the new value instead
 ```
+
+A `mutable` parameter lets the function change the fields and elements of the caller's value. It cannot replace the whole value.
+
+Fix: assign the fields one by one, as in `p.x = 0`, or return the new value and let the caller assign it.
 
 #### E0950
 
@@ -2208,17 +2338,29 @@ mutable parameter %q cannot be assigned whole; `mutable` reaches its fields and 
 %q is destructured from a copy of the value, so it cannot be changed; copy it first with `copy(%s)`
 ```
 
+A `const` loop element, a name bound by a pattern and a destructured name each hold a copy. A change to the copy would not reach the original, so it is an error.
+
+Fix: loop with `for (mutable item of items)`, write through the source, as in `items[index].x = 2`, or change a `copy(item)` held in a `let`.
+
 #### E0951
 
 ```text
 a closure cannot change captured %q unless it is passed straight to a function parameter that is not escaping; copy it first with `copy(%s)`
 ```
 
+A closure that is stored, returned or passed to an `escaping` parameter captures a copy of each value. A change it makes would not reach the captured variable, so it is an error.
+
+Fix: pass the arrow function straight to a parameter that is not `escaping`, or keep the changing state in a Cell from std/cell.
+
 #### E0952
 
 ```text
 %s.%s takes `mutable Self`, so %s can only be implemented for a type whose contents change in place (a struct, Array, Map, Box, StringBuilder or Generator), not %s
 ```
+
+A trait function that takes `mutable Self` changes the value in place. Only a struct, Array, Map, Box, StringBuilder or Generator has contents that change in place, so other types cannot implement the trait.
+
+Fix: implement the trait for a struct that holds the value.
 
 #### E0954
 
@@ -2229,11 +2371,19 @@ Arrays.entries gives #[index, item] tuples; write `for (const #[index, mutable %
 the source of `for (mutable ...)` must be a variable, a field or an element, so the loop can change it in place; store the array in a local first
 ```
 
+`for (mutable item of items)` changes the elements of an Array in place. The source must be an Array held in a variable, a field or an element. The index form `#[index, mutable item]` takes `Arrays.entries(items)` as its source, and `Arrays.entries` takes only that form.
+
+Fix: write `for (mutable item of items)`, or `for (const #[index, mutable item] of Arrays.entries(items))`. Store a computed array in a local first.
+
 #### E0955
 
 ```text
 the elements of %s are %s, which have no contents to change in place; write `%s[%s] = ...` in a `for (const #[%s, %s] of Arrays.entries(%s))` loop
 ```
+
+`for (mutable ...)` changes the contents of each element. Ints, strings, enums and other plain values have no contents to change in place.
+
+Fix: assign through an index, as in `for (let index = 0; index < Arrays.length(items); index++) { items[index] = items[index] + 1 }`.
 
 #### E0956
 
@@ -2241,11 +2391,19 @@ the elements of %s are %s, which have no contents to change in place; write `%s[
 %q cannot be used inside the loop that changes %s in place; reach its elements through %s, or write an index loop
 ```
 
+While `for (mutable item of items)` runs, the loop element is the only way to reach the elements of `items`. Any other use of `items` in the body is an error.
+
+Fix: reach the element through the loop element, or write an index loop.
+
 #### E0957
 
 ```text
 `for (mutable ...)` is not supported in a function* body yet; change the elements through an index, as in `items[index].field = value`
 ```
+
+`for (mutable ...)` is not supported in a `function*` body yet.
+
+Fix: change the elements through an index, as in `items[index].field = value`.
 
 #### E0958
 
@@ -2253,11 +2411,19 @@ the elements of %s are %s, which have no contents to change in place; write `%s[
 loop element %q cannot be assigned whole; `mutable` reaches its fields and elements, so assign those, or write an index loop to replace the element
 ```
 
+A `for (mutable item of items)` element can change its fields and elements, but it cannot be replaced whole.
+
+Fix: assign the fields, or write an index loop and assign `items[index] = value`.
+
 #### E0959
 
 ```text
 the condition of a for loop must be a bool, found %s
 ```
+
+The condition of a `for` loop must be a `bool`. A number or a string is not a condition.
+
+Fix: write a comparison, as in `i < count`.
 
 #### E0960
 
@@ -2265,11 +2431,19 @@ the condition of a for loop must be a bool, found %s
 the first part of a for loop must be `let`, because the step changes it
 ```
 
+The step of a three-part `for` loop changes the counter, so the counter is declared with `let`.
+
+Fix: `for (const i = 0; i < n; i++)` becomes `for (let i = 0; i < n; i++)`.
+
 #### E0961
 
 ```text
 the last part of a for loop must be an assignment or a call
 ```
+
+The last part of a three-part `for` loop runs after each pass, so it must change something: an assignment, `i++` or a call.
+
+Fix: `i + 1` becomes `i++` or `i += 1`.
 
 #### E0962
 
@@ -2278,11 +2452,19 @@ the last part of a for loop must be an assignment or a call
 %s cannot be applied to %s
 ```
 
+A compound assignment needs a value of the same type as its target, with no conversion. `+=` works on numbers and strings, `-=`, `*=`, `/=` and `%=` on numbers, and the bit and shift operators on integers.
+
+Fix: convert the value to the target's type first, or use the operator the type supports.
+
 #### E0963
 
 ```text
 %s needs an integer variable, found %s; write `x += 1` for a float
 ```
+
+`++` and `--` add or subtract 1 from an integer variable.
+
+Fix: for a float, write `x += 1.0`.
 
 #### E0964
 
@@ -2291,11 +2473,19 @@ compound assignments and `++` are statements; they have no value, and `++x` is w
 there is no prefix `%s`; write `x%s` as a statement
 ```
 
+`+=`, `++` and the other compound assignments are statements. They have no value, so they cannot be part of an expression. There is no prefix `++x`.
+
+Fix: write `x++` on its own line, then use `x`.
+
 #### E0965
 
 ```text
 cannot use == on %s: a Cell is shared by identity; compare the values with Cells.get
 ```
+
+A Cell is shared by identity: every copy reads and writes the same slot. `==` would compare the slots, not the values.
+
+Fix: compare the values, as in `Cells.get(a) == Cells.get(b)`.
 
 #### E0967
 
@@ -2303,11 +2493,19 @@ cannot use == on %s: a Cell is shared by identity; compare the values with Cells
 %q is bound in one alternative but not in the other; every alternative binds the same names
 ```
 
+The arm body runs whichever alternative of an or-pattern matched, so every alternative binds the same names.
+
+Fix: bind the name in each alternative, as in `Shape.Circle(size) | Shape.Square(size) => size`, or split them into separate arms.
+
 #### E0968
 
 ```text
 %q has type %s here and %s in the first alternative; every alternative binds the same types
 ```
+
+A name bound in several alternatives must have the same type in each, so the arm body sees one type.
+
+Fix: split the alternatives into separate arms.
 
 #### E0969
 
@@ -2315,11 +2513,19 @@ cannot use == on %s: a Cell is shared by identity; compare the values with Cells
 this function must return %s on every path, but %s
 ```
 
+A function with a result type must end every path with `return value`. The message names a path that can reach the end without one.
+
+Fix: add a `return` on that path, such as an `else` branch or a final `return` after the `if`.
+
 #### E0970
 
 ```text
 this arrow function must return %s on every path, but %s
 ```
+
+An arrow function with a result type must end every path with `return value`. The message names a path that can reach the end without one.
+
+Fix: add a `return` on that path, such as an `else` branch or a final `return` after the `if`.
 
 #### E0971
 
@@ -2327,17 +2533,29 @@ this arrow function must return %s on every path, but %s
 %s would be a second name for the %s in %s; use %s, or copy(%s) for %s of its own
 ```
 
+Binding a struct, Array, Map, FixedArray, Box, StringBuilder or generator to a second bare name would name one value twice. A write through one name would not show in the other.
+
+Fix: use the original name, or `copy(name)` for a value of its own. `narrac apply-fix` adds the copy.
+
 #### E0972
 
 ```text
 type alias %s refers to itself; a recursive type needs an enum
 ```
 
+A type alias is another name for a type, so it cannot contain itself.
+
+Fix: declare an enum for a recursive type.
+
 #### E0973
 
 ```text
 type alias %s takes %s type arguments, found %s
 ```
+
+A generic type alias takes one type argument for each type parameter it declares.
+
+Fix: give the right number of type arguments, as in `Pair<int>` for `type Pair<T> = Array<T>`.
 
 #### E0974
 
@@ -2347,6 +2565,10 @@ an `is` test takes one pattern, not alternatives; use `match` to list alternativ
 a destructuring takes one pattern, not alternatives; use `match` to list alternatives
 ```
 
+An alternative that the earlier arms and alternatives already match never runs. An `is` test and a destructuring take one pattern, not alternatives.
+
+Fix: remove the unreachable alternative. To test several patterns, use `match`.
+
 #### E0975
 
 ```text
@@ -2354,6 +2576,10 @@ copy takes one argument, found %s
 copy does not change its argument; remove `mutable`
 copy of %s copies nothing: a value of this type is never changed in place; remove the call
 ```
+
+`copy` takes one value whose contents can change in place, such as a struct or an Array, and returns a copy of its own. A value that never changes in place, such as an int or a string, needs no copy. `copy` never changes its argument.
+
+Fix: remove the call, or remove `mutable` from the argument. `narrac apply-fix` removes the call.
 
 #### E0976
 
@@ -2369,11 +2595,19 @@ from names %s, which is not a parameter of this function type; name the paramete
 from names %s, which is not a parameter of this arrow function; a from marker can name only a parameter
 ```
 
+A function whose result shares a parameter says so with `from` after the result type, so callers see it in the signature. A result that shares a parameter without the marker, and a `from` that names no parameter, are errors.
+
+Fix: add `from name`, as in `function cells(row: Row): Array<int> from row`, or return `copy(value)`. `narrac apply-fix` does this.
+
 #### E0977
 
 ```text
 this function's result shares its parameter %s, but the expected type %s has no matching from; add `from` naming that parameter to the expected type
 ```
+
+A function whose result shares a parameter fits a function type only when that type also names the parameter with `from`.
+
+Fix: add `from` to the expected function type, as in `(grid: Grid) => Array<int> from grid`. `narrac apply-fix` adds it.
 
 #### E0978
 
@@ -2386,11 +2620,19 @@ this function's result shares its parameter %s, but the expected type %s has no 
 %s may change %s, which the loop over %s still holds; change it after the loop, or loop over a copy(...)
 ```
 
+While another name that is still used shares a place, a write to that place is an error. The write would copy the value, and the other name would not see the change. Sharing starts where a value is read into a second name and ends after that name's last use.
+
+Fix: write after the last use of the other name, or take `copy(...)` where a separate value is meant.
+
 #### E0979
 
 ```text
 the divisor must be a non-zero constant or a name checked against zero first; %s
 ```
+
+Integer `/` and `%` compile only when the divisor is proven not to be zero. It must be a non-zero constant, or a local checked first in the same function.
+
+Fix: check the divisor, as in `if (count != 0) { return total / count }`.
 
 #### E0980
 
@@ -2398,12 +2640,20 @@ the divisor must be a non-zero constant or a name checked against zero first; %s
 the shift count must be a constant from 0 to %s or a name checked against both ends first; %s
 ```
 
+A shift count must be proven in range. It must be a constant from 0 to the bit width minus 1, or a local checked against both ends first.
+
+Fix: check the count, as in `if (n >= 0 && n < 64) { return 1 << n }`, or use a constant in range.
+
 #### E0981
 
 ```text
 typeof %s refers to its own declaration; write the type out
 typeof %s is part of the cycle %s; write one of the types out
 ```
+
+`typeof name` takes the type of a declaration, so it cannot name the declaration it is part of, directly or through a cycle.
+
+Fix: write the type out, as in `const count: int = 1`.
 
 #### E0982
 
@@ -2414,11 +2664,19 @@ typeof %s has no function type to write: a generic function, one with effect var
 typeof %s has no function type to write: a function with requires cannot be used as a value
 ```
 
+`typeof` takes the type of a value: a const, let, parameter or function. A type or a module is not a value. A generic function, one with effect variables, one with a `mutable` parameter and one with `requires` have no function type to write.
+
+Fix: write the type itself, or name a value.
+
 #### E0983
 
 ```text
 this arm is unreachable: the arms before it already match every value it matches
 ```
+
+An arm that the unguarded arms before it already match never runs, such as an arm after `_` or a repeated constructor.
+
+Fix: remove the arm, or move it before the arm that covers it. `narrac apply-fix` removes it.
 
 #### E0984
 
@@ -2428,6 +2686,10 @@ requires compares integer parameters with integer constants or with each other, 
 requires needs a function body; a trait function has none, so state it on the implementations
 ```
 
+A `requires` condition compares integer parameters with integer constants or with each other, joined by `&&` and `||`. It needs a function body, and a function of an implement block cannot have one, because a call through the trait cannot prove it.
+
+Fix: rewrite the condition in that form, as in `requires index >= 0 && index < 64`.
+
 #### E0985
 
 ```text
@@ -2436,11 +2698,19 @@ this argument is not proven to meet `requires %s` of %s; pass a constant, or a n
 %s do not satisfy `requires %s` of %s
 ```
 
+Each call of a function with `requires` proves the condition from its arguments. An argument proves it when it is a constant, or a name checked first by an `if`, a `while` or an early return.
+
+Fix: check the argument before the call, as in `if (n >= 0) { return slot(n) }`.
+
 #### E0986
 
 ```text
 function %s has a requires condition, so it cannot be used as a value; call it directly
 ```
+
+A function type carries no condition, so a call through a function value could pass an argument that was never proven. A function with `requires` cannot be used as a value.
+
+Fix: call the function directly.
 
 #### E0987
 
@@ -2455,6 +2725,10 @@ the bound of `%s` must be an integer constant: a literal or a top-level const
 an ensures pattern cannot be an array pattern; the prover keeps no facts about array lengths
 ```
 
+An `ensures` line is a pattern that every result must match. A comparison such as `>= 0` needs an integer place and an integer constant that fits its type. `ensures` needs a function body and a result, binds no names, and takes no array patterns.
+
+Fix: write `_` for any value and a constant bound, as in `ensures Ok(> 0) | Err(_)`.
+
 #### E0988
 
 ```text
@@ -2462,12 +2736,20 @@ this value is not proven to match `ensures %s`; write a constant, a constructor,
 the values of yield* are not proven to match `ensures %s`; yield each value after a check
 ```
 
+Every returned value is proven against each `ensures` line. A value is proven when it is a constant, a constructor or literal written in place, or a name narrowed by a check. The result of a call is not proven, and neither are the values of `yield*`.
+
+Fix: check the value with an `if` before returning it, and yield each value of a `yield*` after a check.
+
 #### E0989
 
 ```text
 std/build has no target for this host (%s); the supported targets are %s
 could not determine the host: %s
 ```
+
+std/build describes the target the program is built for, so the host must be one of the supported targets.
+
+Fix: build on a supported host. `narrac targets` lists them.
 
 #### E0990
 
@@ -2483,6 +2765,10 @@ unknown attribute @%s; the known attributes are %s
 %s of std/build has no variant %s
 @target takes %s from std/build here, not %s
 ```
+
+The attributes are `@target`, `@trusted`, `@extern` and `@const`. Each is written once, on the lines before a function declaration, and an implement block allows only `@trusted`. `@target` takes `os`, `arch` or both, each a variant of `Os` or `Arch` from std/build.
+
+Fix: use a known attribute in that place, as in `@target(os = Os.Windows)`.
 
 #### E0991
 
@@ -3158,17 +3444,29 @@ Fix: write the tag and the template on one line, `const x = tag`a``, or remove t
 a parameter without a default cannot follow one with a default; give %q a default or move it before %q
 ```
 
+Parameters with defaults come last, so a call can leave them out from the end.
+
+Fix: give the parameter a default, or move it before the first parameter with one.
+
 #### E1211
 
 ```text
 a mutable parameter cannot have a default
 ```
 
+A `mutable` parameter refers to a value that the caller passes, so it cannot have a default.
+
+Fix: remove the default.
+
 #### E1212
 
 ```text
 a parameter default must be a constant
 ```
+
+A parameter default is a compile-time constant: a literal, a unary operator on a constant, a constructor with constant arguments, or an array of constants. It cannot read another parameter, a local, a top-level constant or a function.
+
+Fix: write the value as a literal, or take `Option<T> = None` and compute the value in the body.
 
 #### E1213
 
@@ -3177,11 +3475,19 @@ an arrow function parameter cannot have a default
 a function type cannot have parameter defaults
 ```
 
+Only declared functions take parameter defaults. An arrow function parameter and a function type parameter have none.
+
+Fix: remove the default and pass the value at each call.
+
 #### E1214
 
 ```text
 a trait function cannot have parameter defaults
 ```
+
+A trait function and the functions of its implement blocks cannot have parameter defaults.
+
+Fix: remove the default and pass the value at each call.
 
 #### E1215
 
@@ -3189,12 +3495,20 @@ a trait function cannot have parameter defaults
 a function of an extern block cannot have parameter defaults
 ```
 
+The functions of an `extern` block cannot have parameter defaults.
+
+Fix: remove the default and pass the value at each call.
+
 #### E1216
 
 ```text
 optional parameters are written with a default; write %q
 an arrow function parameter cannot be optional; write %q
 ```
+
+An optional parameter is written with a default, not with `?`. An arrow function parameter cannot be optional.
+
+Fix: `name?: string` becomes `name: Option<string> = None`. In an arrow function, write `name: Option<string>`.
 
 #### E1220
 
@@ -3204,11 +3518,19 @@ a distinct type takes one `requires` list; join its patterns with `&&`
 `implements` and `derives` come before `requires` on a distinct type
 ```
 
+A distinct type takes one `requires` list of patterns joined by `&&`, after its `implements` and `derives` lists.
+
+Fix: write it as in `distinct type Port = int derives Show requires >= 1 && <= 65535`.
+
 #### E1221
 
 ```text
 distinct type %s cannot have a requires list: its base %s is not an integer type or string
 ```
+
+Only a distinct type over an integer type or `string` can have a `requires` list.
+
+Fix: remove the list, or base the type on an integer type or `string`.
 
 #### E1222
 
@@ -3221,12 +3543,20 @@ the literal %s is not a value of %s's base %s
 a refinement pattern is a comparison, a literal or alternatives of them, found %s
 ```
 
+The patterns of a distinct type's `requires` fit its base. An integer base takes comparisons with a constant bound that fits the type, and integer literals. A `string` base takes string literals only.
+
+Fix: write patterns such as `>= 1 && <= 65535` or `"GET" | "POST"`.
+
 #### E1223
 
 ```text
 %s does not satisfy %s (%s)
 %s.from needs %s to satisfy %s; check it first or call %s.check
 ```
+
+`T.from(value)` is proven at compile time against the type's `requires` patterns. Nothing is checked at run time.
+
+Fix: pass a constant that matches, check the value first with an `if`, or call `T.check(value)`, which returns an Option and tests at run time.
 
 #### E1240
 
@@ -3268,6 +3598,10 @@ Fix: delete the repeated name: `uses (io, io)` in a type and `uses io, io` on a 
 %s is not defined on %s, whose lanes are floats; it takes integer vectors
 ```
 
+Vector operators work lane by lane, and some have no lane form. These are `<` and the other ordered comparisons, integer `/` and `%`, `<<` and `>>`, and the bit operators on float lanes.
+
+Fix: call the std/simd function the message names, such as `Simd.shiftLeft`.
+
 #### E1251
 
 ```text
@@ -3275,17 +3609,29 @@ Fix: delete the repeated name: `uses (io, io)` in a type and `uses io, io` on a 
 %s needs two vectors of the same type, found %s and %s; make a vector of the scalar with Simd.splat(...)
 ```
 
+Both operands of a vector operator have the same vector type. A scalar is not a vector.
+
+Fix: `v * 2.0` becomes `v * Simd.splat(2.0)`.
+
 #### E1252
 
 ```text
 a lane of %s cannot be assigned, since a vector is a value; write `v = Simd.withLane(v, i, x)`
 ```
 
+A vector is a value, so one lane cannot be assigned.
+
+Fix: `v[i] = x` becomes `v = Simd.withLane(v, i, x)`.
+
 #### E1253
 
 ```text
 %s needs %d lanes, found %d
 ```
+
+An array literal for a vector gives exactly one value per lane.
+
+Fix: give as many values as the vector has lanes, as in `const unit: F32x4 = [1.0, 0.0, 0.0, 0.0]`.
 
 #### E1254
 
@@ -3294,6 +3640,10 @@ a lane of %s cannot be assigned, since a vector is a value; write `v = Simd.with
 %s takes its vector type from where the result goes or from a type argument, as in `const lanes: Option<F32x8> = Simd.load(items, 0)` or `Simd.load<F32x8>(items, 0)`
 ```
 
+`Simd.splat` and `Simd.load` cannot tell from their arguments which vector type to build.
+
+Fix: annotate the target, as in `const ones: F32x4 = Simd.splat(1.0)`, or pass a type argument, as in `Simd.splat<F32x4>(1.0)`.
+
 #### E1255
 
 ```text
@@ -3301,11 +3651,19 @@ a lane of %s cannot be assigned, since a vector is a value; write `v = Simd.with
 %s takes a FixedArray of known length, found %s
 ```
 
+A vector holds 16 or 32 bytes of i8 to u64, f32 or f64 lanes. `Simd.fromFixed` needs a FixedArray of known length whose element type and length make such a vector.
+
+Fix: pass a matching FixedArray, such as `FixedArray<f32, 4>` for F32x4.
+
 #### E1256
 
 ```text
 %s takes a vector, found %s
 ```
+
+This std/simd function takes a vector, such as an F32x4, and the value passed is not one.
+
+Fix: pass a vector, or build one with `Simd.splat`.
 
 #### E1260
 
@@ -3316,6 +3674,10 @@ lane %d is out of range for %s, whose lanes are 0 to %d
 a lane of %s must be a constant, as in `Simd.shuffle(v, [3, 2, 1, 0])`
 ```
 
+`Simd.shuffle` takes the lane order as a list literal of constants, one per lane, each a lane of the vector.
+
+Fix: write it as in `Simd.shuffle(v, [3, 2, 1, 0])`.
+
 #### E1261
 
 ```text
@@ -3325,11 +3687,19 @@ a lane of %s must be a constant, as in `Simd.shuffle(v, [3, 2, 1, 0])`
 %s writes %s into an Array<%s>, found %s
 ```
 
+Some std/simd functions take only some vector types: integer vectors only, or signed and float vectors only. A mask must match the vector, and a store writes into an Array of the lane type.
+
+Fix: pass the vector, mask or array type that the message names.
+
 #### E1270
 
 ```text
 the step of Ranges.stepped is 0, so the range is always empty; use a step other than 0
 ```
+
+`Ranges.stepped` with a step of 0 never produces a value.
+
+Fix: use a positive step to count up, or a negative step to count down.
 
 ## E1300 to E1399: Standard library modules for tools
 
@@ -3405,8 +3775,16 @@ Fix: write `const` instead of `let`.
 unknown target %s; the targets are %s
 ```
 
+`--target` takes a name from the target table.
+
+Fix: use one of the names in the message. `narrac targets` prints them.
+
 #### E1601
 
 ```text
 -sanitize cannot build for %s: sanitizer runtimes do not cross-link; build without -sanitize
 ```
+
+The sanitizer runtimes do not link into a build for another target.
+
+Fix: build without `-sanitize`, or build on the target itself.

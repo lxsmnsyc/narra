@@ -18,3 +18,10 @@ declare module 'virtual:search-index' {
   const entries: SearchEntry[];
   export default entries;
 }
+
+declare module 'virtual:bench-baseline' {
+  import type { BenchRun } from '../plugins/bench.ts';
+
+  const run: BenchRun;
+  export default run;
+}

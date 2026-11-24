@@ -62,7 +62,7 @@ Set them before `sh` in the shell command, or in the environment before the Powe
 curl -fsSL https://github.com/lxsmnsyc/narra/releases/latest/download/install.sh | NARRA_VERSION=0.1.0 NARRA_INSTALL=/usr/local/bin sh
 ```
 
-GitHub's `latest` link skips prereleases. While a project has only prereleases, the one-line commands above fail with a 404, because they download the script from `releases/latest`. In that case, download the script from the release itself, for example `https://github.com/lxsmnsyc/narra/releases/download/v0.1.0-rc1/install.sh`, or set `NARRA_VERSION`. A script that runs without `NARRA_VERSION` installs the latest release, or the newest release of any kind when there is only a prerelease.
+Without `NARRA_VERSION`, the script installs the latest release. GitHub's `latest` skips prereleases, so to install a prerelease, set `NARRA_VERSION` to its version.
 
 `NARRA_BASE_URL` is a testing override. It names a folder that holds the archive and its `.sha256` file instead of the GitHub release, and it must start with `https://`. Only `http://localhost` and `http://127.0.0.1` are allowed without TLS, and the shell script also takes a `file://` folder. The script needs `HOME` or `NARRA_INSTALL` to know where to install.
 

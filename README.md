@@ -16,7 +16,7 @@ Narra is a compiled language with Rust-style semantics. It is memory safe withou
 
 The name comes from the narra, the national tree of the Philippines, a hardwood known for lasting a long time.
 
-Status: a first prerelease is coming. The language is not released yet, so syntax and standard library can still change. The compiler, `narrac`, is written in Narra (`selfhost/`).
+Status: version 0.1.0 is the first release. Syntax and the standard library can still change. The compiler, `narrac`, is written in Narra (`selfhost/`).
 
 To have a coding agent write Narra with `narrac`, add the skill in [skills/narra](skills/narra/SKILL.md) to Claude Code: `/plugin marketplace add lxsmnsyc/narra`, then `/plugin install narra@narra`. In a trial of 10 tasks, an agent passed 19 of 20 runs with the skill and 15 of 20 without. See the [results](skills/narra/evals/results.md).
 

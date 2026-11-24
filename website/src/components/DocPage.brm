@@ -2,13 +2,14 @@
   import { $bind, $client, $props, $signal } from 'brumate/signals';
   import Icon from './Icon.brm';
   import { addCopyButtons, followHeadings } from '../docs/enhance.ts';
-  import { chapters } from '../pages.ts';
+  import { chapters, referencePages } from '../pages.ts';
   import type { Page } from '../pages.ts';
   import { startTwoslash } from '../twoslash/client.ts';
   import Meta from './Meta.brm';
 
-  // A document of the site: the chapters of the guide in a sidebar when `slug` names one, the
-  // page, its outline, and the links to the chapters before and after it.
+  // A document of the site: a sidebar with the chapters of the guide when `slug` names one, or
+  // with the reference pages on a reference page; the page, its outline, and the links to the
+  // chapters before and after it.
   const { page, path, slug } = $props<{ page: Page; path: string; slug?: string }>();
   function findIndex(): number {
     for (const [at, chapter] of chapters.entries()) {
@@ -21,7 +22,24 @@
   const index = findIndex();
   const previous = index > 0 ? chapters[index - 1] : undefined;
   const next = index !== -1 ? chapters[index + 1] : undefined;
-  const hasSidebar = slug !== undefined;
+  // The spec is listed with the reference, so it shares the reference's sidebar.
+  const isReference = path === 'spec' || path === 'reference' || path.startsWith('reference/');
+  const hasSidebar = slug !== undefined || isReference;
+  const REFERENCE_LINKS = [
+    { label: 'Overview', path: 'reference' },
+    { label: 'Commands', path: 'reference/commands' },
+    { label: 'narra.toml', path: 'reference/narra-toml' },
+    { label: 'Errors', path: 'reference/errors' },
+    { label: 'Spec', path: 'spec' },
+  ];
+  // The std modules, as `std/option`, in the order of their names.
+  const modules: { label: string; path: string }[] = [];
+  for (const entry of referencePages) {
+    if (entry.slug.startsWith('std/')) {
+      modules.push({ label: entry.slug, path: `reference/${entry.slug}` });
+    }
+  }
+  const inStd = path === 'reference/std' || path.startsWith('reference/std/');
   // `SPEC.md` has a heading for each rule, so its outline shows the sections only.
   const outline: Page['headings'] = [];
   for (const heading of page.headings) {
@@ -37,8 +55,14 @@
 
   let article = $signal<HTMLElement>();
   let toc = $signal<HTMLElement>();
+  let sidebar = $signal<HTMLElement>();
 
   $client(() => {
+    // A long sidebar scrolls on its own; it opens with the current page in view.
+    const current = sidebar?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (sidebar && current && current.offsetTop + current.offsetHeight > sidebar.clientHeight) {
+      sidebar.scrollTop = current.offsetTop - sidebar.clientHeight / 2;
+    }
     if (!article) {
       return;
     }
@@ -59,20 +83,39 @@
   #if (hasSidebar) {
     <details class="menu">
       <summary>
-        Chapters
+        {isReference ? 'Reference' : 'Chapters'}
         <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </summary>
     </details>
-    <nav class="sidebar" aria-label="Chapters">
-      <p class="sidebar-title">Guide</p>
-      <a href="/guide" aria-current=(slug === '' ? 'page' : undefined)>Overview</a>
-      #for (chapter, position of chapters by chapter.slug) {
-        <a href=(`/guide/${chapter.slug}`) aria-current=(chapter.slug === slug ? 'page' : undefined)>
-          <span class="sidebar-number">{String(position + 1).padStart(2, '0')}</span>
-          <span>{chapter.title.replace(/^(\d+)\.\s+/, '')}</span>
-        </a>
-      }
-    </nav>
+    #if (isReference) {
+      <nav class="sidebar" aria-label="Reference" ref=$bind(sidebar)>
+        <p class="sidebar-title">Reference</p>
+        #for (link of REFERENCE_LINKS by link.path) {
+          <a href=(`/${link.path}`) aria-current=(link.path === path ? 'page' : undefined)>{link.label}</a>
+        }
+        <details class="sidebar-group" open=inStd>
+          <summary class="sidebar-toggle">
+            Standard library
+            <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+          </summary>
+          <a href="/reference/std" aria-current=(path === 'reference/std' ? 'page' : undefined)>Overview</a>
+          #for (module of modules by module.path) {
+            <a class="sidebar-module" href=(`/${module.path}`) aria-current=(module.path === path ? 'page' : undefined)>{module.label}</a>
+          }
+        </details>
+      </nav>
+    } #else {
+      <nav class="sidebar" aria-label="Chapters" ref=$bind(sidebar)>
+        <p class="sidebar-title">Guide</p>
+        <a href="/guide" aria-current=(slug === '' ? 'page' : undefined)>Overview</a>
+        #for (chapter, position of chapters by chapter.slug) {
+          <a href=(`/guide/${chapter.slug}`) aria-current=(chapter.slug === slug ? 'page' : undefined)>
+            <span class="sidebar-number">{String(position + 1).padStart(2, '0')}</span>
+            <span>{chapter.title.replace(/^(\d+)\.\s+/, '')}</span>
+          </a>
+        }
+      </nav>
+    }
   }
   <article class="prose" ref=$bind(article)>
     <header class="doc-head">

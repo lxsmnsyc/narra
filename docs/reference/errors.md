@@ -874,6 +874,10 @@ Fix: annotate the variable, as in `let xs: Array<int> = []`.
 unsupported expression
 ```
 
+This error means the compiler reached a case it does not handle. It is a bug in narrac, not in your code.
+
+Fix: report it at https://github.com/lxsmnsyc/narra/issues with the smallest program that shows it.
+
 #### E0214
 
 ```text
@@ -929,6 +933,10 @@ Fix: use integer operands of one type, and convert a float or a different intege
 ```text
 unknown operator %s
 ```
+
+This error means the compiler reached a case it does not handle. It is a bug in narrac, not in your code.
+
+Fix: report it at https://github.com/lxsmnsyc/narra/issues with the smallest program that shows it.
 
 #### E0220
 
@@ -1202,12 +1210,6 @@ Fix: use a smaller value, or the type `f64`.
 
 ## E0300 to E0399: Calls and constructors
 
-#### E0300
-
-```text
-constructor %s is ambiguous: %s all have it; write %s.%s
-```
-
 #### E0301
 
 ```text
@@ -1267,12 +1269,6 @@ module %q has no function %q
 The module has no function with this name.
 
 Fix: check the spelling against the module's exports.
-
-#### E0307
-
-```text
-unknown function %s
-```
 
 #### E0308
 
@@ -2267,12 +2263,6 @@ A trait appears twice in the `implements` list of a type.
 
 Fix: delete the second one.
 
-#### E0502
-
-```text
-derives Shape is not supported by this compiler yet
-```
-
 #### E0503
 
 ```text
@@ -2608,18 +2598,6 @@ A closure can outlive the call, so it cannot capture a function parameter that i
 
 Fix: declare the parameter as `escaping`.
 
-#### E0603
-
-```text
-a closure cannot capture mutable parameter %q; copy it first with `copy(%s)`
-```
-
-#### E0604
-
-```text
-a closure cannot capture %q because it is declared with let; closures capture only constants
-```
-
 #### E0605
 
 ```text
@@ -2853,12 +2831,6 @@ match needs a value, found void
 The value after `match` is an expression with no value, such as a call to a function that returns nothing.
 
 Fix: match a value.
-
-#### E0712
-
-```text
-a match used as a value needs a single expression in each arm
-```
 
 #### E0713
 
@@ -3116,12 +3088,6 @@ Fix: move the call into a `test "name" { ... }` block.
 `Array`, `Map`, `Box`, `Option`, `Range` and `Result` are types, not modules. Their functions live in a std module that must be imported.
 
 Fix: add `import * as Arrays from "std/array"` and call `Arrays.length(items)`. `narrac apply-fix` adds the import.
-
-#### E0909
-
-```text
-%s needs an Option<T>, found %s
-```
 
 #### E0910
 
@@ -3480,7 +3446,7 @@ Fix: write `for (mutable item of items)`, or `for (const #[index, mutable item] 
 #### E0955
 
 ```text
-the elements of %s are %s, which have no contents to change in place; write `%s[%s] = ...` in a `for (const #[%s, %s] of Arrays.entries(%s))` loop
+the elements of %s are %s, which have no contents to change in place; loop over the indexes and assign `%s[i] = ...`
 ```
 
 `for (mutable ...)` changes the contents of each element. Ints, strings, enums and other plain values have no contents to change in place.
@@ -3561,7 +3527,7 @@ Fix: convert the value to the target's type first, or use the operator the type 
 #### E0963
 
 ```text
-%s needs an integer variable, found %s; write `x += 1` for a float
+%s needs an integer variable, found %s; write `x += 1.0` for a float
 ```
 
 `++` and `--` add or subtract 1 from an integer variable.

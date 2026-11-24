@@ -1041,11 +1041,76 @@ function removeStalePages(
   return Ok(true)
 }
 
+function findStrayDocs(file: string, text: string): Array<string> uses alloc {
+  let problems: Array<string> = []
+  const split = Str.split(text, "\n")
+  if (split is None) {
+    return problems
+  }
+  const lines = split.value
+  const count = Arrays.length(lines)
+  let index = 0
+  while (index < count) {
+    if (!Str.startsWith(Str.trim(lines[index]), "///")) {
+      index += 1
+      continue
+    }
+
+    // A run of `///` lines, then any attribute lines, must end at a top-level export.
+    const start = index
+    while (index < count && Str.startsWith(Str.trim(lines[index]), "///")) {
+      index += 1
+    }
+    let next = index
+    while (next < count && Str.startsWith(lines[next], "@")) {
+      next += 1
+    }
+    if (next == count || !Str.startsWith(lines[next], "export ")) {
+      Arrays.push(
+        mutable problems,
+        `${file}:${Int.toString(start + 1)}: a /// doc comment must sit right above an export declaration`,
+      )
+    }
+  }
+  return problems
+}
+
+function checkDocComments(repository: string): Result<bool, string> uses io, alloc {
+  const folder = Path.join(repository, "std/src")
+  const names = Fs.listDir(folder)
+  if (names is Err(message)) {
+    return Err(`cannot list ${folder}: ${message}`)
+  }
+  let problems: Array<string> = []
+  for (const name of Arrays.values(names.value)) {
+    if (!Str.endsWith(name, ".nra")) {
+      continue
+    }
+    const read = Fs.readText(Path.join(folder, name))
+    if (read is Err(message)) {
+      return Err(`cannot read std/src/${name}: ${message}`)
+    }
+    for (const problem of Arrays.values(findStrayDocs(`std/src/${name}`, read.value))) {
+      Arrays.push(mutable problems, problem)
+    }
+  }
+  if (Arrays.length(problems) > 0) {
+    return Err(Str.join(problems, "\n"))
+  }
+  return Ok(true)
+}
+
 function generate(
   narrac: string,
   repository: string,
   folder: string,
 ): Result<bool, string> uses io, alloc {
+  // A doc comment that documents nothing would be lost from the pages, so it stops the run.
+  const checked = checkDocComments(repository)
+  if (checked is Err(message)) {
+    return Err(message)
+  }
+
   const modules = listModules(narrac, repository)
   if (modules is Err(message)) {
     return Err(message)

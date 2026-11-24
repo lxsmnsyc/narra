@@ -7,6 +7,9 @@
 //   stdreference   docs/reference/std from scripts/std/generate.nra: every
 //     page is made in a temporary folder and compared, and a committed page
 //     that no module makes is stale too
+//   stddocs   scripts/std/generate.nra on testdata/std-docs, whose std/src has
+//     `///` runs that sit above no export: the run must fail, and its stderr
+//     must equal testdata/std-docs/stray.err
 // With --update the files are rewritten:
 //   sh scripts/test.sh --suite generated --update
 // Rewriting a file of selfhost/src needs sh scripts/seed-update.sh afterwards.
@@ -70,6 +73,12 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     path: Path.join(context.repository, "docs/reference/std"),
     variant: "stdreference",
   })
+  Arrays.push(mutable cases, TestCase {
+    suite: "generated",
+    name: "stddocs",
+    path: Path.join(context.testdata, "std-docs/stray.err"),
+    variant: "stddocs",
+  })
   return cases
 }
 
@@ -79,6 +88,9 @@ export function runCase(context: Context, testCase: TestCase): Result<bool, stri
   }
   if (testCase.variant == "stdreference") {
     return checkStdReference(context, testCase)
+  }
+  if (testCase.variant == "stddocs") {
+    return checkStrayDocs(context, testCase)
   }
   let made: Result<string, string> = Err("unknown case")
   if (testCase.variant == "stdtext") {
@@ -139,6 +151,42 @@ function runStdGenerator(context: Context, folder: string): Result<bool, string>
     return Err(`scripts/std/generate.nra failed: ${Common.describeRun(result)}`)
   }
   return Ok(true)
+}
+
+function checkStrayDocs(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  const made = Shell.makeTempDirectory()
+  if (made is Err(message)) {
+    return Err(message)
+  }
+  const script = Path.join(context.repository, "scripts/std/generate.nra")
+  const result = Common.runNarrac(context, [
+    "run",
+    "-release",
+    script,
+    context.narrac,
+    Path.join(context.testdata, "std-docs"),
+    made.value,
+  ])
+  Shell.removeTree(made.value)
+  if (result.code != 1) {
+    return Err(
+      `scripts/std/generate.nra must fail on stray doc comments: ${Common.describeRun(result)}`,
+    )
+  }
+
+  // With --update the golden takes the stderr of this run.
+  if (context.update) {
+    const written = Fs.writeText(testCase.path, result.errorOutput)
+    if (written is Err(message)) {
+      return Err(`cannot write ${testCase.path}: ${message}`)
+    }
+    return Ok(true)
+  }
+  const want = Common.readExpected(testCase.path)
+  if (want is Err(message)) {
+    return Err(message)
+  }
+  return Common.compareText("stderr", want.value, result.errorOutput)
 }
 
 function checkStdReference(

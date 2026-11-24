@@ -22,6 +22,8 @@ export enum Step<Out> derives Show, Equatable {
 }
 ```
 
+The outcome of one resume: the value of the next `yield`, the end of the body, or a panic in the body, which is caught only when the program runs as tests.
+
 Functions: [`resumeGenerator`](#resumegenerator), [`resumeCoroutine`](#resumecoroutine).
 
 ## Functions
@@ -32,6 +34,8 @@ Functions: [`resumeGenerator`](#resumegenerator), [`resumeCoroutine`](#resumecor
 export function resumeGenerator<T, effect E>(mutable g: Generator<T> uses E): Step<T> uses E, alloc
 ```
 
+Runs the generator to its next `yield`, as `Co.resume(mutable generator)` does, and gives `Step.Done` for every resume after the body ends.
+
 Effects: `E`, `alloc`.
 
 ### resumeCoroutine
@@ -39,5 +43,7 @@ Effects: `E`, `alloc`.
 ```narra fragment
 export function resumeCoroutine<In, Out, effect E>(mutable g: Coroutine<In, Out> uses E, input: In): Step<Out> uses E, alloc
 ```
+
+Runs the coroutine to its next `yield`, as `Co.send(mutable coroutine, input)` does, with input as the value of the `yield` it stopped at. The first send only starts the body, so its input is unused.
 
 Effects: `E`, `alloc`.

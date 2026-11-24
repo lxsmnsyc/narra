@@ -8,11 +8,14 @@
 
 import * as Arrays from "std/array"
 
+/// A reference to one value of an `Arena<T>` that finds nothing once the value is removed.
+/// A handle used with another arena is not caught, and reads the same slot there.
 export opaque struct Handle<T> derives Equatable, Hashable, Show {
   index: int
   generation: int
 }
 
+/// Values of type `T` in numbered slots, each reached through the `Handle<T>` that `insert` gave.
 export opaque struct Arena<T> {
   slots: Array<Option<T>>
   generations: Array<int>
@@ -21,10 +24,12 @@ export opaque struct Arena<T> {
   count: int
 }
 
+/// Creates an empty arena.
 export function create<T>(): Arena<T> uses alloc {
   return Arena<T> { slots: [], generations: [], free: [], freeCount: 0, count: 0 }
 }
 
+/// Stores value in a free slot, or in a new one, and returns its handle.
 export function insert<T>(mutable arena: Arena<T>, value: T): Handle<T> uses alloc {
   // Reuse the last freed slot, or add a new one.
   if (arena.freeCount > 0) {
@@ -61,14 +66,17 @@ function isLive<T>(arena: Arena<T>, handle: Handle<T>): bool {
   return arena.slots[handle.index] is Some(_)
 }
 
+/// Tells whether the handle still finds a value in the arena.
 export function contains<T>(arena: Arena<T>, handle: Handle<T>): bool {
   return isLive(arena, handle)
 }
 
+/// Returns the number of values the arena holds.
 export function size<T>(arena: Arena<T>): int {
   return arena.count
 }
 
+/// Returns the value of the handle, or `None` once it was removed or the arena was cleared.
 export function get<T>(arena: Arena<T>, handle: Handle<T>): Option<T> from arena {
   if (!isLive(arena, handle)) {
     return None
@@ -76,6 +84,8 @@ export function get<T>(arena: Arena<T>, handle: Handle<T>): Option<T> from arena
   return arena.slots[handle.index]
 }
 
+/// Replaces the value of the handle and returns `true`, or returns `false` and stores nothing when
+/// the handle finds no value.
 export function set<T>(mutable arena: Arena<T>, handle: Handle<T>, value: T): bool {
   if (!isLive(arena, handle)) {
     return false
@@ -84,6 +94,8 @@ export function set<T>(mutable arena: Arena<T>, handle: Handle<T>, value: T): bo
   return true
 }
 
+/// Replaces the value of the handle with `change(value)` and returns `true`, or returns `false`
+/// without calling change when the handle finds no value.
 export function update<T, effect E>(
   mutable arena: Arena<T>,
   handle: Handle<T>,
@@ -101,6 +113,8 @@ export function update<T, effect E>(
   return true
 }
 
+/// Takes the value of the handle out of the arena, or returns `None` when the handle finds none.
+/// The handle and every copy of it then find nothing.
 export function remove<T>(mutable arena: Arena<T>, handle: Handle<T>): Option<T> uses alloc {
   if (!isLive(arena, handle)) {
     return None
@@ -113,6 +127,7 @@ export function remove<T>(mutable arena: Arena<T>, handle: Handle<T>): Option<T>
   return copy(old)
 }
 
+/// Removes every value, so no handle given before finds anything.
 export function clear<T>(mutable arena: Arena<T>) uses alloc {
   // Keep the slots and raise every generation, so no old handle matches.
   arena.freeCount = 0
@@ -124,6 +139,7 @@ export function clear<T>(mutable arena: Arena<T>) uses alloc {
   }
 }
 
+/// Yields each handle and its value, in slot order.
 export function* entries<T>(arena: Arena<T>): Generator<#[Handle<T>, T]> {
   for (let index = 0; index < Arrays.length(arena.slots); index = index + 1) {
     if (arena.slots[index] is Some(value)) {

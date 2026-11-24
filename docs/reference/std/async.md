@@ -21,6 +21,8 @@ export enum AsyncError {
 }
 ```
 
+The error of every suspending std function: Cancelled when the task was cancelled, or Failed with the reason.
+
 ## Functions
 
 ### detach
@@ -28,6 +30,8 @@ export enum AsyncError {
 ```narra fragment
 export function detach<T>(_handle: Async<T>)
 ```
+
+Lets the task run with nobody waiting. The task keeps running to its end, or until the program exits.
 
 Effects: none.
 
@@ -37,6 +41,8 @@ Effects: none.
 export function idle(): Async<void> uses alloc
 ```
 
+A handle that finishes once no other task of the loop can run: none is ready, sleeping or waiting on I/O, counting tasks started while it waits. Idle handles finish one at a time, oldest first. In a cancelled task it finishes at once. At exit it wakes the task once, and the next idle of that task drops it.
+
 Effects: `alloc`.
 
 ### then
@@ -44,6 +50,8 @@ Effects: `alloc`.
 ```narra fragment
 export function then<T, effect E>(handle: Async<T>, escaping callback: (T) => void uses E) uses E, alloc
 ```
+
+Runs callback with the value when the task finishes, or on the next loop turn if it has. A cancelled task drops the callback without running it. For an Async\<void\> the callback takes no argument.
 
 Effects: `E`, `alloc`.
 
@@ -53,6 +61,8 @@ Effects: `E`, `alloc`.
 export function peek<T>(handle: Async<T>): Option<T> uses alloc
 ```
 
+The value once the task has finished; None before that and after a cancel.
+
 Effects: `alloc`.
 
 ### cancel
@@ -60,6 +70,8 @@ Effects: `alloc`.
 ```narra fragment
 export function cancel<T>(handle: Async<T>)
 ```
+
+Cancels the task: its then callbacks are dropped, peek gives None, a sleep or Async.idle it waits in ends at once, and its suspending std calls give Err(AsyncError.Cancelled). A finished task is left as it is.
 
 Effects: none.
 
@@ -69,6 +81,8 @@ Effects: none.
 export function next<T, effect E>(stream: AsyncGenerator<T> uses E): Async<Option<T>> uses E, alloc
 ```
 
+The next value of a stream: Some at its next yield, None once its body has ended, and then for every later call. Steps are served in the order they were asked for, and the body runs inline until it yields when nothing makes it wait.
+
 Effects: `E`, `alloc`.
 
 ### all
@@ -77,6 +91,8 @@ Effects: `E`, `alloc`.
 export function all<T>(handles: Array<Async<T>>): Async<Array<T>> from handles uses alloc
 ```
 
+Every value, in the order of the handles, once each task has finished. A cancel of the result does not reach the handles, and neither does a cancel of another task that awaits one of them while the all is unfinished.
+
 Effects: `alloc`.
 
 ### race
@@ -84,5 +100,7 @@ Effects: `alloc`.
 ```narra fragment
 export function race<T>(handles: Array<Async<T>>): Async<Option<T>> from handles uses alloc
 ```
+
+The value of the first task to finish, or None for no handles. The other tasks keep running.
 
 Effects: `alloc`.

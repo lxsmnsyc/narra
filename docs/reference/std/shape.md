@@ -26,6 +26,8 @@ export enum Value implements Shape {
 }
 ```
 
+A tree of structured data that `std/json` and `std/toml` read and write. `Int` and `Float` are separate so a 64-bit integer keeps its exact value, and a `Record` keeps its fields in the order they were added.
+
 ### Shape
 
 ```narra fragment
@@ -34,3 +36,5 @@ export trait Shape {
   function fromValue(value: Value): Result<Self, string> from value uses alloc
 }
 ```
+
+Converts a type to and from a `Value`, which the encode and decode functions of `std/json` and `std/toml` use. A struct or enum gets it with `derives Shape`, and `fromValue` fails with a `<path>: <reason>` message.

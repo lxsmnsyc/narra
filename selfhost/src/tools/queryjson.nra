@@ -6,6 +6,7 @@ import * as Char from "std/char"
 import * as Int from "std/int"
 import * as Str from "std/string"
 import * as Arrays from "std/array"
+import * as Ranges from "std/range"
 import { Pos } from "narrac/syntax/ast"
 import { hex } from "narrac/syntax/lexer"
 
@@ -19,11 +20,13 @@ export struct Location {
 
 // One declaration of `narrac query interface`. location is None for a builtin of the
 // std registry, which has no source. functions lists, for a builtin type, the functions
-// of its module that work on it.
+// of its module that work on it. doc is the `///` comment above the declaration, or the doc of
+// the builtin, as one line; "" when there is none.
 export struct InterfaceEntry {
   name: string
   kind: string
   signature: string
+  doc: string = ""
   location: Option<Location>
   functions: Array<string> = []
 }
@@ -40,13 +43,17 @@ export function writeInterface(
       if (entry.location is Some(location)) {
         locationText = writeLocation(location)
       }
+      let docText = ""
+      if (entry.doc != "") {
+        docText = `, "doc": ${quoteJson(entry.doc)}`
+      }
       let functionsText = ""
       if (Arrays.length(entry.functions) > 0) {
         functionsText = `, "functions": ${writeStringList(entry.functions)}`
       }
       Arrays.push(
         mutable parts,
-        `{"name": ${quoteJson(entry.name)}, "kind": ${quoteJson(entry.kind)}, "signature": ${quoteJson(entry.signature)}${functionsText}, "location": ${locationText}}`,
+        `{"name": ${quoteJson(entry.name)}, "kind": ${quoteJson(entry.kind)}, "signature": ${quoteJson(entry.signature)}${docText}${functionsText}, "location": ${locationText}}`,
       )
     } else {
       Arrays.push(mutable parts, `${entry.signature}\n`)
@@ -59,6 +66,36 @@ export function writeInterface(
     return "(none)\n"
   }
   return Str.join(parts, "")
+}
+
+export function splitLines(text: string): Array<string> uses alloc {
+  const lines = Str.split(text, "\n")
+  if (lines is Some(all)) {
+    return all
+  }
+  return []
+}
+
+export function findDocComment(lines: Array<string>, line: int): string uses alloc {
+  // Attribute lines such as `@const` sit between the doc and the declaration.
+  let last = line - 1
+  while (last > 0 && Str.startsWith(Str.trim(lines[last - 1]), "@")) {
+    last -= 1
+  }
+
+  // The doc is the run of `///` lines right above. A blank line or a plain `//` line ends it.
+  let first = last
+  while (first > 0 && Str.startsWith(Str.trim(lines[first - 1]), "///")) {
+    first -= 1
+  }
+  let parts: Array<string> = []
+  for (const index of Ranges.between(first, last)) {
+    const part = Str.trim(Str.sliceFrom(Str.trim(lines[index]), 3))
+    if (part != "") {
+      Arrays.push(mutable parts, part)
+    }
+  }
+  return Str.join(parts, " ")
 }
 
 export function quoteJson(text: string): string uses alloc {

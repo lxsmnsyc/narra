@@ -1,7 +1,7 @@
 ---
 id: std-hex-base64
 title: "Hex and base64 text of bytes in std/bytes"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 104599
 owns:
   - roadmaps/selfhost/nodes/std-hex-base64/**
   - testdata/bytes_encoding*
@@ -49,9 +49,9 @@ depends_on: []
 
 ## Acceptance
 
-- [ ] The RFC 4648 section 10 test vectors pass for base64 and hex (base16), both directions.
-- [ ] `fromHex("zz")`, odd-length hex and base64 with bad padding give `None`.
-- [ ] `sh scripts/test.sh` passes.
+- [x] The RFC 4648 section 10 test vectors pass for base64 and hex (base16), both directions.
+- [x] `fromHex("zz")`, odd-length hex and base64 with bad padding give `None`.
+- [x] `sh scripts/test.sh` passes.
 
 ## Sizing
 

@@ -1,7 +1,7 @@
 ---
 id: process-run-options
 title: "Process.run options: input, environment, working folder, inherited output"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 383300
 owns:
   - roadmaps/selfhost/nodes/process-run-options/**
   - testdata/process_run*
@@ -52,10 +52,10 @@ depends_on: []
 
 ## Acceptance
 
-- [ ] A sample sends 1 MiB on stdin to `cat` and reads it back whole.
-- [ ] A sample runs `env` with one variable added and one removed, and `pwd` in a given folder, and checks the output.
-- [ ] Passed-through output appears on the parent's stdout in order; captured output is then empty.
-- [ ] Existing calls compile and behave as before (`sh scripts/test.sh` passes).
+- [x] A sample sends 1 MiB on stdin to `cat` and reads it back whole.
+- [x] A sample runs `env` with one variable added and one removed, and `pwd` in a given folder, and checks the output.
+- [x] Passed-through output appears on the parent's stdout in order; captured output is then empty.
+- [x] Existing calls compile and behave as before (`sh scripts/test.sh` passes).
 
 ## Sizing
 

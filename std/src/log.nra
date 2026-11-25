@@ -1,0 +1,227 @@
+// std/log: leveled logging to standard error, as text or as JSON lines.
+//
+// A Logger is a value: a minimum level, a format and the fields every line carries. `with` returns
+// a new logger and leaves the old one as it was. Fields are an explicit array of key and Value
+// pairs, so no call depends on hidden state.
+
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Io from "std/io"
+import * as Json from "std/json"
+import { Value } from "std/shape"
+
+/// The severity of a line, from the least to the most severe.
+export enum Level derives Show, Equatable {
+  Debug
+  Info
+  Warn
+  Error
+}
+
+/// How a line is written: `Text` as `level=info msg="started" port=8080`, `Json` as one JSON object per line.
+export enum Format derives Show, Equatable {
+  Text
+  Json
+}
+
+/// Writes lines at or above a minimum level. The type is opaque; build one with `create`.
+export opaque struct Logger {
+  level: Level
+  format: Format
+  fields: Array<#[string, Value]>
+}
+
+/// Creates a logger that writes lines at `level` or above in `format`, with no fields.
+export function create(level: Level, format: Format): Logger uses alloc {
+  return Logger { level, format, fields: [] }
+}
+
+/// Returns a copy of the logger that adds `fields` to every line, after the fields it already has.
+export function with(
+  logger: Logger,
+  fields: Array<#[string, Value]>,
+): Logger from logger uses alloc {
+  let combined = copy(logger.fields)
+  for (const field of Arrays.values(fields)) {
+    Arrays.push(mutable combined, field)
+  }
+  return Logger { level: logger.level, format: logger.format, fields: combined }
+}
+
+/// Returns a copy of the logger with another minimum level.
+export function withLevel(logger: Logger, level: Level): Logger from logger {
+  return Logger { level, format: logger.format, fields: logger.fields }
+}
+
+/// Tells whether the logger writes lines at `level`.
+export function enabled(logger: Logger, level: Level): bool {
+  return rank(level) >= rank(logger.level)
+}
+
+/// Writes a line at `Debug` level to standard error when the logger allows it.
+export function debug(
+  logger: Logger,
+  message: string,
+  fields: Array<#[string, Value]>,
+) uses io, alloc {
+  write(logger, Level.Debug, message, fields)
+}
+
+/// Writes a line at `Info` level to standard error when the logger allows it.
+export function info(
+  logger: Logger,
+  message: string,
+  fields: Array<#[string, Value]>,
+) uses io, alloc {
+  write(logger, Level.Info, message, fields)
+}
+
+/// Writes a line at `Warn` level to standard error when the logger allows it.
+export function warn(
+  logger: Logger,
+  message: string,
+  fields: Array<#[string, Value]>,
+) uses io, alloc {
+  write(logger, Level.Warn, message, fields)
+}
+
+/// Writes a line at `Error` level to standard error when the logger allows it.
+export function error(
+  logger: Logger,
+  message: string,
+  fields: Array<#[string, Value]>,
+) uses io, alloc {
+  write(logger, Level.Error, message, fields)
+}
+
+/// Writes a line at `level` to standard error when the logger allows it.
+export function write(
+  logger: Logger,
+  level: Level,
+  message: string,
+  fields: Array<#[string, Value]>,
+) uses io, alloc {
+  if (!enabled(logger, level)) {
+    return
+  }
+  Io.writeError(`${render(logger, level, message, fields)}\n`)
+}
+
+/// Returns the line the logger writes for `level`, `message` and `fields`, without the line end.
+/// `render` does not apply the level filter; `write` does. The logger's own fields come first. A
+/// later field with the same key as an earlier one, or as `level` or `msg`, replaces its value and
+/// the key keeps its first position. In `Json` each value is escaped as `std/json` escapes it. In
+/// `Text` a key that is not a bare word is quoted like a value.
+export function render(
+  logger: Logger,
+  level: Level,
+  message: string,
+  fields: Array<#[string, Value]>,
+): string uses alloc {
+  const merged = mergeFields(logger, level, message, fields)
+  return match (logger.format) {
+    Format.Json => renderJson(merged)
+    Format.Text => renderText(merged)
+  }
+}
+
+function rank(level: Level): int {
+  return match (level) { Level.Debug => 0, Level.Info => 1, Level.Warn => 2, Level.Error => 3 }
+}
+
+function levelName(level: Level): string {
+  return match (level) {
+    Level.Debug => "debug"
+    Level.Info => "info"
+    Level.Warn => "warn"
+    Level.Error => "error"
+  }
+}
+
+function mergeFields(
+  logger: Logger,
+  level: Level,
+  message: string,
+  fields: Array<#[string, Value]>,
+): Array<#[string, Value]> uses alloc {
+  let merged: Array<#[string, Value]> = [
+    #["level", Value.Text(levelName(level))],
+    #["msg", Value.Text(message)],
+  ]
+  for (const group of [logger.fields, fields]) {
+    for (const #[key, value] of Arrays.values(group)) {
+      const index = findKeyIndex(merged, key)
+      if (index < 0) {
+        Arrays.push(mutable merged, #[key, value])
+      } else {
+        merged[index] = #[key, value]
+      }
+    }
+  }
+  return merged
+}
+
+function findKeyIndex(entries: Array<#[string, Value]>, key: string): int {
+  let index = 0
+  while (index < Arrays.length(entries)) {
+    if (entries[index][0] == key) {
+      return index
+    }
+    index += 1
+  }
+  return -1
+}
+
+function renderJson(merged: Array<#[string, Value]>): string uses alloc {
+  let record: Map<string, Value> = Map<string, Value> {}
+  for (const #[key, value] of Arrays.values(merged)) {
+    record[key] = value
+  }
+  return Json.stringify(Value.Record(record))
+}
+
+function renderText(merged: Array<#[string, Value]>): string uses alloc {
+  let parts: Array<string> = []
+  for (const #[key, value] of Arrays.values(merged)) {
+    Arrays.push(mutable parts, `${renderTextKey(key)}=${renderTextValue(key, value)}`)
+  }
+  return Str.join(parts, " ")
+}
+
+function renderTextKey(key: string): string uses alloc {
+  if (isBare(key)) {
+    return key
+  }
+  return Json.stringify(Value.Text(key))
+}
+
+function renderTextValue(key: string, value: Value): string uses alloc {
+  // The message is always quoted, so a line reads the same whatever the text holds.
+  if (key == "msg") {
+    return Json.stringify(value)
+  }
+  // Any other text is bare when it is safe to read back, and quoted as JSON otherwise.
+  if (value is Value.Text(text)) {
+    if (isBare(text)) {
+      return text
+    }
+  }
+  return Json.stringify(value)
+}
+
+function isBare(text: string): bool {
+  // A bare text is not empty and has no space, control byte, quote or equals sign.
+  const length = Str.length(text)
+  if (length == 0) {
+    return false
+  }
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte <= 32 || byte == 34 || byte == 61 || byte == 127) {
+      return false
+    }
+    index += 1
+  }
+  return true
+}

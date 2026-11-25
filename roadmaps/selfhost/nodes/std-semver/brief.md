@@ -1,7 +1,7 @@
 ---
 id: std-semver
 title: "std/semver: parse and compare versions"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 113067
 owns:
   - roadmaps/selfhost/nodes/std-semver/**
   - std/src/semver.nra
@@ -49,10 +49,10 @@ A new `std/semver` module parses Semantic Versioning 2.0.0 versions, compares th
 
 ## Acceptance
 
-- [ ] The precedence example of semver.org section 11 sorts in the stated order.
-- [ ] Invalid versions (`1.2`, `01.2.3`, `1.2.3-`) give `None`.
-- [ ] `Semver.bump` resets lower parts and drops the prerelease.
-- [ ] `sh scripts/test.sh` passes.
+- [x] The precedence example of semver.org section 11 sorts in the stated order.
+- [x] Invalid versions (`1.2`, `01.2.3`, `1.2.3-`) give `None`.
+- [x] `Semver.bump` resets lower parts and drops the prerelease.
+- [x] `sh scripts/test.sh` passes.
 
 ## Sizing
 

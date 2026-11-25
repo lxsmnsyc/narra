@@ -1,7 +1,7 @@
 ---
 id: batch-24
 title: "Batch 24: std modules for servers and release tools"
-status: active
+status: done
 priority: should
 type: story
 story:
@@ -18,7 +18,7 @@ spike: false
 hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
-fulfilled_by:
+fulfilled_by: PR #156
 gate: false
 added: 2026-11-25
 spent:
@@ -46,5 +46,5 @@ The std nodes share the generated `selfhost/src/std/stdtext.nra` and `docs/refer
 
 ## Acceptance
 
-- [ ] Every child is done.
-- [ ] `sh scripts/test.sh` passes on the branch; `sh selfhost/bootstrap.sh` reaches the fixed point.
+- [x] Every child is done.
+- [x] `sh scripts/test.sh` passes on the branch; `sh selfhost/bootstrap.sh` reaches the fixed point.

@@ -31,5 +31,5 @@ Batch-24 starts from `main` at aa4e6bba. Local branch `feat/batch-24`, worktree 
 
 ## Still to do
 
-- [ ] Push `feat/batch-24` and open its pull request.
-- [ ] After it merges: set batch-24 and its children to done in `main`'s roadmap and archive.
+- [x] Push `feat/batch-24` and open its pull request (PR #156, merged).
+- [x] After it merges: set batch-24 and its children to done in `main`'s roadmap and archive.

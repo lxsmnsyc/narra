@@ -436,3 +436,6 @@ Done nodes whose folders were removed. Their full text is in git history.
 - target-table: Target table and narrac build --target (done, 235171 tokens, milestone p5-distribution)
 - wasi-runtime: Runtime and std on wasm32-wasi (done, milestone p5-distribution)
 - website: Narra website (done, 293405 tokens, milestone p6-docs)
+- std-hex-base64: Hex and base64 text of bytes in std/bytes (done, 104599 tokens, milestone p2-std)
+- std-log: std/log: leveled logging to stderr (done, 262100 tokens, milestone p2-std)
+- std-signal: std/signal: SIGINT and SIGTERM for clean shutdown (done, 302600 tokens, milestone p2-std)

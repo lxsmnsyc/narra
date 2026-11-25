@@ -1,7 +1,7 @@
 ---
 id: std-url
 title: "std/url: URL parsing, percent encoding and query strings"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 260000
 owns:
   - roadmaps/selfhost/nodes/std-url/**
   - std/src/url.nra
@@ -48,10 +48,10 @@ A new `std/url` module parses a URL into scheme, user info, host, port, path, qu
 
 ## Acceptance
 
-- [ ] `Url.parse(text): Result<Url, string>` and `Url.toString(url)` round-trip the RFC 3986 section 5.4 examples, and `Url.resolve(base, reference)` gives the results listed there.
-- [ ] `Url.encode`/`Url.decode` and `Query.parse`/`Query.toString` handle `+`, `%20`, bad escapes (an `Err`, not a panic) and repeated keys (kept in order).
-- [ ] The std reference page is generated (`scripts/std/generate.nra`).
-- [ ] `sh scripts/test.sh` passes.
+- [x] `Url.parse(text): Result<Url, string>` and `Url.toString(url)` round-trip the RFC 3986 section 5.4 examples, and `Url.resolve(base, reference)` gives the results listed there.
+- [x] `Url.encode`/`Url.decode` and `Query.parse`/`Query.toString` handle `+`, `%20`, bad escapes (an `Err`, not a panic) and repeated keys (kept in order).
+- [x] The std reference page is generated (`scripts/std/generate.nra`).
+- [x] `sh scripts/test.sh` passes.
 
 ## Sizing
 

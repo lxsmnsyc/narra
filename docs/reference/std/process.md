@@ -35,9 +35,9 @@ Effects: `io`.
 ### run
 
 ```narra fragment
-export function run(command: string, arguments: Array<string>): Result<#[int, string, string], string> uses io, alloc
+export function run(command: string, arguments: Array<string>, input: Option<string> = None, environment: Array<#[string, string]> = [], removed: Array<string> = [], folder: Option<string> = None, inheritOutput: bool = false): Result<#[int, string, string], string> uses io, alloc
 ```
 
-Runs a program found through `PATH`, waits for it to end, and gives its exit code, standard output and standard error. A program that cannot start is an `Err`, and one killed by a signal has the code 128 plus the signal.
+Runs a program found through `PATH`, waits for it to end, and gives its exit code, standard output and standard error. A program that cannot start, or a `folder` that does not exist, is an `Err`, and one killed by a signal has the code 128 plus the signal. `input` is the text for the standard input, which is closed with `None`. `environment` lists variables to set as name and value pairs, and a later pair of a name wins. `removed` lists names the program does not get. `folder` is the working folder, with `None` the one of this process. With `inheritOutput` the program writes to the output of this process, in order with its own, and the captured text is empty. The input is written while the output is read, so neither blocks the program. The program is looked up in the `PATH` the program gets, after `removed` and `environment` apply; with no `PATH`, the system's default search decides. Every option has a default and is named in the call: `run("cat", [], input: Some(text))`.
 
 Effects: `io`, `alloc`.

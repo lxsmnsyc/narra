@@ -91,3 +91,63 @@ export function toString(data: bytes): Result<string, string> uses alloc
 Returns the bytes as a string, or an error that names the offset of the first byte that is not valid UTF-8.
 
 Effects: `alloc`.
+
+### toHex
+
+```narra fragment
+export function toHex(data: bytes): string uses alloc
+```
+
+Writes each byte as two lowercase hex digits, with no separator and no prefix.
+
+Effects: `alloc`.
+
+### fromHex
+
+```narra fragment
+export function fromHex(text: string): Option<bytes> uses alloc
+```
+
+Reads pairs of hex digits, upper or lower case, as bytes. Gives `None` for an odd length or a character that is not a hex digit. The empty text gives empty bytes.
+
+Effects: `alloc`.
+
+### toBase64
+
+```narra fragment
+export function toBase64(data: bytes): string uses alloc
+```
+
+Writes the bytes as base64 with the standard alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`) and `=` padding to a multiple of four characters.
+
+Effects: `alloc`.
+
+### toBase64Url
+
+```narra fragment
+export function toBase64Url(data: bytes, padded: bool): string uses alloc
+```
+
+Writes the bytes as base64 with the URL-safe alphabet (`-` and `_` in place of `+` and `/`). `padded` adds `=` padding to a multiple of four characters; false leaves it off.
+
+Effects: `alloc`.
+
+### fromBase64
+
+```narra fragment
+export function fromBase64(text: string): Option<bytes> uses alloc
+```
+
+Reads base64 text with the standard alphabet. The padding must be exact: the length is a multiple of four and `=` fills the last group. Gives `None` for any other character, for misplaced or missing padding, and for leftover bits that are not zero.
+
+Effects: `alloc`.
+
+### fromBase64Url
+
+```narra fragment
+export function fromBase64Url(text: string): Option<bytes> uses alloc
+```
+
+Reads base64 text with the URL-safe alphabet, with or without `=` padding. Gives `None` for any other character, for padding that does not fit the length, and for leftover bits that are not zero.
+
+Effects: `alloc`.

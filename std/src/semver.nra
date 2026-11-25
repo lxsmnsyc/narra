@@ -1,0 +1,279 @@
+// std/semver: parse, compare and bump Semantic Versioning 2.0.0 versions.
+//
+// A version is MAJOR.MINOR.PATCH with an optional prerelease after `-` and build
+// metadata after `+`. The three numbers have no leading zeros, and each prerelease
+// identifier is non-empty, made of ASCII letters, digits and `-`, and a numeric one
+// has no leading zero. compare follows the precedence rules of semver.org: the
+// numbers first, then the prerelease (a version with none is greater), and build
+// metadata is ignored. satisfies checks a version against a requirement written as
+// narra.toml writes a dependency version: MAJOR.MINOR.PATCH, the minimum version.
+
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Options from "std/option"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+
+// The byte codes of the characters the syntax names.
+const DIGIT_ZERO = 48
+const DIGIT_NINE = 57
+const UPPER_A = 65
+const UPPER_Z = 90
+const LOWER_A = 97
+const LOWER_Z = 122
+const HYPHEN = 45
+
+/// A parsed version. `prerelease` and `build` hold the dot-separated identifiers, empty when absent.
+export struct Version derives Show, Equatable {
+  major: int
+  minor: int
+  patch: int
+  prerelease: Array<string>
+  build: Array<string>
+}
+
+/// The part of a version that `bump` raises.
+export enum Part derives Show, Equatable {
+  Major
+  Minor
+  Patch
+}
+
+struct Cut {
+  head: string
+  tail: Option<string>
+}
+
+function cutAt(text: string, separator: string): Cut uses alloc {
+  if (Str.indexOf(text, separator) is Some(position)) {
+    const head = Options.withDefault(Str.slice(text, 0, position), text)
+    return Cut { head: head, tail: Some(Str.sliceFrom(text, position + Str.length(separator))) }
+  }
+  return Cut { head: text, tail: None }
+}
+
+function isNumeric(text: string): bool {
+  const length = Str.length(text)
+  if (length == 0) {
+    return false
+  }
+  for (const index of Ranges.between(0, length)) {
+    const code = Str.byteAt(text, index)
+    if (code < DIGIT_ZERO || code > DIGIT_NINE) {
+      return false
+    }
+  }
+  return true
+}
+
+function hasLeadingZero(text: string): bool {
+  return Str.length(text) > 1 && Str.byteAt(text, 0) == DIGIT_ZERO
+}
+
+function isIdentifier(text: string): bool {
+  const length = Str.length(text)
+  if (length == 0) {
+    return false
+  }
+  for (const index of Ranges.between(0, length)) {
+    const code = Str.byteAt(text, index)
+    const isDigit = code >= DIGIT_ZERO && code <= DIGIT_NINE
+    const isUpper = code >= UPPER_A && code <= UPPER_Z
+    const isLower = code >= LOWER_A && code <= LOWER_Z
+    if (!(isDigit || isUpper || isLower || code == HYPHEN)) {
+      return false
+    }
+  }
+  return true
+}
+
+function parseNumber(text: string): Option<int> uses alloc {
+  if (!isNumeric(text) || hasLeadingZero(text)) {
+    return None
+  }
+  if (Int.parse(text, 10) is Ok(number)) {
+    return Some(number)
+  }
+  return None
+}
+
+function parseIdentifiers(text: string, isPrerelease: bool): Option<Array<string>> uses alloc {
+  if (Str.split(text, ".") is Some(parts)) {
+    for (const part of parts) {
+      if (!isIdentifier(part)) {
+        return None
+      }
+      // A numeric prerelease identifier has no leading zero.
+      if (isPrerelease && isNumeric(part) && hasLeadingZero(part)) {
+        return None
+      }
+    }
+    return Some(parts)
+  }
+  return None
+}
+
+/// Parses MAJOR.MINOR.PATCH with an optional `-prerelease` and `+build`. Returns `None` for anything else, such as `1.2`, `01.2.3` or `1.2.3-`.
+export function parse(text: string): Option<Version> uses alloc {
+  // Build metadata starts at the first `+`, the prerelease at the first `-` before it.
+  const buildCut = cutAt(text, "+")
+  const prereleaseCut = cutAt(buildCut.head, "-")
+  let build: Array<string> = []
+  if (buildCut.tail is Some(buildText)) {
+    if (parseIdentifiers(buildText, false) is Some(buildIdentifiers)) {
+      build = copy(buildIdentifiers)
+    } else {
+      return None
+    }
+  }
+  let prerelease: Array<string> = []
+  if (prereleaseCut.tail is Some(prereleaseText)) {
+    if (parseIdentifiers(prereleaseText, true) is Some(prereleaseIdentifiers)) {
+      prerelease = copy(prereleaseIdentifiers)
+    } else {
+      return None
+    }
+  }
+  if (Str.split(prereleaseCut.head, ".") is Some(numbers)) {
+    if (Arrays.length(numbers) != 3) {
+      return None
+    }
+    if (parseNumber(numbers[0]) is Some(major)) {
+      if (parseNumber(numbers[1]) is Some(minor)) {
+        if (parseNumber(numbers[2]) is Some(patch)) {
+          return Some(Version {
+            major: major,
+            minor: minor,
+            patch: patch,
+            prerelease: prerelease,
+            build: build,
+          })
+        }
+      }
+    }
+  }
+  return None
+}
+
+/// Returns the version as text, such as `1.2.3-rc.1+build.5`.
+export function toString(version: Version): string uses alloc {
+  let text = `${Int.toString(version.major)}.${Int.toString(version.minor)}.${Int.toString(version.patch)}`
+  if (Arrays.length(version.prerelease) > 0) {
+    text = `${text}-${Str.join(version.prerelease, ".")}`
+  }
+  if (Arrays.length(version.build) > 0) {
+    text = `${text}+${Str.join(version.build, ".")}`
+  }
+  return text
+}
+
+function compareInts(left: int, right: int): int {
+  if (left < right) {
+    return -1
+  }
+  if (left > right) {
+    return 1
+  }
+  return 0
+}
+
+function compareText(left: string, right: string): int {
+  const leftLength = Str.length(left)
+  const rightLength = Str.length(right)
+  const shared = leftLength < rightLength ? leftLength : rightLength
+  for (const index of Ranges.between(0, shared)) {
+    const result = compareInts(Str.byteAt(left, index), Str.byteAt(right, index))
+    if (result != 0) {
+      return result
+    }
+  }
+  return compareInts(leftLength, rightLength)
+}
+
+function compareIdentifiers(left: string, right: string): int {
+  const leftIsNumber = isNumeric(left)
+  const rightIsNumber = isNumeric(right)
+  // A numeric identifier is lower than a text one.
+  if (leftIsNumber && !rightIsNumber) {
+    return -1
+  }
+  if (!leftIsNumber && rightIsNumber) {
+    return 1
+  }
+  if (leftIsNumber) {
+    // Both are numbers without leading zeros, so the longer one is greater.
+    const byLength = compareInts(Str.length(left), Str.length(right))
+    if (byLength != 0) {
+      return byLength
+    }
+  }
+  return compareText(left, right)
+}
+
+function comparePrerelease(left: Array<string>, right: Array<string>): int {
+  const leftCount = Arrays.length(left)
+  const rightCount = Arrays.length(right)
+  // A version with no prerelease is greater than one with a prerelease.
+  if (leftCount == 0 || rightCount == 0) {
+    return compareInts(rightCount, leftCount)
+  }
+  const shared = leftCount < rightCount ? leftCount : rightCount
+  for (const index of Ranges.between(0, shared)) {
+    const result = compareIdentifiers(left[index], right[index])
+    if (result != 0) {
+      return result
+    }
+  }
+  return compareInts(leftCount, rightCount)
+}
+
+/// Compares two versions by precedence and returns -1, 0 or 1. Build metadata is ignored, so `1.0.0+a` and `1.0.0+b` give 0.
+export function compare(left: Version, right: Version): int {
+  const byMajor = compareInts(left.major, right.major)
+  if (byMajor != 0) {
+    return byMajor
+  }
+  const byMinor = compareInts(left.minor, right.minor)
+  if (byMinor != 0) {
+    return byMinor
+  }
+  const byPatch = compareInts(left.patch, right.patch)
+  if (byPatch != 0) {
+    return byPatch
+  }
+  return comparePrerelease(left.prerelease, right.prerelease)
+}
+
+/// Returns the version with one part raised by one. The parts below it become 0, and the prerelease and build metadata are dropped.
+export function bump(version: Version, part: Part): Version uses alloc {
+  if (part is Part.Major) {
+    return Version { major: version.major + 1, minor: 0, patch: 0, prerelease: [], build: [] }
+  }
+  if (part is Part.Minor) {
+    return Version {
+      major: version.major,
+      minor: version.minor + 1,
+      patch: 0,
+      prerelease: [],
+      build: [],
+    }
+  }
+  return Version {
+    major: version.major,
+    minor: version.minor,
+    patch: version.patch + 1,
+    prerelease: [],
+    build: [],
+  }
+}
+
+/// Tells whether the version is at least the requirement, written MAJOR.MINOR.PATCH as in a `narra.toml` dependency. A requirement of any other form gives `false`.
+export function satisfies(version: Version, requirement: string): bool uses alloc {
+  if (parse(requirement) is Some(minimum)) {
+    if (Arrays.length(minimum.prerelease) > 0 || Arrays.length(minimum.build) > 0) {
+      return false
+    }
+    return compare(version, minimum) >= 0
+  }
+  return false
+}

@@ -468,7 +468,34 @@ narra-no-such-program: not started (narra-no-such-program: No such file or direc
 
 The command is not a line for a shell. It is a program name, and each argument is passed as it is, with no quoting and no wildcards. To use shell features, run the shell: `Process.run("sh", ["-c", "ls *.txt"])`. `Process.run` looks the name up on the system's `PATH`. On Windows, `echo` and `dir` are part of the command shell, so run them as `Process.run("cmd", ["/c", "echo", "hi"])`.
 
-`Process.run` captures all the output before it returns, so it suits tools with small output. When the child is stopped by a signal, the code is 128 plus the signal number.
+`Process.run` captures all the output before it returns, so it suits tools with small output. For a tool with large output that you only want to show, use `inheritOutput` below. When the child is stopped by a signal, the code is 128 plus the signal number.
+
+`Process.run` also takes options, which a call names: `Process.run("cat", [], input: Some(text))`. `input` is text for the standard input of the program, which is closed without it. `environment` is a list of `#[name, value]` pairs to set, and `removed` is a list of names the program does not get. `folder` is the working folder, and `inheritOutput` sends the program's output to the output of this program, in order, so the captured text is empty. The input is written while the output is read, so a large input and a large output do not block each other. The program is looked up in the `PATH` it gets, after `removed` and `environment` apply.
+
+```narra
+import * as Process from "std/process"
+import * as Str from "std/string"
+
+function show(label: string, ran: Result<#[int, string, string], string>) uses io, alloc {
+  match (ran) {
+    Ok(#[_, output, _]) => print(`${label}: ${Str.trim(output)}`)
+    Err(message) => print(`${label}: ${message}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  show("input", Process.run("cat", [], input: Some("typed in")))
+  show("environment", Process.run("sh", ["-c", "echo $GREETING"], environment: [#["GREETING", "hello"]]))
+  show("folder", Process.run("pwd", [], folder: Some("/")))
+  return 0
+}
+```
+
+```text
+input: typed in
+environment: hello
+folder: /
+```
 
 `Process.exit(code)` ends the program at once with that code, after writing out what standard output holds. It has the `io` effect. Nothing after it runs, so a function that has to return a value may end with it, as it may end with `panic`:
 
@@ -571,6 +598,42 @@ Ok("hi")
 - `Bytes.toString(data)` turns valid UTF-8 into text. Otherwise it returns an `Err` that names the first bad byte, here byte 2, the `ff`.
 
 `bytes` values compare with `==`, and they work as map keys.
+
+### Hex and base64
+
+Binary data often has to travel as text, in a log line, a URL or a JSON file. `std/bytes` writes `bytes` as hex or base64 and reads them back:
+
+```narra
+import * as Bytes from "std/bytes"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const data = Bytes.fromString("hello?")
+  print(Bytes.toHex(data))
+  print(Bytes.toBase64(data))
+  print(Bytes.toBase64Url(Bytes.fromArray([251, 255]), false))
+  print(Show.show(Bytes.fromHex("48656C6c6f")))
+  print(Show.show(Bytes.fromHex("abc")))
+  print(Show.show(Bytes.fromBase64("aGVsbG8/")))
+  print(Show.show(Bytes.fromBase64("aGVsbG8")))
+  return 0
+}
+```
+
+```text
+68656c6c6f3f
+aGVsbG8/
+-_8
+Some(bytes[48 65 6c 6c 6f])
+None
+Some(bytes[68 65 6c 6c 6f 3f])
+None
+```
+
+- `Bytes.toHex(data)` writes two lowercase digits per byte. `Bytes.fromHex(text)` accepts both cases and gives `None` for an odd length or a character that is not a hex digit.
+- `Bytes.toBase64(data)` uses the standard alphabet and pads with `=`. `Bytes.fromBase64(text)` requires that padding, as above where `aGVsbG8` lacks its `=`.
+- `Bytes.toBase64Url(data, padded)` uses `-` and `_` in place of `+` and `/`, so the text is safe in a URL. `padded` chooses whether `=` is added. `Bytes.fromBase64Url(text)` accepts text with or without padding.
+
+Every decoder gives `None` for any other character, for padding in the wrong place and for leftover bits that are not zero.
 
 ## Measure time
 

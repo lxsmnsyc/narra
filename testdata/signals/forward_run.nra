@@ -1,0 +1,42 @@
+// A signal that comes while Process.run waits for a child reaches the child and is kept for std/signal.
+// The child reports the SIGTERM it got; then the wait that started before the call gives Terminate.
+import * as Env from "std/env"
+import * as Process from "std/process"
+import * as Signals from "std/signal"
+import * as Str from "std/string"
+import { Signal } from "std/signal"
+
+function describe(signal: Signal): string {
+  return match (signal) { Signal.Interrupt => "interrupt", Signal.Terminate => "terminate" }
+}
+
+async function waitFor(label: string): bool uses io, alloc {
+  const signal = await Signals.wait()
+  if (signal is Ok(received)) {
+    print(`${label}: ${describe(received)}`)
+    return true
+  }
+  print(`${label}: wait failed`)
+  return false
+}
+
+export async function run(_args: Array<string>): int {
+  // The first wait starts here, so the handlers are in place before the child runs.
+  const first = waitFor("wait")
+  const marker = Env.get("NARRA_SIGNAL_MARKER")
+  if (marker is Some(path)) {
+    // The child reports the parent's pid, then waits until it gets SIGTERM.
+    const script = "trap 'echo child got term; exit 0' TERM; echo $PPID > \"$1\"; while :; do sleep 0.1; done"
+    const result = Process.run("sh", ["-c", script, "sh", path])
+    if (result is Ok(output)) {
+      print(`child: ${Str.trim(output[1])}`)
+    } else {
+      print("child failed")
+    }
+  }
+  if (!await first) {
+    return 1
+  }
+  print("clean exit")
+  return 0
+}

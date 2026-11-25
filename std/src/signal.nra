@@ -1,0 +1,46 @@
+// std/signal: SIGINT and SIGTERM as an event of the loop, for a clean shutdown.
+//
+// A program keeps the default action of both signals until its first call of
+// wait. From then on the program catches them for the rest of its life: the
+// handler only records the signal, so a signal that comes while no task waits
+// is kept, and each later wait gives the next one. That is how a second signal
+// during the shutdown still reaches the program. A signal that comes while
+// Process.run runs goes to the child, as for every program, and is kept for
+// wait as well, so a program that shells out does not lose its shutdown signal.
+// On Windows, Ctrl-C is Interrupt and Ctrl-Break is Terminate.
+
+import * as Raw from "std/internal/signal"
+import { AsyncError } from "std/async"
+
+/// A signal the program can wait for.
+export enum Signal {
+  Interrupt
+  Terminate
+}
+
+/// The next SIGINT or SIGTERM, waiting until one comes. The first call catches both signals for
+/// the rest of the program. A cancel ends the wait with Err(AsyncError.Cancelled). A second wait
+/// on the same loop while one is pending gives Err(AsyncError.Failed(...)).
+export async function wait(): Result<Signal, AsyncError> uses io, alloc {
+  const descriptor = Raw.start()
+  if (descriptor < 0) {
+    return Err(AsyncError.Failed(Raw.message(-descriptor)))
+  }
+  while (true) {
+    const code = Raw.take(descriptor)
+    if (code == 1) {
+      return Ok(Signal.Interrupt)
+    }
+    if (code == 2) {
+      return Ok(Signal.Terminate)
+    }
+    // Nothing is waiting, so the loop wakes this task when a signal comes.
+    const ready = await Raw.wait(descriptor)
+    if (ready < 0) {
+      return Err(AsyncError.Cancelled)
+    }
+    if (ready > 0) {
+      return Err(AsyncError.Failed(Raw.message(ready)))
+    }
+  }
+}

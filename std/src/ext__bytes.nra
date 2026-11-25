@@ -1,0 +1,200 @@
+// std/bytes: byte strings, and their text forms in hex (base 16) and base64 (RFC 4648). The
+// conversion functions and slicing are built into the compiler.
+
+import * as Bytes from "std/bytes"
+import * as Str from "std/string"
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as U8 from "std/u8"
+
+const HEX_DIGITS = "0123456789abcdef"
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const BASE64_URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+/// Writes each byte as two lowercase hex digits, with no separator and no prefix.
+export function toHex(data: bytes): string uses alloc {
+  let builder = Str.builder()
+  for (const byte of Arrays.values(Bytes.toArray(data))) {
+    const value = Int.from(byte)
+    Str.appendChar(mutable builder, Str.charAt(HEX_DIGITS, value >> 4))
+    Str.appendChar(mutable builder, Str.charAt(HEX_DIGITS, value & 15))
+  }
+  return Str.build(builder)
+}
+
+/// Reads pairs of hex digits, upper or lower case, as bytes. Gives `None` for an odd length or a
+/// character that is not a hex digit. The empty text gives empty bytes.
+export function fromHex(text: string): Option<bytes> uses alloc {
+  const length = Str.length(text)
+  if (length % 2 != 0) {
+    return None
+  }
+  let items: Array<u8> = []
+  let index = 0
+  while (index < length) {
+    const high = readHexDigit(Str.byteAt(text, index))
+    const low = readHexDigit(Str.byteAt(text, index + 1))
+    if (high < 0 || low < 0) {
+      return None
+    }
+    Arrays.push(mutable items, U8.wrap(high * 16 + low))
+    index += 2
+  }
+  return Some(Bytes.fromArray(items))
+}
+
+/// Writes the bytes as base64 with the standard alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`) and `=`
+/// padding to a multiple of four characters.
+export function toBase64(data: bytes): string uses alloc {
+  return writeBase64(data, BASE64_ALPHABET, true)
+}
+
+/// Writes the bytes as base64 with the URL-safe alphabet (`-` and `_` in place of `+` and `/`).
+/// `padded` adds `=` padding to a multiple of four characters; false leaves it off.
+export function toBase64Url(data: bytes, padded: bool): string uses alloc {
+  return writeBase64(data, BASE64_URL_ALPHABET, padded)
+}
+
+/// Reads base64 text with the standard alphabet. The padding must be exact: the length is a
+/// multiple of four and `=` fills the last group. Gives `None` for any other character, for
+/// misplaced or missing padding, and for leftover bits that are not zero.
+export function fromBase64(text: string): Option<bytes> uses alloc {
+  return readBase64(text, false)
+}
+
+/// Reads base64 text with the URL-safe alphabet, with or without `=` padding. Gives `None` for any
+/// other character, for padding that does not fit the length, and for leftover bits that are not
+/// zero.
+export function fromBase64Url(text: string): Option<bytes> uses alloc {
+  return readBase64(text, true)
+}
+
+function readHexDigit(byte: int): int {
+  if (byte >= 48 && byte <= 57) {
+    return byte - 48
+  }
+  if (byte >= 97 && byte <= 102) {
+    return byte - 87
+  }
+  if (byte >= 65 && byte <= 70) {
+    return byte - 55
+  }
+  return -1
+}
+
+function readBase64Digit(byte: int, urlSafe: bool): int {
+  if (byte >= 65 && byte <= 90) {
+    return byte - 65
+  }
+  if (byte >= 97 && byte <= 122) {
+    return byte - 71
+  }
+  if (byte >= 48 && byte <= 57) {
+    return byte + 4
+  }
+  // The last two digits differ between the alphabets.
+  if (urlSafe) {
+    if (byte == 45) {
+      return 62
+    }
+    if (byte == 95) {
+      return 63
+    }
+    return -1
+  }
+  if (byte == 43) {
+    return 62
+  }
+  if (byte == 47) {
+    return 63
+  }
+  return -1
+}
+
+function writeBase64(data: bytes, alphabet: string, padded: bool): string uses alloc {
+  let builder = Str.builder()
+  let buffer = 0
+  let bitCount = 0
+  let characterCount = 0
+  for (const byte of Arrays.values(Bytes.toArray(data))) {
+    // Take eight bits, then emit every full group of six.
+    buffer = (buffer << 8) | Int.from(byte)
+    bitCount += 8
+    while (bitCount >= 6) {
+      bitCount -= 6
+      const shift = bitCount
+      if (shift >= 0 && shift < 64) {
+        Str.appendChar(mutable builder, Str.charAt(alphabet, (buffer >> shift) & 63))
+        characterCount++
+      }
+    }
+    const keepBits = bitCount
+    if (keepBits >= 0 && keepBits < 64) {
+      buffer = buffer & ((1 << keepBits) - 1)
+    }
+  }
+  // The last partial group is padded with zero bits.
+  const missingBits = 6 - bitCount
+  if (bitCount > 0 && missingBits >= 0 && missingBits < 64) {
+    Str.appendChar(mutable builder, Str.charAt(alphabet, (buffer << missingBits) & 63))
+    characterCount++
+  }
+  if (padded) {
+    while (characterCount % 4 != 0) {
+      Str.append(mutable builder, "=")
+      characterCount++
+    }
+  }
+  return Str.build(builder)
+}
+
+function readBase64(text: string, urlSafe: bool): Option<bytes> uses alloc {
+  const length = Str.length(text)
+  // Trailing `=` is padding; at most two of them.
+  let end = length
+  while (end > 0 && Str.byteAt(text, end - 1) == 61) {
+    end--
+  }
+  const paddingCount = length - end
+  if (paddingCount > 2) {
+    return None
+  }
+  const remainder = end % 4
+  if (remainder == 1) {
+    return None
+  }
+  if (paddingCount > 0) {
+    if (length % 4 != 0) {
+      return None
+    }
+  } else if (remainder != 0 && !urlSafe) {
+    return None
+  }
+  let items: Array<u8> = []
+  let buffer = 0
+  let bitCount = 0
+  let index = 0
+  while (index < end) {
+    // Six bits per character; emit a byte whenever eight are ready.
+    const digit = readBase64Digit(Str.byteAt(text, index), urlSafe)
+    if (digit < 0) {
+      return None
+    }
+    buffer = (buffer << 6) | digit
+    bitCount += 6
+    if (bitCount >= 8) {
+      bitCount -= 8
+      const shift = bitCount
+      if (shift >= 0 && shift < 64) {
+        Arrays.push(mutable items, U8.wrap((buffer >> shift) & 255))
+        buffer = buffer & ((1 << shift) - 1)
+      }
+    }
+    index++
+  }
+  // Leftover bits must be zero, or the text is not what an encoder writes.
+  if (buffer != 0) {
+    return None
+  }
+  return Some(Bytes.fromArray(items))
+}

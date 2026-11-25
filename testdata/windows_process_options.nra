@@ -1,0 +1,92 @@
+import * as Build from "std/build"
+import * as Int from "std/int"
+import * as Process from "std/process"
+import * as Str from "std/string"
+import { Os } from "std/build"
+
+function shellName(): string {
+  if (Build.os == Os.Windows) {
+    return "cmd"
+  }
+  return "sh"
+}
+
+function shellFlag(): string {
+  if (Build.os == Os.Windows) {
+    return "/c"
+  }
+  return "-c"
+}
+
+function echoVariableScript(): string {
+  if (Build.os == Os.Windows) {
+    return "echo %NARRA_PROCESS_ADDED%"
+  }
+  return "echo $NARRA_PROCESS_ADDED"
+}
+
+function readInputScript(): string {
+  if (Build.os == Os.Windows) {
+    return "sort"
+  }
+  return "cat"
+}
+
+function folderScript(): string {
+  if (Build.os == Os.Windows) {
+    return "cd"
+  }
+  return "pwd"
+}
+
+function rootFolder(): string {
+  if (Build.os == Os.Windows) {
+    return "C:\\"
+  }
+  return "/"
+}
+
+function showRun(label: string, ran: Result<#[int, string, string], string>) uses io, alloc {
+  if (ran is Ok(result)) {
+    const #[code, output, errors] = result
+    print(`${label}: exit ${Int.toString(code)}, out ${Show.show(Str.trim(output))}`)
+    // A failed program's error text shows in the diff, to tell a bad script from a bad pipe.
+    if (code != 0) {
+      print(`${label}: error ${Show.show(Str.trim(errors))}`)
+    }
+  }
+  if (ran is Err(message)) {
+    print(`${label}: failed ${message}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const shell = shellName()
+  const flag = shellFlag()
+
+  // The text on the input comes back through the program.
+  showRun("input", Process.run(shell, [flag, readInputScript()], input: Some("typed in\n")))
+
+  // A variable that is set is seen by the program; one that is set twice keeps the last value.
+  showRun(
+    "environment",
+    Process.run(
+      shell,
+      [flag, echoVariableScript()],
+      environment: [#["NARRA_PROCESS_ADDED", "first"], #["NARRA_PROCESS_ADDED", "last"]],
+    ),
+  )
+
+  // The program starts in the folder given. Each system prints its root its own way, so the
+  // output is compared with the root instead of printed.
+  const folderRun = Process.run(shell, [flag, folderScript()], folder: Some(rootFolder()))
+  if (folderRun is Ok(result)) {
+    const #[code, output, _] = result
+    const atRoot = Str.trim(output) == rootFolder()
+    print(`folder: exit ${Int.toString(code)}, at the root ${Show.show(atRoot)}`)
+  }
+  if (folderRun is Err(message)) {
+    print(`folder: failed ${message}`)
+  }
+  return 0
+}

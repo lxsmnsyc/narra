@@ -1,0 +1,148 @@
+import * as Arrays from "std/array"
+import * as Ranges from "std/range"
+import * as Semver from "std/semver"
+import { Version, Part } from "std/semver"
+import * as Str from "std/string"
+
+function parseOrPanic(text: string): Version uses alloc {
+  if (Semver.parse(text) is Some(version)) {
+    return version
+  }
+  panic(`cannot parse ${text}`)
+}
+
+function describeParse(text: string): string uses alloc {
+  if (Semver.parse(text) is Some(version)) {
+    return `${text} -> ${Semver.toString(version)}`
+  }
+  return `${text} -> none`
+}
+
+function sortVersions(mutable versions: Array<Version>) {
+  // Insertion sort by precedence.
+  for (const start of Ranges.between(1, Arrays.length(versions))) {
+    let index = start
+    while (index > 0 && Semver.compare(versions[index - 1], versions[index]) > 0) {
+      const earlier = versions[index - 1]
+      versions[index - 1] = versions[index]
+      versions[index] = earlier
+      index--
+    }
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // The precedence example of semver.org section 11, shuffled and sorted again.
+  const ordered = [
+    "1.0.0-alpha",
+    "1.0.0-alpha.1",
+    "1.0.0-alpha.beta",
+    "1.0.0-beta",
+    "1.0.0-beta.2",
+    "1.0.0-beta.11",
+    "1.0.0-rc.1",
+    "1.0.0",
+    "2.0.0",
+    "2.1.0",
+    "2.1.1",
+  ]
+  const shuffled = [
+    "2.1.0",
+    "1.0.0-beta.11",
+    "1.0.0",
+    "1.0.0-alpha.beta",
+    "2.1.1",
+    "1.0.0-rc.1",
+    "1.0.0-alpha",
+    "2.0.0",
+    "1.0.0-beta",
+    "1.0.0-alpha.1",
+    "1.0.0-beta.2",
+  ]
+  let versions: Array<Version> = []
+  for (const text of shuffled) {
+    Arrays.push(mutable versions, parseOrPanic(text))
+  }
+  sortVersions(mutable versions)
+  let sorted: Array<string> = []
+  for (const version of versions) {
+    Arrays.push(mutable sorted, Semver.toString(version))
+  }
+  print(`sorted: ${Str.join(sorted, " < ")}`)
+  print(`as listed: ${Show.show(Str.join(sorted, ",") == Str.join(ordered, ","))}`)
+
+  // Parsing: valid forms and the text they print back as.
+  print(describeParse("1.2.3"))
+  print(describeParse("0.0.0"))
+  print(describeParse("1.2.3-rc.1"))
+  print(describeParse("1.2.3-alpha-1"))
+  print(describeParse("1.2.3+build.5"))
+  print(describeParse("1.2.3-rc.1+build.5"))
+  print(describeParse("1.2.3-0.3.7"))
+  print(describeParse("1.2.3-x.7.z.92"))
+  print(describeParse("1.2.3+001"))
+
+  // Invalid versions.
+  print(describeParse("1.2"))
+  print(describeParse("1.2.3.4"))
+  print(describeParse("01.2.3"))
+  print(describeParse("1.02.3"))
+  print(describeParse("1.2.03"))
+  print(describeParse("1.2.3-"))
+  print(describeParse("1.2.3-01"))
+  print(describeParse("1.2.3-a..b"))
+  print(describeParse("1.2.3+"))
+  print(describeParse("1.2.3+a_b"))
+  print(describeParse("v1.2.3"))
+  print(describeParse(""))
+  print(describeParse("1.2.x"))
+  print(describeParse("-1.2.3"))
+  print(describeParse("99999999999999999999.0.0"))
+
+  // Fields of a parsed version.
+  const detailed = parseOrPanic("3.4.5-beta.2+exp.sha")
+  print(
+    `fields: ${Show.show(detailed.major)} ${Show.show(detailed.minor)} ${Show.show(detailed.patch)} ${Str.join(detailed.prerelease, "|")} ${Str.join(detailed.build, "|")}`,
+  )
+
+  // Compare: numbers first, build metadata ignored.
+  print(
+    `1.2.3 vs 1.2.4: ${Show.show(Semver.compare(parseOrPanic("1.2.3"), parseOrPanic("1.2.4")))}`,
+  )
+  print(
+    `1.10.0 vs 1.9.0: ${Show.show(Semver.compare(parseOrPanic("1.10.0"), parseOrPanic("1.9.0")))}`,
+  )
+  print(
+    `1.0.0+a vs 1.0.0+b: ${Show.show(Semver.compare(parseOrPanic("1.0.0+a"), parseOrPanic("1.0.0+b")))}`,
+  )
+  print(
+    `rc vs release: ${Show.show(Semver.compare(parseOrPanic("1.0.0-rc.1"), parseOrPanic("1.0.0")))}`,
+  )
+  print(
+    `release vs rc: ${Show.show(Semver.compare(parseOrPanic("1.0.0"), parseOrPanic("1.0.0-rc.1")))}`,
+  )
+  print(
+    `long number: ${Show.show(Semver.compare(parseOrPanic("1.0.0-99999999999999999999"), parseOrPanic("1.0.0-100000000000000000000")))}`,
+  )
+
+  // Bump: lower parts reset, prerelease and build dropped.
+  const start = parseOrPanic("1.2.3-rc.1+build.5")
+  print(`bump major: ${Semver.toString(Semver.bump(start, Part.Major))}`)
+  print(`bump minor: ${Semver.toString(Semver.bump(start, Part.Minor))}`)
+  print(`bump patch: ${Semver.toString(Semver.bump(start, Part.Patch))}`)
+  print(`bump keeps input: ${Semver.toString(start)}`)
+
+  // Requirements: a minimum written MAJOR.MINOR.PATCH.
+  const installed = parseOrPanic("1.4.2")
+  print(`satisfies 1.4.2: ${Show.show(Semver.satisfies(installed, "1.4.2"))}`)
+  print(`satisfies 1.2.0: ${Show.show(Semver.satisfies(installed, "1.2.0"))}`)
+  print(`satisfies 1.5.0: ${Show.show(Semver.satisfies(installed, "1.5.0"))}`)
+  print(`satisfies 2.0.0: ${Show.show(Semver.satisfies(installed, "2.0.0"))}`)
+  print(`satisfies ^1.2.0: ${Show.show(Semver.satisfies(installed, "^1.2.0"))}`)
+  print(`satisfies 1.2: ${Show.show(Semver.satisfies(installed, "1.2"))}`)
+  print(`satisfies 1.2.0-rc.1: ${Show.show(Semver.satisfies(installed, "1.2.0-rc.1"))}`)
+  print(
+    `prerelease satisfies 1.4.2: ${Show.show(Semver.satisfies(parseOrPanic("1.4.2-rc.1"), "1.4.2"))}`,
+  )
+  return 0
+}

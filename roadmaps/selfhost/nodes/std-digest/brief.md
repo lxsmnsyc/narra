@@ -1,7 +1,7 @@
 ---
 id: std-digest
 title: "std/digest: SHA-256, SHA-1, HMAC and PBKDF2"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 214200
 owns:
   - roadmaps/selfhost/nodes/std-digest/**
   - std/src/digest.nra
@@ -52,10 +52,10 @@ A new `std/digest` module computes SHA-256 and SHA-1 over bytes, both in one cal
 
 ## Acceptance
 
-- [ ] NIST test vectors for SHA-256 and SHA-1 (empty input, `abc`, the 448-bit message, one million `a`) pass, in one call and fed in parts of uneven sizes.
-- [ ] RFC 4231 HMAC-SHA-256 vectors and RFC 7914 section 11 PBKDF2-HMAC-SHA-256 vectors pass.
-- [ ] A benchmark hashes 64 MiB at -O2 and its time is recorded in the outcome next to `shasum -a 256`.
-- [ ] `sh scripts/test.sh` passes.
+- [x] NIST test vectors for SHA-256 and SHA-1 (empty input, `abc`, the 448-bit message, one million `a`) pass, in one call and fed in parts of uneven sizes.
+- [x] RFC 4231 HMAC-SHA-256 vectors and RFC 7914 section 11 PBKDF2-HMAC-SHA-256 vectors pass.
+- [x] A benchmark hashes 64 MiB at -O2 and its time is recorded in the outcome next to `shasum -a 256`.
+- [x] `sh scripts/test.sh` passes.
 
 ## Sizing
 

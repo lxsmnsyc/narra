@@ -1,7 +1,7 @@
 ---
 id: std-signal
 title: "std/signal: SIGINT and SIGTERM for clean shutdown"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-24

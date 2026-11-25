@@ -1,7 +1,7 @@
 ---
 id: std-hex-base64
 title: "Hex and base64 text of bytes in std/bytes"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-24

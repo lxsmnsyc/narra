@@ -1,7 +1,7 @@
 ---
 id: batch-24
 title: "Batch 24: std modules for servers and release tools"
-status: todo
+status: active
 priority: should
 type: story
 story:

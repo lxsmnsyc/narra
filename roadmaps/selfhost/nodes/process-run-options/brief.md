@@ -1,7 +1,7 @@
 ---
 id: process-run-options
 title: "Process.run options: input, environment, working folder, inherited output"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-24

@@ -1,7 +1,7 @@
 ---
 id: std-semver
 title: "std/semver: parse and compare versions"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-24

@@ -1,7 +1,7 @@
 ---
 id: std-log
 title: "std/log: leveled logging to stderr"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-24

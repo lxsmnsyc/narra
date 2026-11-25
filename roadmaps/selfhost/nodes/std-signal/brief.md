@@ -1,7 +1,7 @@
 ---
 id: std-signal
 title: "std/signal: SIGINT and SIGTERM for clean shutdown"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 302600
 owns:
   - roadmaps/selfhost/nodes/std-signal/**
   - std/src/signal.nra
@@ -52,10 +52,10 @@ A program can wait for SIGINT or SIGTERM (Ctrl-C and Ctrl-Break on Windows) as a
 
 ## Acceptance
 
-- [ ] A sample waits for SIGTERM, prints a line and exits 0. The test harness sends the signal with `kill` and checks the output.
-- [ ] A second signal during shutdown still reaches the program (the handler stays installed).
-- [ ] A wasi build that calls the module is E0991.
-- [ ] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
+- [x] A sample waits for SIGTERM, prints a line and exits 0. The test harness sends the signal with `kill` and checks the output.
+- [x] A second signal during shutdown still reaches the program (the handler stays installed).
+- [x] A wasi build that calls the module is E0991.
+- [x] `sh scripts/test.sh` passes, clean under AddressSanitizer and the leak check.
 
 ## Sizing
 

@@ -450,6 +450,48 @@ reply: hello
 
 `Net.read` gives at most 64 KiB per call, and the network may split a message into several pieces. A program that reads longer messages calls `Net.read` in a loop until it has the whole message. The host is a numeric address such as `127.0.0.1`. A `Connection` closes when the last name that holds it goes away.
 
+## Shutting down on a signal: `std/signal`
+
+A server runs until someone stops it, and a stop from the terminal or a service manager arrives as a signal: SIGINT for Ctrl-C and SIGTERM for a request to end. A program that ignores the signal is killed in the middle of its work. `Signals.wait()` is an async call that finishes when one of the two arrives, so a task can stop accepting work, finish what it has, and return. It gives `Ok(Signal.Interrupt)` or `Ok(Signal.Terminate)`. On Windows, Ctrl-C is `Interrupt` and Ctrl-Break is `Terminate`.
+
+The sample starts the wait, then sends SIGTERM to itself with `kill`, so it runs without anyone at the keyboard. A real server leaves out the `kill` and works until the wait finishes:
+
+```narra
+import * as Process from "std/process"
+import * as Signals from "std/signal"
+import { Signal } from "std/signal"
+
+async function waitForShutdown(): string uses io, alloc {
+  const received = await Signals.wait()
+  return match (received) {
+    Ok(Signal.Interrupt) => "interrupt"
+    Ok(Signal.Terminate) => "terminate"
+    Err(_) => "wait failed"
+  }
+}
+
+export async function run(args: Array<string>): int uses io, alloc {
+  const shutdown = waitForShutdown()
+  print("running")
+  const sent = Process.run("sh", ["-c", "kill -TERM $PPID"])
+  if (sent is Err(message)) {
+    print(message)
+    return 1
+  }
+  print(`stopping on ${await shutdown}`)
+  return 0
+}
+```
+
+```text
+running
+stopping on terminate
+```
+
+Until the first call of `wait`, both signals keep their usual effect and end the program at once. From the first call on, the program catches both for the rest of its life. A signal that arrives while no task waits is kept, and the next `wait` returns it. So a second Ctrl-C during the shutdown reaches the program, which can then give up waiting. Start the first `wait` before the program announces that it is ready, so no signal arrives before the catch is in place.
+
+A signal that arrives while `Process.run` runs goes to the child program, as for every program, and `wait` returns it as well. A cancel gives `Err(AsyncError.Cancelled)`. A second `wait` while one is pending gives `Err(AsyncError.Failed(...))`, so call it from one task. `std/signal` is not available on WASI targets.
+
 ## When the program ends
 
 The program ends when the entry function returns, whether other tasks are still running. Those tasks are cancelled then. The call each one waits in gives `Err(AsyncError.Cancelled)`, and the task runs on to its next waiting call, where it stops for good. Nothing it holds leaks. To let the tasks finish first, end the entry with `await Async.idle()`.

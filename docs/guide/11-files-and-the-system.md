@@ -599,6 +599,42 @@ Ok("hi")
 
 `bytes` values compare with `==`, and they work as map keys.
 
+### Hex and base64
+
+Binary data often has to travel as text, in a log line, a URL or a JSON file. `std/bytes` writes `bytes` as hex or base64 and reads them back:
+
+```narra
+import * as Bytes from "std/bytes"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const data = Bytes.fromString("hello?")
+  print(Bytes.toHex(data))
+  print(Bytes.toBase64(data))
+  print(Bytes.toBase64Url(Bytes.fromArray([251, 255]), false))
+  print(Show.show(Bytes.fromHex("48656C6c6f")))
+  print(Show.show(Bytes.fromHex("abc")))
+  print(Show.show(Bytes.fromBase64("aGVsbG8/")))
+  print(Show.show(Bytes.fromBase64("aGVsbG8")))
+  return 0
+}
+```
+
+```text
+68656c6c6f3f
+aGVsbG8/
+-_8
+Some(bytes[48 65 6c 6c 6f])
+None
+Some(bytes[68 65 6c 6c 6f 3f])
+None
+```
+
+- `Bytes.toHex(data)` writes two lowercase digits per byte. `Bytes.fromHex(text)` accepts both cases and gives `None` for an odd length or a character that is not a hex digit.
+- `Bytes.toBase64(data)` uses the standard alphabet and pads with `=`. `Bytes.fromBase64(text)` requires that padding, as above where `aGVsbG8` lacks its `=`.
+- `Bytes.toBase64Url(data, padded)` uses `-` and `_` in place of `+` and `/`, so the text is safe in a URL. `padded` chooses whether `=` is added. `Bytes.fromBase64Url(text)` accepts text with or without padding.
+
+Every decoder gives `None` for any other character, for padding in the wrong place and for leftover bits that are not zero.
+
 ## Measure time
 
 `std/time`, imported as `Time`, has a clock for measuring and a clock for the date. `Time.now()` reads the monotonic clock, which only goes forward and suits measuring: `Time.elapsed(start)` is the time since `start`. Reading a clock has the `io` effect. A duration is built with `Time.milliseconds(count)`, `Time.seconds(count)` or `Time.nanoseconds(count)`, and read back with `Time.asMilliseconds(duration)` or `Time.asNanoseconds(duration)`:

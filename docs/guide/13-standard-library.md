@@ -515,4 +515,163 @@ NFC composes: a letter and its accents become one code point where Unicode has o
 
 `isNormalized` tells whether `normalize` would change the text. Both look up each code point first and stop early, so text already in the form, ASCII text among it, costs one pass and no allocation: `normalize` gives back the same string. Hangul syllables are composed and decomposed by arithmetic, as Unicode defines them, not from the tables.
 
+## Addresses: `std/url`
+
+`std/url` takes a URL apart, puts it back together, and resolves a relative reference against a base. `Url.parse` returns a `Url` whose parts stay as written: percent escapes are not decoded, and a part that is missing is `None`, so `a` and `a?` stay different. The port is text, because `http://host:` and `http://host:0080/` must come back unchanged. Read it with `Int.parse(port, 10)` when you need a number. `parse` gives an `Err` with a reason for a space, a bad percent escape, a port above 65535 and similar mistakes.
+
+```narra
+import * as Url from "std/url"
+import { QueryParam } from "std/url"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const parsed = Url.parse("https://ada@example.com:8080/docs/intro?lang=en&tag=a%20b#top")
+  if (parsed is Err(message)) {
+    print(message)
+    return 1
+  }
+  const address = parsed.value
+  print(Show.show(address.scheme))
+  print(Show.show(address.host))
+  print(Show.show(address.port))
+  print(address.path)
+  if (address.query is Some(text)) {
+    const params = Url.parseQuery(text)
+    if (params is Ok(items)) {
+      for (const item of items) {
+        print(`${item.name} = ${item.value}`)
+      }
+    }
+  }
+  if (Url.parse("../guide?page=2") is Ok(reference)) {
+    if (Url.resolve(address, reference) is Ok(joined)) {
+      print(Url.toString(joined))
+    }
+  }
+  print(Url.encode("a b&c/d"))
+  print(Show.show(Url.decode("a%20b")))
+  print(Show.show(Url.decode("100%")))
+  print(Url.queryToString([QueryParam { name: "q", value: "hello world" }, QueryParam { name: "n", value: "1" }]))
+  return 0
+}
+```
+
+```text
+Some("https")
+Some("example.com")
+Some("8080")
+/docs/intro
+lang = en
+tag = a b
+https://ada@example.com:8080/guide?page=2
+a%20b%26c%2Fd
+Ok("a b")
+Err("a bad percent escape")
+q=hello+world&n=1
+```
+
+`Url.resolve(base, reference)` joins a relative reference to an absolute base, with the rules of RFC 3986, so `..` and `.` segments are removed. It gives an `Err` when the base has no scheme. `Url.toString` writes a `Url` back as text.
+
+`Url.encode` escapes every byte that is not a letter, a digit or one of `-._~`, and `Url.decode` reverses it. `decode` leaves `+` as it is, and it gives an `Err` for a bad escape or a result that is not UTF-8. `Url.parseQuery` reads the text after `?` as `name=value` pairs, in order, with `+` as a space, and repeated names stay as separate entries. `Url.queryToString` writes them again. The host rules of a browser, such as lower-casing or default ports, are not applied.
+
+## Versions: `std/semver`
+
+`std/semver` reads, compares and changes version numbers of the form `MAJOR.MINOR.PATCH`, with an optional prerelease after `-` and build metadata after `+`, as Semantic Versioning 2.0.0 defines them. `Semver.parse` returns `None` for text that is not a version. A `Version` has the three numbers and two arrays of identifiers, `prerelease` and `build`.
+
+```narra
+import * as Semver from "std/semver"
+import { Part } from "std/semver"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const parsed = Semver.parse("1.4.2-rc.1+build.7")
+  if (parsed is Some(version)) {
+    print(Semver.toString(version))
+    print(Show.show(version.prerelease))
+    if (Semver.parse("1.4.2") is Some(release)) {
+      print(Show.show(Semver.compare(version, release)))
+    }
+    print(Semver.toString(Semver.bump(version, Part.Minor)))
+    print(Show.show(Semver.satisfies(version, "1.4.0")))
+    print(Show.show(Semver.satisfies(version, "1.4.2")))
+  }
+  print(Show.show(Semver.parse("1.4")))
+  return 0
+}
+```
+
+```text
+1.4.2-rc.1+build.7
+["rc", "1"]
+-1
+1.5.0
+true
+false
+None
+```
+
+`Semver.compare` returns -1, 0 or 1 and follows the precedence rules: a prerelease is below its release, and build metadata is ignored. `Semver.bump(version, part)` raises the major, minor or patch number, sets the lower numbers to 0 and drops the prerelease and the build. `Semver.satisfies(version, requirement)` is true when the version is at least the minimum named by `requirement`, which must be written as three numbers such as `1.4.0`. Any other form of requirement, such as `^1.4.0` or `1.4`, gives `false`.
+
+## Hashes: `std/digest`
+
+`std/digest` computes SHA-256 and SHA-1 hashes, HMAC, and PBKDF2 with HMAC-SHA-256, all in Narra without a C library. Every input and result is `bytes`. Print a result as text with `Bytes.toHex` (see [chapter 11](11-files-and-the-system.md)). SHA-1 is only there for formats that still use it. Choose SHA-256 for new work.
+
+```narra
+import * as Bytes from "std/bytes"
+import * as Digest from "std/digest"
+import { Algorithm } from "std/digest"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const message = Bytes.fromString("abc")
+  print(Bytes.toHex(Digest.sha256(message)))
+  print(Bytes.toHex(Digest.sha1(message)))
+  let hasher = Digest.create(Algorithm.Sha256)
+  Digest.update(mutable hasher, Bytes.fromString("a"))
+  Digest.update(mutable hasher, Bytes.fromString("bc"))
+  print(Show.show(Digest.equal(Digest.finish(hasher), Digest.sha256(message))))
+  print(Bytes.toHex(Digest.hmac(Algorithm.Sha256, Bytes.fromString("key"), message)))
+  if (Digest.pbkdf2Sha256(Bytes.fromString("password"), Bytes.fromString("salt"), 1, 16) is Some(derived)) {
+    print(Bytes.toHex(derived))
+  }
+  return 0
+}
+```
+
+```text
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+a9993e364706816aba3e25717850c26c9cd0d89d
+true
+9c196e32dc0175f86f4b1cb89289d6619de6bee699e4c378e68309ed97a1a6ab
+120fb6cffcf8b32c43e7225256c4f837
+```
+
+`Digest.sha256` and `Digest.sha1` hash a whole value. For data that arrives in pieces, `Digest.create(algorithm)` makes a `Hasher`, `Digest.update` feeds it, and `Digest.finish` returns the hash. `finish` leaves the hasher as it was, so it can take more input afterward, and `copy(hasher)` makes an independent one. `Digest.hmac(algorithm, key, message)` proves that someone who holds `key` wrote `message`.
+
+`Digest.pbkdf2Sha256(password, salt, iterations, length)` derives a key of `length` bytes from a password. It returns `None` when `iterations` is below 1 or `length` is negative or too large. Each iteration allocates, so a large count is slow: 80000 iterations take about a second. To compare two hashes or two message codes, use `Digest.equal`. It looks at every byte before it answers, so the time it takes does not tell an attacker where the first difference is.
+
+## Log lines: `std/log`
+
+`std/log` writes one line per event to standard error, as text or as JSON. `Log.create(level, format)` makes a `Logger`. The levels are `Debug`, `Info`, `Warn` and `Error`, and a logger drops lines below its level. A line has a message and fields, each field a `#[name, value]` pair whose value is a `Value` from `std/shape`. `Log.with(logger, fields)` returns a logger that adds those fields to every line, which suits a request or a task. No timestamp is written, so the output is the same on every run.
+
+```narra
+import * as Log from "std/log"
+import { Level, Format } from "std/log"
+import { Value } from "std/shape"
+
+export function run(args: Array<string>): int uses io, alloc {
+  const logger = Log.create(Level.Info, Format.Text)
+  const request = Log.with(logger, [#["request", Value.Int(42)]])
+  print(Log.render(request, Level.Info, "started", [#["path", Value.Text("/a b")]]))
+  print(Log.render(Log.create(Level.Info, Format.Json), Level.Warn, "slow", [#["seconds", Value.Float(1.5)]]))
+  print(Show.show(Log.enabled(logger, Level.Debug)))
+  return 0
+}
+```
+
+```text
+level=info msg="started" request=42 path="/a b"
+{"level":"warn","msg":"slow","seconds":1.5}
+false
+```
+
+`Log.render` returns the line as a string, here to print it. The functions `Log.debug`, `Log.info`, `Log.warn` and `Log.error` write the line to standard error when the level allows it, and `Log.write` takes the level as an argument. `Log.enabled(logger, level)` tells whether a line at that level would be written, so a program can skip building an expensive field. In the text format a value is bare unless it is empty or holds a space, a quote, an `=` or a control character, and then it is quoted as JSON. The message is always quoted. A field whose name repeats an earlier one, or `level` or `msg`, replaces that value and keeps its place.
+
 Next: [14. Async](14-async.md).

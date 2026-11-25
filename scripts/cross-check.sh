@@ -36,16 +36,16 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # Programs that run on every row. Each has a golden testdata/<name>.out.
-samples="hello arrays closures enums maps int_to_string float_shortest c_interop windows_runtime windows_path windows_process windows_async"
+samples="hello arrays closures enums maps int_to_string float_shortest c_interop windows_runtime windows_path windows_process windows_process_options windows_async"
 
 # Rows whose runtime work has not landed. A failure on one is reported as an
 # expected failure.
 expected_failures=""
 
 # Samples a row leaves out, one "row:sample" pair per word: c_interop calls libc
-# through a bitcast, windows_runtime uses std/thread, windows_process uses Process.run
+# through a bitcast, windows_runtime uses std/thread, windows_process and windows_process_options use Process.run
 # and windows_async uses std/net, which wasm32-wasi lacks.
-left_out="Wasi-Wasm32:c_interop Wasi-Wasm32:windows_runtime Wasi-Wasm32:windows_process Wasi-Wasm32:windows_async"
+left_out="Wasi-Wasm32:c_interop Wasi-Wasm32:windows_runtime Wasi-Wasm32:windows_process Wasi-Wasm32:windows_process_options Wasi-Wasm32:windows_async"
 
 run_timeout=${RUN_TIMEOUT:-300}
 

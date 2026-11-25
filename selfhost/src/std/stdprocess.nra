@@ -22,18 +22,27 @@ import {
   ioResult,
 } from "narrac/std/stdemithelp"
 
-export const PROCESS_FUNCS: Array<StdFunc> = [
+export const INTERNAL_PROCESS_FUNCS: Array<StdFunc> = [
   StdFunc {
-    name: "Process.run",
-    module: "std/process",
+    name: "Spawn.run",
+    module: "std/internal/process",
     key: "run",
-    parameters: ["string", "Array<string>"],
-    parameterNames: ["command", "arguments"],
+    parameters: [
+      "string",
+      "Array<string>",
+      "string",
+      "bool",
+      "Array<string>",
+      "Array<string>",
+      "string",
+      "bool",
+    ],
     result: "Result<#[int, string, string], string>",
     effects: ["io", "alloc"],
-    check: "fixed",
-    doc: "Runs a program found through `PATH`, waits for it to end, and gives its exit code, standard output and standard error. A program that cannot start is an `Err`, and one killed by a signal has the code 128 plus the signal.",
   },
+]
+
+export const PROCESS_FUNCS: Array<StdFunc> = [
   StdFunc {
     name: "Process.cwd",
     module: "std/process",
@@ -58,7 +67,7 @@ export const PROCESS_FUNCS: Array<StdFunc> = [
   },
 ]
 
-function emitProcessRun<W: EmitWalker>(
+function emitSpawnRun<W: EmitWalker>(
   walker: W,
   mutable emitter: Emitter,
   nodeId: int,
@@ -67,15 +76,29 @@ function emitProcessRun<W: EmitWalker>(
   const resultType = copy(readNodeType(emitter, nodeId))
   const okVariant = findVariant(emitter, resultType, "Ok")
   const tupleType = copy(variantFieldType(emitter, resultType, okVariant))
+
+  // The arguments are evaluated in order; each array is held in a temporary.
   const command = argumentText(walker, mutable emitter, arguments, 0)
   const argumentsType = copy(readNodeType(emitter, getExpressionId(arguments[1].value)))
   const argumentsValue = argumentText(walker, mutable emitter, arguments, 1)
   const list = temp(mutable emitter, argumentsType, argumentsValue)
+  const input = argumentText(walker, mutable emitter, arguments, 2)
+  const hasInput = argumentText(walker, mutable emitter, arguments, 3)
+  const addedType = copy(readNodeType(emitter, getExpressionId(arguments[4].value)))
+  const addedValue = argumentText(walker, mutable emitter, arguments, 4)
+  const added = temp(mutable emitter, addedType, addedValue)
+  const removedType = copy(readNodeType(emitter, getExpressionId(arguments[5].value)))
+  const removedValue = argumentText(walker, mutable emitter, arguments, 5)
+  const removed = temp(mutable emitter, removedType, removedValue)
+  const folder = argumentText(walker, mutable emitter, arguments, 6)
+  const inherit = argumentText(walker, mutable emitter, arguments, 7)
+
+  // The runtime fills the out parameters; a failure leaves a message in bad.
   const code = temp(mutable emitter, Type.TInt, "0")
   const output = stringOut(mutable emitter)
   const errorOutput = stringOut(mutable emitter)
   const bad = stringOut(mutable emitter)
-  const runCall = `narra_proc_run(${command}, ${list}->items, ${list}->len, &${code}, &${output}, &${errorOutput}, &${bad})`
+  const runCall = `narra_proc_run(${command}, ${list}->items, ${list}->len, ${input}, ${hasInput}, ${added}->items, ${added}->len, ${removed}->items, ${removed}->len, ${folder}, ${inherit}, &${code}, &${output}, &${errorOutput}, &${bad})`
   const success = temp(mutable emitter, Type.TBool, runCall)
   const tupleName = cachedCType(emitter.checker, emitter.typeNames, tupleType)
   const value = `((${tupleName}){.f_0 = ${code}, .f_1 = ${output}, .f_2 = ${errorOutput}})`
@@ -107,8 +130,8 @@ export function emitProcessCall<W: EmitWalker>(
   nodeId: int,
   arguments: Array<Arg>,
 ): Code uses alloc {
-  if (name == "Process.run") {
-    return emitProcessRun(walker, mutable emitter, nodeId, arguments)
+  if (name == "Spawn.run") {
+    return emitSpawnRun(walker, mutable emitter, nodeId, arguments)
   }
   if (name == "Process.cwd") {
     return emitProcessCwd(mutable emitter, nodeId)

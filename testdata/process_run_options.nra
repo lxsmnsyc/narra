@@ -1,0 +1,79 @@
+import * as Int from "std/int"
+import * as Options from "std/option"
+import * as Process from "std/process"
+import * as Str from "std/string"
+
+function showResult(label: string, ran: Result<#[int, string, string], string>) uses io, alloc {
+  if (ran is Ok(result)) {
+    const #[code, output, errors] = result
+    print(
+      `${label}: exit ${Int.toString(code)}, out ${Show.show(output)}, err ${Show.show(errors)}`,
+    )
+  }
+  if (ran is Err(message)) {
+    print(`${label}: failed ${message}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // One mebibyte goes to cat on its input and comes back whole.
+  const big = Options.withDefault(Str.repeat("0123456789abcdef", 65536), "")
+  const echoed = Process.run("cat", [], input: Some(big))
+  if (echoed is Ok(result)) {
+    const #[code, output, errors] = result
+    print(
+      `cat: exit ${Int.toString(code)}, bytes ${Int.toString(Str.length(output))}, same ${Show.show(output == big)}, err ${Show.show(errors)}`,
+    )
+  }
+
+  // A program that never reads its input does not block the call or kill it.
+  showResult("true", Process.run("true", [], input: Some(big)))
+
+  // Without options the input is closed.
+  showResult("closed", Process.run("cat", []))
+
+  // A variable is added, one is replaced, one is removed.
+  const environment = Process.run(
+    "env",
+    [],
+    environment: [#["NARRA_PROCESS_ADDED", "yes"], #["HOME", "/narra-home"]],
+    removed: ["USER", "LOGNAME"],
+  )
+  if (environment is Ok(result)) {
+    const #[code, output, _] = result
+    print(
+      `env: exit ${Int.toString(code)}, added ${Show.show(Str.contains(output, "NARRA_PROCESS_ADDED=yes\n"))}, replaced ${Show.show(Str.contains(output, "HOME=/narra-home\n"))}, user ${Show.show(Str.contains(output, "USER="))}, logname ${Show.show(Str.contains(output, "LOGNAME="))}`,
+    )
+  }
+  showResult(
+    "set twice",
+    Process.run(
+      "sh",
+      ["-c", "echo $NARRA_PROCESS_TWICE"],
+      environment: [#["NARRA_PROCESS_TWICE", "first"], #["NARRA_PROCESS_TWICE", "last"]],
+    ),
+  )
+
+  // The working folder, and a folder that does not exist.
+  showResult("pwd", Process.run("pwd", [], folder: Some("/")))
+  const missing = Process.run("pwd", [], folder: Some("/narra-no-such-folder"))
+  print(`missing folder is Err ${Show.show(missing is Err(_))}`)
+
+  // A bad variable is an Err before anything starts.
+  showResult("no name", Process.run("env", [], environment: [#["", "x"]]))
+  showResult("bad removal", Process.run("env", [], removed: ["A=B"]))
+
+  // Named options work like any other parameter.
+  showResult("named", Process.run("cat", [], input: Some("named input")))
+
+  // Passed-through output comes in order with this process's own, and nothing is captured.
+  print("before")
+  const inherited = Process.run("sh", ["-c", "echo out; echo more"], inheritOutput: true)
+  if (inherited is Ok(result)) {
+    const #[code, output, errors] = result
+    print(
+      `after: exit ${Int.toString(code)}, captured ${Show.show(output)} and ${Show.show(errors)}`,
+    )
+  }
+  return 0
+}

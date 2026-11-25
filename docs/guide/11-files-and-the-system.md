@@ -468,7 +468,34 @@ narra-no-such-program: not started (narra-no-such-program: No such file or direc
 
 The command is not a line for a shell. It is a program name, and each argument is passed as it is, with no quoting and no wildcards. To use shell features, run the shell: `Process.run("sh", ["-c", "ls *.txt"])`. `Process.run` looks the name up on the system's `PATH`. On Windows, `echo` and `dir` are part of the command shell, so run them as `Process.run("cmd", ["/c", "echo", "hi"])`.
 
-`Process.run` captures all the output before it returns, so it suits tools with small output. When the child is stopped by a signal, the code is 128 plus the signal number.
+`Process.run` captures all the output before it returns, so it suits tools with small output. For a tool with large output that you only want to show, use `inheritOutput` below. When the child is stopped by a signal, the code is 128 plus the signal number.
+
+`Process.run` also takes options, which a call names: `Process.run("cat", [], input: Some(text))`. `input` is text for the standard input of the program, which is closed without it. `environment` is a list of `#[name, value]` pairs to set, and `removed` is a list of names the program does not get. `folder` is the working folder, and `inheritOutput` sends the program's output to the output of this program, in order, so the captured text is empty. The input is written while the output is read, so a large input and a large output do not block each other. The program is looked up in the `PATH` it gets, after `removed` and `environment` apply.
+
+```narra
+import * as Process from "std/process"
+import * as Str from "std/string"
+
+function show(label: string, ran: Result<#[int, string, string], string>) uses io, alloc {
+  match (ran) {
+    Ok(#[_, output, _]) => print(`${label}: ${Str.trim(output)}`)
+    Err(message) => print(`${label}: ${message}`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  show("input", Process.run("cat", [], input: Some("typed in")))
+  show("environment", Process.run("sh", ["-c", "echo $GREETING"], environment: [#["GREETING", "hello"]]))
+  show("folder", Process.run("pwd", [], folder: Some("/")))
+  return 0
+}
+```
+
+```text
+input: typed in
+environment: hello
+folder: /
+```
 
 `Process.exit(code)` ends the program at once with that code, after writing out what standard output holds. It has the `io` effect. Nothing after it runs, so a function that has to return a value may end with it, as it may end with `panic`:
 

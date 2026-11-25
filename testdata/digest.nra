@@ -1,0 +1,279 @@
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Digest from "std/digest"
+import { Algorithm } from "std/digest"
+import * as Options from "std/option"
+import * as Str from "std/string"
+import * as U8 from "std/u8"
+
+const SHA256_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+const SHA256_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+const SHA256_448 = "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+const SHA256_896 = "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+const SHA256_MILLION = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+const SHA1_EMPTY = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+const SHA1_ABC = "a9993e364706816aba3e25717850c26c9cd0d89d"
+const SHA1_448 = "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+const SHA1_896 = "a49b2446a02c645bf419f995b67091253a04a259"
+const SHA1_MILLION = "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
+
+const MESSAGE_448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+const MESSAGE_896 = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+
+// Part sizes that cross the 64-byte block boundary in different places.
+const PART_SIZES = [1, 3, 63, 64, 65, 7, 129, 2, 100]
+
+function describe(flag: bool): string {
+  return flag ? "true" : "false"
+}
+
+function check(label: string, actual: string, expected: string) uses io, alloc {
+  if (actual == expected) {
+    print(`${label}: ok`)
+  } else {
+    print(`${label}: FAIL got ${actual} want ${expected}`)
+  }
+}
+
+function repeatText(text: string, count: int): string uses alloc {
+  let builder = Str.builder()
+  for (let index = 0; index < count; index++) {
+    Str.append(mutable builder, text)
+  }
+  return Str.build(builder)
+}
+
+function repeatByte(value: u8, count: int): bytes uses alloc {
+  let items: Array<u8> = []
+  for (let index = 0; index < count; index++) {
+    Arrays.push(mutable items, value)
+  }
+  return Bytes.fromArray(items)
+}
+
+function hashInParts(algorithm: Algorithm, data: bytes): string uses alloc {
+  let hasher = Digest.create(algorithm)
+  const total = Bytes.length(data)
+  let position = 0
+  let turn = 0
+  while (position < total) {
+    const size = PART_SIZES[turn]
+    let end = position + size
+    if (end > total) {
+      end = total
+    }
+    const part = Options.withDefault(Bytes.slice(data, position, end), Bytes.fromString(""))
+    Digest.update(mutable hasher, part)
+    position = end
+    turn++
+    if (turn == 9) {
+      turn = 0
+    }
+  }
+  return Bytes.toHex(Digest.finish(hasher))
+}
+
+function checkHashes(label: string, text: string, sha256: string, sha1: string) uses io, alloc {
+  const data = Bytes.fromString(text)
+  check(`sha256 ${label}`, Bytes.toHex(Digest.sha256(data)), sha256)
+  check(`sha256 ${label} in parts`, hashInParts(Algorithm.Sha256, data), sha256)
+  check(`sha1 ${label}`, Bytes.toHex(Digest.sha1(data)), sha1)
+  check(`sha1 ${label} in parts`, hashInParts(Algorithm.Sha1, data), sha1)
+}
+
+function checkHmac(label: string, key: bytes, message: bytes, expected: string) uses io, alloc {
+  const mac = Digest.hmac(Algorithm.Sha256, key, message)
+  check(`hmac ${label}`, Bytes.toHex(mac), expected)
+}
+
+function checkPbkdf2(
+  label: string,
+  password: string,
+  salt: string,
+  iterations: int,
+  length: int,
+  expected: string,
+) uses io, alloc {
+  const derived = Digest.pbkdf2Sha256(
+    Bytes.fromString(password),
+    Bytes.fromString(salt),
+    iterations,
+    length,
+  )
+  if (derived is Some(data)) {
+    check(`pbkdf2 ${label}`, Bytes.toHex(data), expected)
+  } else {
+    print(`pbkdf2 ${label}: FAIL none`)
+  }
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // FIPS 180-4 and NIST examples.
+  checkHashes("empty", "", SHA256_EMPTY, SHA1_EMPTY)
+  checkHashes("abc", "abc", SHA256_ABC, SHA1_ABC)
+  checkHashes("448 bits", MESSAGE_448, SHA256_448, SHA1_448)
+  checkHashes("896 bits", MESSAGE_896, SHA256_896, SHA1_896)
+  checkHashes("million a", repeatText("a", 1000000), SHA256_MILLION, SHA1_MILLION)
+
+  // A hasher can be read, then fed more.
+  let hasher = Digest.create(Algorithm.Sha256)
+  Digest.update(mutable hasher, Bytes.fromString("a"))
+  const early = Bytes.toHex(Digest.finish(hasher))
+  Digest.update(mutable hasher, Bytes.fromString("bc"))
+  check("sha256 a", early, Bytes.toHex(Digest.sha256(Bytes.fromString("a"))))
+  check("sha256 abc after finish", Bytes.toHex(Digest.finish(hasher)), SHA256_ABC)
+
+  // RFC 4231 test cases 1 to 4, 6 and 7, and RFC 2202 case 2 for SHA-1.
+  checkHmac(
+    "rfc4231 1",
+    repeatByte(0x0b, 20),
+    Bytes.fromString("Hi There"),
+    "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+  )
+  checkHmac(
+    "rfc4231 2",
+    Bytes.fromString("Jefe"),
+    Bytes.fromString("what do ya want for nothing?"),
+    "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+  )
+  checkHmac(
+    "rfc4231 3",
+    repeatByte(0xaa, 20),
+    repeatByte(0xdd, 50),
+    "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+  )
+  let counting: Array<u8> = []
+  for (let value = 1; value <= 25; value++) {
+    Arrays.push(mutable counting, U8.wrap(value))
+  }
+  checkHmac(
+    "rfc4231 4",
+    Bytes.fromArray(counting),
+    repeatByte(0xcd, 50),
+    "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
+  )
+  checkHmac(
+    "rfc4231 6",
+    repeatByte(0xaa, 131),
+    Bytes.fromString("Test Using Larger Than Block-Size Key - Hash Key First"),
+    "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+  )
+  checkHmac(
+    "rfc4231 7",
+    repeatByte(0xaa, 131),
+    Bytes.fromString(
+      "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.",
+    ),
+    "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+  )
+  const sha1Mac = Digest.hmac(
+    Algorithm.Sha1,
+    Bytes.fromString("Jefe"),
+    Bytes.fromString("what do ya want for nothing?"),
+  )
+  check("hmac sha1 rfc2202 2", Bytes.toHex(sha1Mac), "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79")
+
+  // RFC 7914 section 11, and a short derived key.
+  checkPbkdf2(
+    "rfc7914 c=1",
+    "passwd",
+    "salt",
+    1,
+    64,
+    "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783",
+  )
+  checkPbkdf2(
+    "rfc7914 c=80000",
+    "Password",
+    "NaCl",
+    80000,
+    64,
+    "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d",
+  )
+  checkPbkdf2(
+    "c=2 length 20",
+    "password",
+    "salt",
+    2,
+    20,
+    "ae4d0c95af6b46d32d0adff928f06dd02a303f8e",
+  )
+
+  // Lengths around the padding boundary, in one call.
+  const boundaries = [
+    #[
+      55,
+      "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+      "c1c8bbdc22796e28c0e15163d20899b65621d65a",
+    ],
+    #[
+      63,
+      "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34",
+      "03f09f5b158a7a8cdad920bddc29b81c18a551f5",
+    ],
+    #[
+      64,
+      "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+      "0098ba824b5c16427bd7a1122a5a442a25ec644d",
+    ],
+    #[
+      65,
+      "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",
+      "11655326c708d70319be2610e8a57d9a5b959d3b",
+    ],
+  ]
+  for (const boundary of Arrays.values(boundaries)) {
+    const data = repeatByte(0x61, boundary[0])
+    check(
+      `sha256 length ${Int.toString(boundary[0])}`,
+      Bytes.toHex(Digest.sha256(data)),
+      boundary[1],
+    )
+    check(`sha1 length ${Int.toString(boundary[0])}`, Bytes.toHex(Digest.sha1(data)), boundary[2])
+  }
+
+  // finish twice gives the same digest, and update after finish continues the message.
+  let twice = Digest.create(Algorithm.Sha256)
+  Digest.update(mutable twice, Bytes.fromString("abc"))
+  const firstFinish = Bytes.toHex(Digest.finish(twice))
+  const secondFinish = Bytes.toHex(Digest.finish(twice))
+  check("finish twice", secondFinish, firstFinish)
+  Digest.update(mutable twice, Bytes.fromString("def"))
+  check(
+    "update after finish",
+    Bytes.toHex(Digest.finish(twice)),
+    "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+  )
+
+  // HMAC-SHA-1 with a key longer than the block.
+  const longKeyMac = Digest.hmac(Algorithm.Sha1, repeatByte(0xaa, 100), Bytes.fromString("hello"))
+  check("hmac sha1 long key", Bytes.toHex(longKeyMac), "2699eaf5828aacaa3dae9ae101abe3c657b62a74")
+
+  // Derived key lengths: not a multiple of 32, and empty.
+  checkPbkdf2(
+    "length 33",
+    "pw",
+    "salt",
+    3,
+    33,
+    "3c671234e386cb307220d70ee15c4985160b8a8dba62f247001b07974ad52ed178",
+  )
+  checkPbkdf2("length 0", "pw", "salt", 3, 0, "")
+
+  // Bad arguments.
+  const password = Bytes.fromString("p")
+  const salt = Bytes.fromString("s")
+  print(`zero iterations: ${describe(Options.isNone(Digest.pbkdf2Sha256(password, salt, 0, 32)))}`)
+  print(
+    `length too large: ${describe(Options.isNone(Digest.pbkdf2Sha256(password, salt, 1, 137438953441)))}`,
+  )
+  print(`negative length: ${describe(Options.isNone(Digest.pbkdf2Sha256(password, salt, 1, -1)))}`)
+
+  // Comparison.
+  const first = Digest.sha256(Bytes.fromString("abc"))
+  print(`equal same: ${describe(Digest.equal(first, Digest.sha256(Bytes.fromString("abc"))))}`)
+  print(`equal other: ${describe(Digest.equal(first, Digest.sha256(Bytes.fromString("abd"))))}`)
+  print(`equal lengths: ${describe(Digest.equal(first, Digest.sha1(Bytes.fromString("abc"))))}`)
+  return 0
+}

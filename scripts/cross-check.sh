@@ -345,6 +345,8 @@ checkrow() {
     else
       say "  $sample: run failed (exit $status)"
       sed -n 1,3p "$work/$row/$sample.stderr" | sed 's/^/    /'
+      # Show where the output differs, so a failure on a remote runner can be read from its log.
+      diff "$root/testdata/$sample.out" "$work/$row/$sample.stdout" | sed -n 1,10p | sed 's/^/    /'
       record "$row" "$sample" run-failed "exit $status"
     fi
   done

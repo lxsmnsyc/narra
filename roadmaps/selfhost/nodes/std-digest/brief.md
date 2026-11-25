@@ -1,7 +1,7 @@
 ---
 id: std-digest
 title: "std/digest: SHA-256, SHA-1, HMAC and PBKDF2"
-status: todo
+status: active
 priority: should
 type: feature
 story: batch-24

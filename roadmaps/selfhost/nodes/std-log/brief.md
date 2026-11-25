@@ -1,7 +1,7 @@
 ---
 id: std-log
 title: "std/log: leveled logging to stderr"
-status: active
+status: done
 priority: should
 type: feature
 story: batch-24
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 262100
 owns:
   - roadmaps/selfhost/nodes/std-log/**
   - std/src/log.nra
@@ -49,9 +49,9 @@ A new `std/log` module writes log lines with a level (`debug`, `info`, `warn`, `
 
 ## Acceptance
 
-- [ ] A sample logs at each level and its stderr matches a golden for both formats, with the level filter applied.
-- [ ] JSON output escapes field values with the same rules as `std/json`.
-- [ ] `sh scripts/test.sh` passes.
+- [x] A sample logs at each level and its stderr matches a golden for both formats, with the level filter applied.
+- [x] JSON output escapes field values with the same rules as `std/json`.
+- [x] `sh scripts/test.sh` passes.
 
 ## Sizing
 

@@ -1,0 +1,75 @@
+import * as Bytes from "std/bytes"
+import * as Arrays from "std/array"
+import * as U8 from "std/u8"
+
+const VECTORS = ["", "f", "fo", "foo", "foob", "fooba", "foobar"]
+
+function showDecoded(label: string, decoded: Option<bytes>) uses alloc, io {
+  if (decoded is Some(data)) {
+    const text = Bytes.toString(data)
+    if (text is Ok(value)) {
+      print(`${label}: some ${value}`)
+    } else {
+      print(`${label}: some, not text`)
+    }
+  } else {
+    print(`${label}: none`)
+  }
+}
+
+function matches(decoded: Option<bytes>, expected: bytes): bool {
+  if (decoded is Some(data)) {
+    return data == expected
+  }
+  return false
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  // The RFC 4648 section 10 vectors, both directions.
+  for (const vector of Arrays.values(VECTORS)) {
+    const data = Bytes.fromString(vector)
+    const base64 = Bytes.toBase64(data)
+    const hex = Bytes.toHex(data)
+    print(`[${vector}] base64 [${base64}] hex [${hex}]`)
+    showDecoded("  from base64", Bytes.fromBase64(base64))
+    showDecoded("  from hex", Bytes.fromHex(hex))
+  }
+
+  // Every byte value, in hex and in both base64 alphabets.
+  let every: Array<u8> = []
+  for (let value = 0; value < 256; value++) {
+    Arrays.push(mutable every, U8.wrap(value))
+  }
+  const all = Bytes.fromArray(every)
+  if (Bytes.slice(all, 250, 256) is Some(tail)) {
+    print(Bytes.toHex(tail))
+  }
+  const standard = Bytes.toBase64(all)
+  print(standard)
+  const url = Bytes.toBase64Url(all, false)
+  print(url)
+  print(Bytes.toBase64Url(Bytes.fromArray([251, 255]), true))
+  print(Bytes.toBase64Url(Bytes.fromArray([251, 255]), false))
+  print(Show.show(matches(Bytes.fromBase64(standard), all)))
+  print(Show.show(matches(Bytes.fromBase64Url(url), all)))
+  print(Show.show(matches(Bytes.fromBase64Url(Bytes.toBase64Url(all, true)), all)))
+  print(Show.show(matches(Bytes.fromHex("00FF7f"), Bytes.fromArray([0, 255, 127]))))
+
+  // Bad text gives none.
+  showDecoded("hex zz", Bytes.fromHex("zz"))
+  showDecoded("hex odd", Bytes.fromHex("abc"))
+  showDecoded("hex sign", Bytes.fromHex("+1"))
+  showDecoded("base64 missing padding", Bytes.fromBase64("Zg"))
+  showDecoded("base64 extra padding", Bytes.fromBase64("Zg==="))
+  showDecoded("base64 padding in the middle", Bytes.fromBase64("Zg==Zg=="))
+  showDecoded("base64 one pad too few", Bytes.fromBase64("Zm9vYg="))
+  showDecoded("base64 bad character", Bytes.fromBase64("Zm9v*g=="))
+  showDecoded("base64 url alphabet", Bytes.fromBase64("-_-_"))
+  showDecoded("base64 standard alphabet", Bytes.fromBase64Url("+/+/"))
+  showDecoded("base64 one character", Bytes.fromBase64("Z"))
+  showDecoded("base64 leftover bits", Bytes.fromBase64("Zh=="))
+  showDecoded("base64url one character", Bytes.fromBase64Url("Z"))
+  showDecoded("base64url unpadded", Bytes.fromBase64Url("Zg"))
+  showDecoded("base64url bad padding", Bytes.fromBase64Url("Zg="))
+  return 0
+}

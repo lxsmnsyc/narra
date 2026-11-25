@@ -1,0 +1,176 @@
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+import * as Url from "std/url"
+import { Url as UrlParts, QueryParam } from "std/url"
+
+function show(text: Option<string>): string {
+  return match (text) { Some(value) => `<${value}>`, None => "-" }
+}
+
+function showPort(port: Option<string>): string {
+  return match (port) { Some(value) => `<${value}>`, None => "-" }
+}
+
+function parseOrFail(text: string): UrlParts uses alloc {
+  const result = Url.parse(text)
+  if (result is Ok(url)) {
+    return url
+  }
+  panic(`cannot parse ${text}`)
+}
+
+function resolveText(base: UrlParts, reference: string): string uses alloc {
+  const resolved = Url.resolve(base, parseOrFail(reference))
+  if (resolved is Ok(url)) {
+    return Url.toString(url)
+  }
+  return "error"
+}
+
+function showParse(text: string): string uses alloc {
+  const result = Url.parse(text)
+  if (result is Err(reason)) {
+    return `error: ${reason}`
+  }
+  if (result is Ok(url)) {
+    return `scheme=${show(url.scheme)} user=${show(url.userInfo)} host=${show(url.host)} port=${showPort(url.port)} path=<${url.path}> query=${show(url.query)} fragment=${show(url.fragment)}`
+  }
+  return ""
+}
+
+function showDecode(text: string): string uses alloc {
+  const result = Url.decode(text)
+  if (result is Ok(value)) {
+    return `ok <${value}>`
+  }
+  if (result is Err(reason)) {
+    return `error: ${reason}`
+  }
+  return ""
+}
+
+function showQuery(text: string): string uses alloc {
+  const result = Url.parseQuery(text)
+  if (result is Err(reason)) {
+    return `error: ${reason}`
+  }
+  let parts: Array<string> = []
+  if (result is Ok(params)) {
+    for (const param of params) {
+      Arrays.push(mutable parts, `${param.name}=${param.value}`)
+    }
+  }
+  return `[${Str.join(parts, "|")}]`
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  print(showParse("https://user:pw@example.com:8080/a/b%20c?x=1&y=2#top"))
+  print(showParse("http://[::1]:80/"))
+  print(showParse("file:///etc/hosts"))
+  print(showParse("mailto:someone@example.com"))
+  print(showParse("//host"))
+  print(showParse("//host/"))
+  print(showParse("a?"))
+  print(showParse("../c;p?y#s"))
+  print(showParse(""))
+  print(showParse("http://host:99999/"))
+  print(showParse("http://host:abc/"))
+  print(showParse("http://h:"))
+  print(showParse("http://h:0080/"))
+  print(showParse("//::1"))
+  print(showParse("http://[::1/"))
+  print(showParse("a b"))
+  print(showParse("a%zz"))
+  print(showParse("1a:b"))
+
+  // Round trip.
+  const samples = [
+    "https://user@example.com:8080/a?x#f",
+    "file:///x",
+    "http://h:",
+    "http://h:0080/",
+    "http://[::1]:",
+    "//host",
+    "a?",
+    "?y",
+    "#s",
+    "g;x?y#s",
+    "",
+  ]
+  for (const sample of samples) {
+    print(`round ${Show.show(Url.toString(parseOrFail(sample)) == sample)}`)
+  }
+
+  // RFC 3986 section 5.4.
+  const base = parseOrFail("http://a/b/c/d;p?q")
+  const references = [
+    "g:h",
+    "g",
+    "./g",
+    "g/",
+    "/g",
+    "//g",
+    "?y",
+    "g?y",
+    "#s",
+    "g#s",
+    "g?y#s",
+    ";x",
+    "g;x",
+    "g;x?y#s",
+    "",
+    ".",
+    "./",
+    "..",
+    "../",
+    "../g",
+    "../..",
+    "../../",
+    "../../g",
+    "../../../g",
+    "../../../../g",
+    "/./g",
+    "/../g",
+    "g.",
+    ".g",
+    "g..",
+    "..g",
+    "./../g",
+    "./g/.",
+    "g/./h",
+    "g/../h",
+    "g;x=1/./y",
+    "g;x=1/../y",
+    "g?y/./x",
+    "g?y/../x",
+    "g#s/./x",
+    "g#s/../x",
+    "http:g",
+  ]
+  for (const reference of references) {
+    print(`${reference} => ${resolveText(base, reference)}`)
+  }
+  const relativeBase = parseOrFail("a/b")
+  print(`relative base: ${Show.show(Url.resolve(relativeBase, parseOrFail("c")) is Err(_))}`)
+
+  // Percent encoding.
+  print(Url.encode("a b/c?d=é~-._"))
+  print(showDecode("a%20b%2Fc+d"))
+  print(showDecode("%C3%A9"))
+  print(showDecode("%"))
+  print(showDecode("%4"))
+  print(showDecode("%zz"))
+  print(showDecode("%FF"))
+
+  // Query strings.
+  print(showQuery("a=1&b=x+y&a=2&c&&d=%41%20"))
+  print(showQuery(""))
+  print(showQuery("a=%zz"))
+  const params = [
+    QueryParam { name: "a", value: "1" },
+    QueryParam { name: "b c", value: "x&y=z" },
+    QueryParam { name: "a", value: "é" },
+  ]
+  print(Url.queryToString(params))
+  return 0
+}

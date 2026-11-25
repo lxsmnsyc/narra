@@ -1,0 +1,458 @@
+// std/url: URLs, percent encoding and query strings.
+//
+// parse reads a URI reference as RFC 3986 describes it: an absolute URL such as
+// `https://user@example.com:8080/a/b?x=1#top`, or a relative reference such as `../c?y`. Each
+// part is kept as written, still percent-encoded. A part the text does not have is `None`, so
+// `//host` (an empty path) and `//host/` differ, and so do `a` and `a?`. resolve joins a
+// reference to a base and toString writes a URL back. The host rules of the WHATWG standard
+// (case folding, IDNA, default ports) are not applied.
+
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as U8 from "std/u8"
+
+/// A URI reference split into its parts. Every part is as written in the text, still
+/// percent-encoded. `host` of an IPv6 address keeps its brackets. `port` is the digits after the
+/// `:`, leading zeros included, and `Some("")` for a `:` with no digits.
+export struct Url {
+  scheme: Option<string>
+  userInfo: Option<string>
+  host: Option<string>
+  port: Option<string>
+  path: string
+  query: Option<string>
+  fragment: Option<string>
+}
+
+/// One `name=value` pair of a query string, already decoded.
+export struct QueryParam {
+  name: string
+  value: string
+}
+
+const HEX_DIGITS = "0123456789ABCDEF"
+
+/// Splits a URL or a relative reference into its parts. The result is an `Err` for a space or a
+/// control character, a `%` that is not followed by two hex digits, a port that is not a number
+/// from 0 to 65535, an unclosed `[` in the host, a `:` in a host without brackets, and a relative path whose first segment has a
+/// `:`.
+export function parse(text: string): Result<Url, string> uses alloc {
+  if (checkCharacters(text) is Some(reason)) {
+    return Err(reason)
+  }
+  // The fragment follows the first `#`, and the query follows the first `?` before it.
+  let rest = text
+  let fragment: Option<string> = None
+  if (Str.indexOf(rest, "#") is Some(hashIndex)) {
+    fragment = Some(Str.sliceFrom(rest, hashIndex + 1))
+    rest = takeBefore(rest, hashIndex)
+  }
+  let query: Option<string> = None
+  if (Str.indexOf(rest, "?") is Some(questionIndex)) {
+    query = Some(Str.sliceFrom(rest, questionIndex + 1))
+    rest = takeBefore(rest, questionIndex)
+  }
+  // A scheme is the letters, digits, `+`, `-` and `.` before the first `:`.
+  let scheme: Option<string> = None
+  if (Str.indexOf(rest, ":") is Some(colonIndex)) {
+    const candidate = takeBefore(rest, colonIndex)
+    if (isScheme(candidate)) {
+      scheme = Some(candidate)
+      rest = Str.sliceFrom(rest, colonIndex + 1)
+    } else if (!Str.contains(candidate, "/")) {
+      return Err("a colon in the first segment of a relative path")
+    }
+  }
+  // An authority follows `//` and ends at the next `/`.
+  let userInfo: Option<string> = None
+  let host: Option<string> = None
+  let port: Option<string> = None
+  if (Str.startsWith(rest, "//")) {
+    const afterSlashes = Str.sliceFrom(rest, 2)
+    let authority = afterSlashes
+    rest = ""
+    if (Str.indexOf(afterSlashes, "/") is Some(slashIndex)) {
+      authority = takeBefore(afterSlashes, slashIndex)
+      rest = Str.sliceFrom(afterSlashes, slashIndex)
+    }
+    let hostAndPort = authority
+    if (Str.lastIndexOf(authority, "@") is Some(atIndex)) {
+      userInfo = Some(takeBefore(authority, atIndex))
+      hostAndPort = Str.sliceFrom(authority, atIndex + 1)
+    }
+    const parts = splitHostAndPort(hostAndPort)
+    if (parts is Err(reason)) {
+      return Err(reason)
+    }
+    if (parts is Ok(found)) {
+      host = Some(found.host)
+      port = found.port
+    }
+  }
+  return Ok(Url { scheme, userInfo, host, port, path: rest, query, fragment })
+}
+
+/// Writes the URL as text: `scheme:`, then `//userinfo@host:port` when it has a host, then the
+/// path, `?query` and `#fragment`.
+export function toString(url: Url): string uses alloc {
+  const builder = Str.builder()
+  if (url.scheme is Some(scheme)) {
+    Str.append(mutable builder, scheme)
+    Str.append(mutable builder, ":")
+  }
+  if (url.host is Some(host)) {
+    Str.append(mutable builder, "//")
+    if (url.userInfo is Some(userInfo)) {
+      Str.append(mutable builder, userInfo)
+      Str.append(mutable builder, "@")
+    }
+    Str.append(mutable builder, host)
+    if (url.port is Some(port)) {
+      Str.append(mutable builder, ":")
+      Str.append(mutable builder, port)
+    }
+  }
+  Str.append(mutable builder, url.path)
+  if (url.query is Some(query)) {
+    Str.append(mutable builder, "?")
+    Str.append(mutable builder, query)
+  }
+  if (url.fragment is Some(fragment)) {
+    Str.append(mutable builder, "#")
+    Str.append(mutable builder, fragment)
+  }
+  return Str.build(builder)
+}
+
+/// Resolves a reference against a base URL (RFC 3986 section 5.2, strict). The base needs a
+/// scheme, or the result is an `Err`. The dot segments of the resulting path are removed.
+export function resolve(base: Url, reference: Url): Result<Url, string> uses alloc {
+  if (base.scheme is None) {
+    return Err("the base URL has no scheme")
+  }
+  if (reference.scheme is Some(_)) {
+    return Ok(Url {
+      scheme: reference.scheme,
+      userInfo: reference.userInfo,
+      host: reference.host,
+      port: reference.port,
+      path: removeDotSegments(reference.path),
+      query: reference.query,
+      fragment: reference.fragment,
+    })
+  }
+  if (reference.host is Some(_)) {
+    return Ok(Url {
+      scheme: base.scheme,
+      userInfo: reference.userInfo,
+      host: reference.host,
+      port: reference.port,
+      path: removeDotSegments(reference.path),
+      query: reference.query,
+      fragment: reference.fragment,
+    })
+  }
+  // The reference has no authority, so the base supplies it.
+  let path = base.path
+  let query = base.query
+  if (reference.path != "") {
+    query = reference.query
+    if (Str.startsWith(reference.path, "/")) {
+      path = removeDotSegments(reference.path)
+    } else {
+      path = removeDotSegments(mergePaths(base, reference.path))
+    }
+  } else if (reference.query is Some(_)) {
+    query = reference.query
+  }
+  return Ok(Url {
+    scheme: base.scheme,
+    userInfo: base.userInfo,
+    host: base.host,
+    port: base.port,
+    path,
+    query,
+    fragment: reference.fragment,
+  })
+}
+
+/// Percent-encodes the text for use in one part of a URL. The bytes `A-Z a-z 0-9 - . _ ~` stay;
+/// every other byte becomes `%` and two upper-case hex digits, so a space is `%20` and `/` is
+/// `%2F`.
+export function encode(text: string): string uses alloc {
+  return encodeBytes(text, false)
+}
+
+/// Reads the percent escapes of the text and returns the text they stand for. `+` stays a `+`.
+/// The result is an `Err` for a `%` without two hex digits after it, and for bytes that are not
+/// UTF-8.
+export function decode(text: string): Result<string, string> uses alloc {
+  return decodeBytes(text, false)
+}
+
+/// Reads an `application/x-www-form-urlencoded` query string, such as `a=1&b=x+y&a=2`, into its
+/// pairs, in order and with repeated names kept. Names and values are decoded, with `+` as a
+/// space. A pair without `=` has an empty value, and an empty piece between `&` is skipped. The
+/// text does not start with `?`. The result is an `Err` for a bad escape.
+export function parseQuery(text: string): Result<Array<QueryParam>, string> uses alloc {
+  let params: Array<QueryParam> = []
+  if (text == "") {
+    return Ok(params)
+  }
+  const pieces = Str.split(text, "&")
+  if (pieces is Some(found)) {
+    for (const piece of found) {
+      if (piece == "") {
+        continue
+      }
+      let rawName = piece
+      let rawValue = ""
+      if (Str.indexOf(piece, "=") is Some(equalsIndex)) {
+        rawName = takeBefore(piece, equalsIndex)
+        rawValue = Str.sliceFrom(piece, equalsIndex + 1)
+      }
+      const name = decodeBytes(rawName, true)
+      if (name is Err(reason)) {
+        return Err(reason)
+      }
+      const value = decodeBytes(rawValue, true)
+      if (value is Err(reason)) {
+        return Err(reason)
+      }
+      if (name is Ok(decodedName)) {
+        if (value is Ok(decodedValue)) {
+          Arrays.push(mutable params, QueryParam { name: decodedName, value: decodedValue })
+        }
+      }
+    }
+  }
+  return Ok(params)
+}
+
+/// Writes the pairs as a form-encoded query string, such as `a=1&b=x+y`, in order. A space
+/// becomes `+` and every byte outside `A-Z a-z 0-9 - . _ ~` becomes a percent escape.
+export function queryToString(params: Array<QueryParam>): string uses alloc {
+  let pieces: Array<string> = []
+  for (const param of params) {
+    Arrays.push(
+      mutable pieces,
+      `${encodeBytes(param.name, true)}=${encodeBytes(param.value, true)}`,
+    )
+  }
+  return Str.join(pieces, "&")
+}
+
+function checkCharacters(text: string): Option<string> uses alloc {
+  const length = Str.length(text)
+  for (let index = 0; index < length; index++) {
+    const byte = Str.byteAt(text, index)
+    if (byte <= 32 || byte == 127) {
+      return Some("a space or control character")
+    }
+    if (byte == 37) {
+      if (
+        index + 2 >= length ||
+          hexValue(Str.byteAt(text, index + 1)) < 0 ||
+          hexValue(Str.byteAt(text, index + 2)) < 0
+      ) {
+        return Some("a bad percent escape")
+      }
+    }
+  }
+  return None
+}
+
+function isScheme(text: string): bool {
+  const length = Str.length(text)
+  if (length == 0) {
+    return false
+  }
+  for (let index = 0; index < length; index++) {
+    const byte = Str.byteAt(text, index)
+    const isLetter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+    const isDigit = byte >= 48 && byte <= 57
+    const isMark = byte == 43 || byte == 45 || byte == 46
+    if (index == 0 && !isLetter) {
+      return false
+    }
+    if (!isLetter && !isDigit && !isMark) {
+      return false
+    }
+  }
+  return true
+}
+
+struct HostAndPort {
+  host: string
+  port: Option<string>
+}
+
+function splitHostAndPort(text: string): Result<HostAndPort, string> uses alloc {
+  let hostText = text
+  let port: Option<string> = None
+  if (Str.startsWith(text, "[")) {
+    // An IP literal ends at `]`, and only a `:` and a port may follow it.
+    const closing = Str.indexOf(text, "]")
+    if (closing is None) {
+      return Err("an unclosed [ in the host")
+    }
+    if (closing is Some(closeIndex)) {
+      hostText = takeBefore(text, closeIndex + 1)
+      const after = Str.sliceFrom(text, closeIndex + 1)
+      if (after != "") {
+        if (!Str.startsWith(after, ":")) {
+          return Err("text after the ] of the host")
+        }
+        port = Some(Str.sliceFrom(after, 1))
+      }
+    }
+  } else if (Str.lastIndexOf(text, ":") is Some(colonIndex)) {
+    hostText = takeBefore(text, colonIndex)
+    port = Some(Str.sliceFrom(text, colonIndex + 1))
+    // An IPv6 address needs brackets, so a second colon is an error.
+    if (Str.contains(hostText, ":")) {
+      return Err("a colon in the host; an IPv6 address needs brackets")
+    }
+  }
+  if (port is Some(portText)) {
+    if (portText != "") {
+      for (let index = 0; index < Str.length(portText); index++) {
+        const byte = Str.byteAt(portText, index)
+        if (byte < 48 || byte > 57) {
+          return Err("a port that is not a number")
+        }
+      }
+      const number = Int.parse(portText, 10)
+      if (number is Ok(value)) {
+        if (value > 65535) {
+          return Err("a port above 65535")
+        }
+      } else {
+        return Err("a port above 65535")
+      }
+    }
+  }
+  return Ok(HostAndPort { host: hostText, port })
+}
+
+function takeBefore(text: string, end: int): string uses alloc {
+  if (Str.slice(text, 0, end) is Some(piece)) {
+    return piece
+  }
+  return text
+}
+
+function mergePaths(base: Url, referencePath: string): string uses alloc {
+  if (base.host is Some(_)) {
+    if (base.path == "") {
+      return `/${referencePath}`
+    }
+  }
+  if (Str.lastIndexOf(base.path, "/") is Some(slashIndex)) {
+    return `${takeBefore(base.path, slashIndex + 1)}${referencePath}`
+  }
+  return referencePath
+}
+
+function removeDotSegments(path: string): string uses alloc {
+  if (path == "") {
+    return ""
+  }
+  const isAbsolute = Str.startsWith(path, "/")
+  let rest = path
+  if (isAbsolute) {
+    rest = Str.sliceFrom(path, 1)
+  }
+  let kept: Array<string> = []
+  const segments = Str.split(rest, "/")
+  if (segments is Some(found)) {
+    const lastIndex = Arrays.length(found) - 1
+    for (const #[index, segment] of Arrays.entries(found)) {
+      if (segment == ".") {
+        // A dot as the last segment leaves a trailing slash.
+        if (index == lastIndex) {
+          Arrays.push(mutable kept, "")
+        }
+      } else if (segment == "..") {
+        Arrays.pop(mutable kept)
+        if (index == lastIndex) {
+          Arrays.push(mutable kept, "")
+        }
+      } else {
+        Arrays.push(mutable kept, segment)
+      }
+    }
+  }
+  const joined = Str.join(kept, "/")
+  if (isAbsolute) {
+    return `/${joined}`
+  }
+  return joined
+}
+
+function isUnreserved(byte: int): bool {
+  const isLetter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+  const isDigit = byte >= 48 && byte <= 57
+  return isLetter || isDigit || byte == 45 || byte == 46 || byte == 95 || byte == 126
+}
+
+function hexValue(byte: int): int {
+  if (byte >= 48 && byte <= 57) {
+    return byte - 48
+  }
+  if (byte >= 65 && byte <= 70) {
+    return byte - 55
+  }
+  if (byte >= 97 && byte <= 102) {
+    return byte - 87
+  }
+  return -1
+}
+
+function encodeBytes(text: string, spaceAsPlus: bool): string uses alloc {
+  const builder = Str.builder()
+  const length = Str.length(text)
+  for (let index = 0; index < length; index++) {
+    const byte = Str.byteAt(text, index)
+    if (isUnreserved(byte)) {
+      Str.appendChar(mutable builder, Str.charAt(text, index))
+    } else if (spaceAsPlus && byte == 32) {
+      Str.append(mutable builder, "+")
+    } else {
+      Str.append(mutable builder, "%")
+      Str.appendChar(mutable builder, Str.charAt(HEX_DIGITS, byte / 16))
+      Str.appendChar(mutable builder, Str.charAt(HEX_DIGITS, byte % 16))
+    }
+  }
+  return Str.build(builder)
+}
+
+function decodeBytes(text: string, plusAsSpace: bool): Result<string, string> uses alloc {
+  let decoded: Array<u8> = []
+  const length = Str.length(text)
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 37) {
+      if (index + 2 >= length) {
+        return Err("a bad percent escape")
+      }
+      const high = hexValue(Str.byteAt(text, index + 1))
+      const low = hexValue(Str.byteAt(text, index + 2))
+      if (high < 0 || low < 0) {
+        return Err("a bad percent escape")
+      }
+      Arrays.push(mutable decoded, U8.wrap(high * 16 + low))
+      index += 3
+    } else if (plusAsSpace && byte == 43) {
+      Arrays.push(mutable decoded, U8.wrap(32))
+      index++
+    } else {
+      Arrays.push(mutable decoded, U8.wrap(byte))
+      index++
+    }
+  }
+  return Bytes.toString(Bytes.fromArray(decoded))
+}

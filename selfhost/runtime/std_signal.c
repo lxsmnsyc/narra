@@ -130,6 +130,8 @@ static int narra_signal_open(void) {
   sigemptyset(&action.sa_mask);
   action.sa_flags = SA_RESTART;
   atomic_store(&narra_signal_writer, ends[1]);
+  // Publish the handler before installing it, so a Process.run that ends meanwhile puts it back.
+  atomic_store(&narra_signal_handler_in_use, narra_signal_note);
   struct sigaction previous;
   if (sigaction(SIGINT, &action, &previous) < 0) failure = errno;
   if (failure == 0 && sigaction(SIGTERM, &action, NULL) < 0) {
@@ -138,12 +140,12 @@ static int narra_signal_open(void) {
     sigaction(SIGINT, &previous, NULL);
   }
   if (failure != 0) {
+    atomic_store(&narra_signal_handler_in_use, NULL);
     atomic_store(&narra_signal_writer, -1);
     close(ends[0]);
     close(ends[1]);
     return failure;
   }
-  atomic_store(&narra_signal_handler_in_use, narra_signal_note);
   narra_signal_descriptor = ends[0];
   return 0;
 }

@@ -491,6 +491,27 @@ static bool narra_proc_run(lstr* cmd, lstr** argv, int64_t argc, int64_t* code, 
 #include <sched.h>
 #include <stdatomic.h>
 #include <sys/wait.h>
+#include <unistd.h>
+
+// Shared with std/internal/signal: once std/signal is in use, a SIGINT or SIGTERM that comes
+// while a child runs is also recorded for it, and the handlers of std/signal come back after the call.
+#ifndef NARRA_SIGNAL_COMMON
+#define NARRA_SIGNAL_COMMON
+typedef void (*narra_signal_function)(int);
+static _Atomic int narra_signal_writer = -1;
+static _Atomic(narra_signal_function) narra_signal_handler_in_use = NULL;
+
+static void narra_signal_note(int number) {
+  int saved = errno;
+  int writer = atomic_load(&narra_signal_writer);
+  if (writer >= 0 && (number == SIGINT || number == SIGTERM)) {
+    unsigned char code = number == SIGINT ? 1 : 2;
+    ssize_t ignored = write(writer, &code, 1);
+    (void)ignored;
+  }
+  errno = saved;
+}
+#endif
 
 typedef struct narra_proc_buf {
   char* p;
@@ -557,6 +578,7 @@ typedef struct narra_proc_guard {
 } narra_proc_guard;
 
 static void narra_proc_forward(int signal_number) {
+  narra_signal_note(signal_number);
   for (int i = 0; i < narra_proc_SLOTS; i++) {
     if (atomic_load(&narra_proc_pids[i]) == 0) continue;
     atomic_store(&narra_proc_pending[i], signal_number);
@@ -622,7 +644,21 @@ static void narra_proc_detach(narra_proc_guard* guard) {
   atomic_store(&narra_proc_pids[guard->slot], 0);
   pthread_mutex_lock(&narra_proc_lock);
   if (--narra_proc_active == 0) {
-    for (int i = 0; i < 3; i++) sigaction(narra_proc_signals[i], &narra_proc_saved[i], NULL);
+    narra_signal_function ours = atomic_load(&narra_signal_handler_in_use);
+    for (int i = 0; i < 3; i++) {
+      int number = narra_proc_signals[i];
+      if (ours != NULL && (number == SIGINT || number == SIGTERM)) {
+        // std/signal started during the call: its handler stays, whatever was saved.
+        struct sigaction action;
+        memset(&action, 0, sizeof action);
+        action.sa_handler = ours;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        sigaction(number, &action, NULL);
+      } else {
+        sigaction(number, &narra_proc_saved[i], NULL);
+      }
+    }
   }
   pthread_mutex_unlock(&narra_proc_lock);
   pthread_sigmask(SIG_SETMASK, &guard->mask, NULL);

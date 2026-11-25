@@ -1,0 +1,46 @@
+// A server-like program that shuts down cleanly on SIGTERM. It writes its pid to the marker file, waits
+// for a signal, and starts the shutdown. A second signal that comes during the shutdown (the harness
+// sends SIGINT) still reaches the program. Then it exits 0.
+import * as Env from "std/env"
+import * as Process from "std/process"
+import * as Signals from "std/signal"
+import * as Time from "std/time"
+import { Signal } from "std/signal"
+
+function describe(signal: Signal): string {
+  return match (signal) { Signal.Interrupt => "interrupt", Signal.Terminate => "terminate" }
+}
+
+async function waitFor(label: string): bool uses io, alloc {
+  const signal = await Signals.wait()
+  if (signal is Ok(received)) {
+    print(`${label}: ${describe(received)}`)
+    return true
+  }
+  print(`${label}: wait failed`)
+  return false
+}
+
+export async function run(_args: Array<string>): int {
+  // The first wait starts here, so the handlers are in place before the pid is written.
+  const first = waitFor("first")
+  // The shell's parent is this process, so $PPID is the pid to report.
+  const marker = Env.get("NARRA_SIGNAL_MARKER")
+  if (marker is Some(path)) {
+    const written = Process.run("sh", ["-c", "echo $PPID > \"$1\"", "sh", path])
+    if (written is Err(_message)) {
+      panic("cannot write the marker")
+    }
+  }
+  if (!await first) {
+    return 1
+  }
+  print("shutting down")
+  // The second signal comes while the program closes its work.
+  const _slept = await Time.sleep(Time.milliseconds(1500))
+  if (!await waitFor("during shutdown")) {
+    return 1
+  }
+  print("clean exit")
+  return 0
+}

@@ -35,7 +35,50 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
     path: Path.join(context.testdata, "signals"),
     variant: "signal-test",
   })
+  // A program that waits for SIGTERM and SIGINT with std/signal and shuts down cleanly.
+  Arrays.push(mutable cases, TestCase {
+    suite: "exits",
+    name: "signal_shutdown",
+    path: Path.join(context.testdata, "signals"),
+    variant: "signal-shutdown",
+  })
+  Arrays.push(mutable cases, TestCase {
+    suite: "exits",
+    name: "signal_forward_run",
+    path: Path.join(context.testdata, "signals"),
+    variant: "signal-forward-run",
+  })
   return cases
+}
+
+function runShutdownCase(
+  context: Context,
+  testCase: TestCase,
+): Result<bool, string> uses io, alloc {
+  const folder = Shell.makeTempDirectory()
+  if (folder is Err(message)) {
+    return Err(message)
+  }
+  // The shutdown program gets SIGTERM and then SIGINT; the forward program gets SIGTERM during Process.run.
+  const forward = testCase.variant == "signal-forward-run"
+  const sample = forward ? "forward_run" : "shutdown"
+  const result = Shell.runScript(
+    "sh \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" \"$6\" $7",
+    [
+      Path.join(testCase.path, "shutdown.sh"),
+      context.narrac,
+      Path.join(testCase.path, `${sample}.nra`),
+      Path.join(folder.value, "started"),
+      Path.join(folder.value, "output"),
+      Path.join(testCase.path, `${sample}.out`),
+      forward ? "TERM" : "TERM INT",
+    ],
+  )
+  Shell.removeTree(folder.value)
+  if (result.code != 0) {
+    return Err(Str.trim(result.output))
+  }
+  return Ok(true)
 }
 
 function runSignalCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
@@ -64,6 +107,9 @@ function runSignalCase(context: Context, testCase: TestCase): Result<bool, strin
 }
 
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
+  if (testCase.variant == "signal-shutdown" || testCase.variant == "signal-forward-run") {
+    return runShutdownCase(context, testCase)
+  }
   if (Str.startsWith(testCase.variant, "signal")) {
     return runSignalCase(context, testCase)
   }

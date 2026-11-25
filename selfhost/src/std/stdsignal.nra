@@ -1,0 +1,108 @@
+// The registry rows and emitters of std/internal/signal, the descriptor of
+// SIGINT and SIGTERM behind std/signal, and the module row of std/signal, which
+// is Narra source (selfhost/runtime/std_signal.c holds the C).
+import { StdFunc } from "narrac/std/builtins"
+import { Type } from "narrac/check/types"
+import { Pos, Arg } from "narrac/syntax/ast"
+import {
+  Emitter,
+  Code,
+  EmitWalker,
+  noteHelper,
+  ownedTemp,
+  reportUnsupported,
+} from "narrac/emit/emitstate"
+import { NODE, FixedCall, plain, owned, emitFixedCall, argumentText } from "narrac/std/stdemithelp"
+import * as Arrays from "std/array"
+
+export const SIGNAL_FUNCS: Array<StdFunc> = [
+  StdFunc { name: "std/signal", module: "std/signal", key: "", check: "source" },
+]
+
+export const INTERNAL_SIGNAL_FUNCS: Array<StdFunc> = [
+  // Installs the handlers on the first call and gives the descriptor to wait on, or a negated errno value.
+  StdFunc {
+    name: "Signals.start",
+    module: "std/internal/signal",
+    key: "start",
+    parameters: [],
+    result: "int",
+    effects: ["io"],
+  },
+  // The signal that came next, 1 for SIGINT and 2 for SIGTERM, or 0 when none is waiting.
+  StdFunc {
+    name: "Signals.take",
+    module: "std/internal/signal",
+    key: "take",
+    parameters: ["int"],
+    result: "int",
+    effects: ["io"],
+  },
+  // A wait until the descriptor can be read: 0 when ready, -1 on a cancel, else an errno value.
+  StdFunc {
+    name: "Signals.wait",
+    module: "std/internal/signal",
+    key: "wait",
+    parameters: ["int"],
+    result: "Async<int>",
+    effects: ["io", "alloc"],
+  },
+  // The operating system's message for the error.
+  StdFunc {
+    name: "Signals.message",
+    module: "std/internal/signal",
+    key: "message",
+    parameters: ["int"],
+    result: "string",
+    effects: ["alloc"],
+  },
+]
+
+const SIGNAL_FIXED_CALLS: Array<FixedCall> = [
+  FixedCall {
+    name: "Signals.start",
+    call: "narra_signal_start",
+    withPos: false,
+    owned: false,
+    temporary: true,
+  },
+  FixedCall {
+    name: "Signals.take",
+    call: "narra_signal_take",
+    withPos: false,
+    owned: false,
+    temporary: true,
+  },
+  FixedCall {
+    name: "Signals.message",
+    call: "narra_signal_message",
+    withPos: false,
+    owned: true,
+    temporary: false,
+  },
+]
+
+export function emitSignalCall<W: EmitWalker>(
+  walker: W,
+  mutable emitter: Emitter,
+  name: string,
+  nodeId: int,
+  pos: Pos,
+  arguments: Array<Arg>,
+): Code uses alloc {
+  noteHelper(emitter, "std/internal/signal")
+  for (const fixed of Arrays.values(SIGNAL_FIXED_CALLS)) {
+    if (fixed.name == name) {
+      return emitFixedCall(walker, mutable emitter, fixed, nodeId, pos, arguments)
+    }
+  }
+  // The loop's own function: the call text sits in the program, after every runtime part.
+  if (name == "Signals.wait") {
+    noteHelper(emitter, "std/internal/async")
+    const descriptor = argumentText(walker, mutable emitter, arguments, 0)
+    const callText = `narra_loop_wait_io((int)(${descriptor}), false)`
+    return owned(ownedTemp(mutable emitter, Type.TAsync(Type.TInt), callText))
+  }
+  // An unknown name is a compiler bug, not a missing feature.
+  return plain(reportUnsupported(mutable emitter, `internal error: no emit case for ${name}`, NODE))
+}

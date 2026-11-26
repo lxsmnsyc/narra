@@ -1,7 +1,7 @@
 ---
 id: c-packages
 title: "C packages: C libraries fetched from upstream as dependencies"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-26
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 379000
 owns:
   - roadmaps/selfhost/nodes/c-packages/**
   - testdata/packages/c-packages/**

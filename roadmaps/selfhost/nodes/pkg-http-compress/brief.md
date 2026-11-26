@@ -31,9 +31,9 @@ depends_on:
   - on: pkg-http
     kind: hard
     why: wraps the body streams of packages/http
-  - on: package-c-sources
+  - on: c-packages
     kind: hard
-    why: gzip and deflate come from a compress package that binds zlib through package C sources
+    why: gzip and deflate come from a compress package that binds zlib as a C package (c_zlib) fetched from upstream
 ---
 
 # http Content-Encoding: gzip and deflate bodies

@@ -1,7 +1,7 @@
 ---
 id: std-net-lookup
 title: "std/net: host name lookup, and the http client connects by name"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-25

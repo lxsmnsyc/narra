@@ -9,6 +9,7 @@ import * as Int from "std/int"
 import * as Message from "http/message"
 import * as Net from "std/net"
 import * as Responses from "http/response"
+import * as State from "http/bodystate"
 import * as Str from "std/string"
 import * as Time from "std/time"
 import * as Wire from "http/framing"
@@ -221,7 +222,12 @@ async function serveRequest(
   const unread = openBody(connection, leftover, framing.value, failure, options)
   let body = Bodies.empty()
   if (unread is Some(stream)) {
-    body = Bodies.fromStream(stream)
+    // The length is what the Content-Length header announced, if there was one.
+    let announced: Option<int> = None
+    if (framing.value is Framing.Length(count)) {
+      announced = Some(count)
+    }
+    body = State.fromIncoming(stream, announced)
     // A client that waits for permission to send a body gets it.
     if (head.version == 1 && Message.hasToken(head.headers, "Expect", "100-continue")) {
       const permitted = await Wire.writeAll(
@@ -320,16 +326,15 @@ async function sendResponse(
   Fields.remove(mutable headers, "Transfer-Encoding")
   Fields.remove(mutable headers, "Content-Length")
   if (hasBody) {
-    if (reply.body.stream is Some(_)) {
-      // A stream is chunked, or ends with the connection for an HTTP/1.0 client.
-      if (version == 1) {
-        chunked = true
-        Fields.set(mutable headers, "Transfer-Encoding", "chunked")
-      } else {
-        reusable = false
-      }
+    const length = State.findLength(reply.body)
+    if (length is Some(count)) {
+      Fields.set(mutable headers, "Content-Length", Int.toString(count))
+    } else if (version == 1) {
+      // A body of no known length is chunked, or ends with the connection for an HTTP/1.0 client.
+      chunked = true
+      Fields.set(mutable headers, "Transfer-Encoding", "chunked")
     } else {
-      Fields.set(mutable headers, "Content-Length", Int.toString(Bytes.length(reply.body.data)))
+      reusable = false
     }
   }
   if (!reusable) {

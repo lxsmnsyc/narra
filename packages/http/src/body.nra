@@ -1,63 +1,40 @@
-// http/body: the content of a request or a response.
+// http/body: the content of a request or a response. To a caller a body is a stream of bytes, as
+// in the Fetch API: a caller makes one with empty, fromText, fromBytes or fromStream, and reads
+// one with readAll, readText, readJson or chunks. The state is in the private bodystate module,
+// which the server, client and framing code use to learn the length of a body and to send it.
 
 import * as Bytes from "std/bytes"
 import * as Json from "std/json"
+import * as State from "http/bodystate"
 import { HttpError } from "http/error"
 import { Value } from "std/shape"
 
 /// The pieces of a body: each Ok value is one piece, and an Err ends the message with that
 /// error. The type carries the effects of reading a connection.
-export type BodyStream = AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc)
+export type BodyStream = State.BodyStream
 
-/// The content of a message. An outgoing body holds bytes in data, or a stream that the sender
-/// reads when it writes the message (a stream is sent chunked). An incoming body has a stream
-/// that reads the connection, and an empty data.
-export struct Body {
-  data: bytes
-  stream: Option<BodyStream>
-}
+/// The content of a message, read as a stream of bytes. A body made from text or bytes is sent
+/// with its length and can be read and sent again. A body made from a stream is sent chunked and
+/// is used up by one read or one send. A body that arrived on a connection is a stream.
+export type Body = State.Body
 
 /// A body with no content.
-export function empty(): Body {
-  return Body { data: Bytes.fromString(""), stream: None }
-}
+export const empty = State.empty
 
 /// A body of the UTF-8 bytes of the text.
-export function fromText(text: string): Body {
-  return Body { data: Bytes.fromString(text), stream: None }
-}
+export const fromText = State.fromText
 
 /// A body of the bytes.
-export function fromBytes(data: bytes): Body {
-  return Body { data, stream: None }
-}
+export const fromBytes = State.fromBytes
 
 /// A body that the sender reads piece by piece. Each Ok value is one piece, and an Err ends the
 /// message with that error.
-export function fromStream(stream: BodyStream): Body from stream {
-  return Body { data: Bytes.fromString(""), stream: Some(stream) }
-}
+export const fromStream = State.fromStream
 
 /// Every byte of the body. It reads the stream to its end, and gives TooLarge("body") as soon as
-/// more than maxBytes bytes have come. The stream is used up afterwards.
-export async function readAll(body: Body, maxBytes: int): Result<bytes, HttpError> uses io, alloc {
-  let content = body.data
-  if (Bytes.length(content) > maxBytes) {
-    return Err(HttpError.TooLarge("body"))
-  }
-  if (body.stream is Some(stream)) {
-    for await (const piece of stream) {
-      if (piece is Err(error)) {
-        return Err(error)
-      }
-      content = Bytes.concat(content, piece.value)
-      if (Bytes.length(content) > maxBytes) {
-        return Err(HttpError.TooLarge("body"))
-      }
-    }
-  }
-  return Ok(content)
-}
+/// more than maxBytes bytes have come. A body of text or bytes can be read again. A stream is
+/// used up by the read, so a second read of it gives no bytes.
+export const readAll = State.readAll
 
 /// The body as text. It reads like readAll, and gives Malformed when the bytes are not UTF-8.
 export async function readText(
@@ -89,16 +66,10 @@ export async function readJson(body: Body, maxBytes: int): Result<Value, HttpErr
   return Ok(value.value)
 }
 
-/// The body as one stream: its data first when it has any, then the pieces of its stream.
+/// The body as one stream of pieces: its bytes when it holds them, otherwise the pieces of its
+/// stream.
 export async function* chunks(
   body: Body,
 ): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
-  if (Bytes.length(body.data) > 0) {
-    yield Ok(body.data)
-  }
-  if (body.stream is Some(stream)) {
-    for await (const piece of stream) {
-      yield piece
-    }
-  }
+  yield* State.chunks(body)
 }

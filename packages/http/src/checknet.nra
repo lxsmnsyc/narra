@@ -17,6 +17,7 @@ import * as Ranges from "std/range"
 import * as Requests from "http/request"
 import * as Responses from "http/response"
 import * as Server from "http/server"
+import * as State from "http/bodystate"
 import * as Str from "std/string"
 import * as Time from "std/time"
 import { Connection, Listener } from "std/net"
@@ -99,6 +100,57 @@ export async function route(request: Request): Response uses io, alloc {
     let response = Responses.create(302)
     Fields.add(mutable response.headers, "Location", "/hello")
     return response
+  }
+  if (path == "/redirect-307" || path == "/redirect-308") {
+    // A redirect that keeps the method and the body, to /echo or to /framing.
+    let response = Responses.create(307)
+    if (path == "/redirect-308") {
+      response = Responses.create(308)
+    }
+    Fields.add(mutable response.headers, "Location", "/echo")
+    if (request.url.query is Some(_)) {
+      Fields.set(mutable response.headers, "Location", "/framing")
+    }
+    return response
+  }
+  if (path == "/framing") {
+    // Tells how the request body was framed.
+    const length = Options.withDefault(Fields.get(request.headers, "Content-Length"), "none")
+    const encoding = Options.withDefault(Fields.get(request.headers, "Transfer-Encoding"), "none")
+    return Responses.text(200, `length:${length} encoding:${encoding}`)
+  }
+  if (path == "/read-twice") {
+    // An incoming body is a stream: the second read finds it used up.
+    const first = await readBodyText(request.body)
+    const second = await readBodyText(request.body)
+    return Responses.text(200, `first:${first} second:${second}`)
+  }
+  if (path == "/forward" || path == "/forward-read") {
+    // The request body goes back as the response body, unread or after the handler read it.
+    if (path == "/forward-read") {
+      const _first = await readBodyText(request.body)
+    }
+    let response = Responses.create(200)
+    response.body = copy(request.body)
+    return response
+  }
+  if (path == "/short" || path == "/long") {
+    // A body that promises 20 bytes and gives 11, or promises 5 and gives 11.
+    let promised = 20
+    if (path == "/long") {
+      promised = 5
+    }
+    let response = Responses.create(200)
+    response.body = State.fromIncoming(generatePieces(), Some(promised))
+    return response
+  }
+  if (path == "/announced") {
+    // The length that the request announced for its body.
+    const length = State.findLength(request.body)
+    if (length is Some(count)) {
+      return Responses.text(200, `length:${Int.toString(count)}`)
+    }
+    return Responses.text(200, "length:none")
   }
   if (path == "/no-content" || path == "/not-modified") {
     // A body that must not go out, with the headers that would announce it.
@@ -268,6 +320,7 @@ async function checkClient(report: Report, port: int) uses io, alloc {
     }
   }
   await checkRedirect(report, port)
+  await checkBodyFraming(report, port)
   await checkUpgrade(report, port)
   await checkClientErrors(report, port)
 }
@@ -301,6 +354,135 @@ async function checkRedirect(report: Report, port: int) uses io, alloc {
   } else {
     expect(report, "redirect: followed", false)
   }
+}
+
+async function sendBody(
+  port: int,
+  path: string,
+  body: Bodies.Body,
+  maxRedirects: int,
+): Option<Response> uses io, alloc {
+  // A POST of the body to the path; None when the request or the send failed.
+  const request = Requests.createWithBody(Method.Post, buildAddress(port, path), body)
+  if (request is Err(_)) {
+    return None
+  }
+  let options = Client.defaultOptions()
+  options.maxRedirects = maxRedirects
+  const answered = await Client.send(request.value, options)
+  if (answered is Ok(response)) {
+    return Some(response)
+  }
+  return None
+}
+
+async function checkBodyFraming(report: Report, port: int) uses io, alloc {
+  // A text body has a length, a stream has none and goes out chunked.
+  const sized = await sendBody(port, "/framing", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "body framing: text is sent with Content-Length",
+    await readOptionalText(sized),
+    "length:3 encoding:none",
+  )
+  const bytes = await sendBody(port, "/framing", Bodies.fromBytes(Bytes.fromString("abcd")), 0)
+  expectText(
+    report,
+    "body framing: bytes are sent with Content-Length",
+    await readOptionalText(bytes),
+    "length:4 encoding:none",
+  )
+  const piped = await sendBody(port, "/framing", Bodies.fromStream(generatePieces()), 0)
+  expectText(
+    report,
+    "body framing: a stream is sent chunked",
+    await readOptionalText(piped),
+    "length:none encoding:chunked",
+  )
+  // A 307 or 308 is followed with a body that can be sent again, and returned for a stream.
+  const again = await sendBody(port, "/redirect-307", Bodies.fromText("abc"), 2)
+  expectText(
+    report,
+    "redirect 307: a text body is sent again",
+    await readOptionalText(again),
+    "got:abc",
+  )
+  const again308 = await sendBody(
+    port,
+    "/redirect-308?x",
+    Bodies.fromBytes(Bytes.fromString("xy")),
+    2,
+  )
+  expectText(
+    report,
+    "redirect 308: a bytes body is sent again with its length",
+    await readOptionalText(again308),
+    "length:2 encoding:none",
+  )
+  const once = await sendBody(port, "/redirect-307", Bodies.fromStream(generatePieces()), 2)
+  if (once is Some(response)) {
+    expect(report, "redirect 307: a stream body is returned as it is", response.status == 307)
+  } else {
+    expect(report, "redirect 307: a stream body is returned as it is", false)
+  }
+  // An incoming body is read once; a second read finds it used up.
+  const twice = await sendBody(port, "/read-twice", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "incoming body: the second read is empty",
+    await readOptionalText(twice),
+    "first:abc second:",
+  )
+  // An incoming body keeps the length that the peer announced; a chunked one has none.
+  const forwarded = await sendBody(port, "/forward", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "forwarded body: an unread body goes back whole",
+    await readOptionalText(forwarded),
+    "abc",
+  )
+  // A body that was read has nothing left, so it goes out empty instead of with the old length.
+  const spent = await sendBody(port, "/forward-read", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "forwarded body: a read body goes back empty without a stall",
+    await readOptionalText(spent),
+    "",
+  )
+  // A stream that ends short or runs past its length ends the connection.
+  const pipelined = "GET /short HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
+  const short = await exchange(port, encodeText(pipelined))
+  expect(report, "body length: a short stream ends the connection", countParts(short, "hello") == 0)
+  const overrun = "GET /long HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
+  const longer = await exchange(port, encodeText(overrun))
+  expect(report, "body length: a long stream ends the connection", countParts(longer, "hello") == 0)
+  const shortSent = await sendBody(port, "/echo", State.fromIncoming(generatePieces(), Some(20)), 0)
+  expect(report, "body length: the client gives Closed for a short body", shortSent is None)
+  const announced = await sendBody(port, "/announced", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "incoming body: Content-Length is its length",
+    await readOptionalText(announced),
+    "length:3",
+  )
+  const unannounced = await sendBody(port, "/announced", Bodies.fromStream(generatePieces()), 0)
+  expectText(
+    report,
+    "incoming body: a chunked body has no length",
+    await readOptionalText(unannounced),
+    "length:none",
+  )
+  // A stream response ends with the connection for an HTTP/1.0 client.
+  const old = await exchange(port, encodeText("GET /stream HTTP/1.0\r\n\r\n"))
+  expectContains(report, "http 1.0: a stream ends with the connection", old, "onetwothree")
+  expect(report, "http 1.0: a stream is not chunked", !Str.contains(old, "chunked"))
+}
+
+async function readOptionalText(response: Option<Response>): string uses io, alloc {
+  if (response is Some(found)) {
+    return await readBodyText(found.body)
+  }
+  return "no response"
 }
 
 async function checkUpgrade(report: Report, port: int) uses io, alloc {

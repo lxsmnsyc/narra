@@ -116,7 +116,7 @@ if (response is Ok(found)) {
 - **One connection per request.** `send` opens a connection, writes the request with `Connection: close` and reads the response. There is no pooling. A request that carries `Connection: Upgrade` keeps its own `Connection` header, so a server can switch protocols. The client sets `Content-Length` or `Transfer-Encoding` from the body and drops any that the caller gave. It skips up to ten interim `1xx` responses before the answer.
 - **The body is a stream.** `send` returns as soon as the head of the response has arrived. Read the body with `Bodies.readAll(body, maxBytes)` or step through `Bodies.chunks(body)`. The connection stays open until the body is read to its end or dropped.
 - **Request bodies.** Build one with `Bodies.fromText`, `Bodies.fromBytes` or `Bodies.fromStream`, and pass it to `Requests.createWithBody(method, url, body)`. A stream is sent chunked.
-- **Redirects.** `ClientOptions.maxRedirects` is 0 by default, so a redirect is returned as it is. With a higher number, the client follows 301, 302, 303, 307 and 308. A 303, and a 301 or 302 after a `POST`, continue as a `GET`. A redirect that would need a stream body sent again is returned as it is. `Authorization` and `Cookie` are dropped when the redirect goes to another host or port.
+- **Redirects.** `ClientOptions.maxRedirects` is 0 by default, so a redirect is returned as it is. With a higher number, the client follows 301, 302, 303, 307 and 308. A 303, and a 301 or 302 after a `POST`, continue as a `GET`. A 307 or 308 is followed with a text or bytes body sent again. A redirect that would need a stream body sent again is returned as it is. `Authorization` and `Cookie` are dropped when the redirect goes to another host or port.
 - **Timeout.** `ClientOptions.timeout` is the longest wait for the server in one step: connecting, writing, or reading. `None` waits as long as the server does.
 - **Upgrades.** When the server answers `101`, `response.upgraded` holds the connection and the bytes that arrived after the head. The body is empty.
 
@@ -154,6 +154,14 @@ async function handleLogin(request: Request): Response uses io, alloc {
 - **Refusals.** `set`, `format` and `validate` refuse a cookie instead of writing it: a name that is not a token, a value with a character outside the RFC 6265 set (control characters, space, `"`, `,`, `;`, `\` and bytes above 126), a path that does not start with `/` or holds a control character or `;`, a domain that is not a host name, an `expires` before 1970, `SameSite=None` without `Secure`, a `__Host-` cookie without `Secure`, `Path=/` or with a `Domain`, and a `__Secure-` cookie without `Secure`. `set` gives `Some(error)` then and adds no header, so a value from a client cannot add a header line. `None` means the header was added.
 - **Lifetime.** A `maxAge` below zero is written as `Max-Age=0`. `expires` is written as an HTTP date, such as `Sun, 06 Nov 1994 08:49:37 GMT`.
 - **Removing.** `remove(mutable response, name, path)` adds a cookie with an empty value that expired in 1970. The path must be the one the cookie was set with, or the client keeps it.
+
+## Bodies
+
+As in the Fetch API, a body is a stream to you. You make one with `Bodies.empty()`, `Bodies.fromText(text)`, `Bodies.fromBytes(bytes)` or `Bodies.fromStream(pieces)`, and you read one with `Bodies.readAll`, `Bodies.readText`, `Bodies.readJson` or `Bodies.chunks`. A `Body` has no field to set and no length to give. The package learns what it needs from how the body was made:
+
+- A body from text or bytes knows its length, so it goes out with `Content-Length`. It can also be sent again, so the client can follow a 307 or 308 redirect with it, and you can read it more than once.
+- A body from a stream has no length, so it goes out chunked (or ends with the connection for an HTTP/1.0 peer). It is sent once, so the client returns a redirect as it is instead of sending a stream again.
+- A body that arrived on a connection is a stream. It is used up by the first read, and a second read gives no bytes. When the peer sent `Content-Length`, the package knows the length too.
 
 ## Reading bodies and building responses
 
@@ -230,7 +238,7 @@ async function handleUpload(request: Request): Response uses io, alloc {
 - `Method` is `Get`, `Head`, `Post`, `Put`, `Delete`, `Patch`, `Options` or `Other(name)`.
 - `Request { method, url, headers, body }` is used on both sides. On a server `url` is what the request line wrote, usually a path and a query. On a client it is absolute. `Request.create(method, url)` parses a text with `std/url`.
 - `Response { status, headers, body, upgrade, upgraded }` is used on both sides. `Responses.create(status)` makes an empty one, `Responses.text(status, content)` a plain text one, and `Responses.reasonPhrase(status)` gives the standard reason.
-- `Body { data, stream }` holds bytes, a stream of pieces, or both (the data goes first). A body that was read from a connection has an empty `data` and a stream. The stream type is `BodyStream`, an `AsyncGenerator` of `Result<bytes, HttpError>` with the effects `io` and `alloc`.
+- `Body` is opaque: build one with `Bodies.empty`, `Bodies.fromText`, `Bodies.fromBytes` or `Bodies.fromStream`, and read it with the `Bodies` readers. The stream type is `BodyStream`, an `AsyncGenerator` of `Result<bytes, HttpError>` with the effects `io` and `alloc`.
 - `HttpError` is `Io(error)`, `Malformed(message)`, `TooLarge(what)`, `Closed` or `TimedOut`. `Errors.describe(error)` gives a line of text.
 
 ## Limits

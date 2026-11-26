@@ -8,6 +8,7 @@ import * as Cells from "std/cell"
 import * as Int from "std/int"
 import * as Net from "std/net"
 import * as Ranges from "std/range"
+import * as State from "http/bodystate"
 import * as Str from "std/string"
 import * as Time from "std/time"
 import { AsyncError } from "std/async"
@@ -491,18 +492,35 @@ export async function writeMessage(
   chunked: bool,
   limit: Option<Duration>,
 ): Option<HttpError> uses io, alloc {
-  let first = Bytes.concat(head, body.data)
-  if (chunked) {
-    first = Bytes.concat(head, encodeChunk(body.data))
+  // Held bytes go out with the head; a stream goes out piece by piece after it.
+  let held = Bytes.fromString("")
+  if (State.findHeldBytes(body) is Some(content)) {
+    held = content
   }
-  if (body.stream is Some(stream)) {
+  let first = Bytes.concat(head, held)
+  if (chunked) {
+    first = Bytes.concat(head, encodeChunk(held))
+  }
+  if (State.findPieces(body) is Some(stream)) {
     const started = await writeAll(connection, first, limit)
     if (started is Some(_)) {
       return started
     }
+    // A body sent with a length must write exactly that many bytes, or the peer waits for more.
+    let promised: Option<int> = None
+    if (!chunked) {
+      promised = State.findLength(body)
+    }
+    let written = 0
     for await (const piece of stream) {
       if (piece is Err(error)) {
         return Some(error)
+      }
+      written += Bytes.length(piece.value)
+      if (promised is Some(count)) {
+        if (written > count) {
+          return Some(HttpError.Malformed("the body is longer than its length"))
+        }
       }
       let part = piece.value
       if (chunked) {
@@ -515,6 +533,11 @@ export async function writeMessage(
     }
     if (chunked) {
       return await writeAll(connection, Bytes.fromString("0\r\n\r\n"), limit)
+    }
+    if (promised is Some(count)) {
+      if (written < count) {
+        return Some(HttpError.Closed)
+      }
     }
     return None
   }

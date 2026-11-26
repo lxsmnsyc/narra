@@ -345,6 +345,8 @@ A key is the package name or starts with `json/`. The bare name `"json"` stands 
 
 The standard library works the same way. Modules under `std/internal/` and `std/ext/` are not open to your code.
 
+The repository of Narra holds a few ready-made packages, such as an HTTP client and server and a YAML reader. The [packages section](../packages/README.md) of the site describes each one.
+
 The tests of a dependency belong to its author. `narrac test` runs the tests of your package only.
 
 To use a fork or to pin a version, add an `[overrides]` table to the `narra.toml` of the package you build. An override has the same form as a dependency and replaces the repository and the version wherever any package asks for that name:

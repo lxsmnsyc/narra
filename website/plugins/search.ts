@@ -1,6 +1,7 @@
 // Builds `virtual:search-index`: one entry for each section of the guide, the installation guide,
-// the reference pages and the specification, from the Markdown files of the repository. The index of the search
+// the reference pages, the package pages and the specification, from the Markdown files of the repository. The index of the search
 // library is built in the browser, from these entries, when search opens for the first time.
+import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import MarkdownIt from 'markdown-it';
 import path from 'node:path';
@@ -55,6 +56,15 @@ async function listSources(): Promise<Source[]> {
       // The README of a folder is its index: `std/README.md` is `/reference/std`.
       const page = name.slice(0, -3).replace(/\/README$/, '');
       sources.push({ file: `docs/reference/${name}`, url: `/reference/${page}` });
+    }
+  }
+  sources.push({ file: 'docs/packages/README.md', url: '/packages' });
+  // Each folder of `packages` with a README is a page, so a new package needs no edit here.
+  const packages = await readdir(path.join(ROOT, 'packages'), { withFileTypes: true });
+  packages.sort((first, second) => first.name.localeCompare(second.name));
+  for (const entry of packages) {
+    if (entry.isDirectory() && existsSync(path.join(ROOT, 'packages', entry.name, 'README.md'))) {
+      sources.push({ file: `packages/${entry.name}/README.md`, url: `/packages/${entry.name}` });
     }
   }
   sources.push({ file: 'SPEC.md', url: '/spec' });

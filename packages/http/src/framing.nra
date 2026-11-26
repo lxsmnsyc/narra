@@ -1,0 +1,525 @@
+// http/framing: moves bytes between a connection and the body of a message. The bytes that a
+// read took from the connection but the parser has not used yet wait in a cell, which the
+// connection loop and the stream of a body share.
+
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Int from "std/int"
+import * as Net from "std/net"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+import { Body } from "http/body"
+import { Cell } from "std/cell"
+import { Connection } from "std/net"
+import { Duration, Instant } from "std/time"
+import { HttpError } from "http/error"
+
+/// The most bytes one read asks for.
+const READ_SIZE = 65536
+
+/// The longest line of a chunked body (a chunk size or a trailer), in bytes.
+const MAX_LINE = 8192
+
+/// The most trailer lines after the last chunk.
+const MAX_TRAILERS = 100
+
+/// A body limit that no message reaches.
+export const NO_LIMIT = 1152921504606846976
+
+function convertResult<T>(result: Result<T, AsyncError>): Result<T, HttpError> from result {
+  if (result is Err(error)) {
+    return Err(HttpError.Io(error))
+  }
+  return Ok(result.value)
+}
+
+async function expireAfter<T>(duration: Duration): Result<T, HttpError> uses io, alloc {
+  const slept = await Time.sleep(duration)
+  if (slept is Err(error)) {
+    return Err(HttpError.Io(error))
+  }
+  return Err(HttpError.TimedOut)
+}
+
+/// The result of the task, or TimedOut when it takes longer than the limit. The task is
+/// cancelled when the limit passes. With no limit it waits for the task.
+export async function within<T>(
+  limit: Option<Duration>,
+  task: Async<Result<T, HttpError>>,
+): Result<T, HttpError> uses io, alloc {
+  if (limit is None) {
+    return await task
+  }
+  const timer = expireAfter<T>(limit.value)
+  const first = await Async.race([task, timer])
+  Async.cancel(task)
+  Async.cancel(timer)
+  if (first is Some(result)) {
+    return result
+  }
+  return Err(HttpError.TimedOut)
+}
+
+async function readTask(
+  connection: Connection,
+  maxBytes: int,
+): Result<bytes, HttpError> uses io, alloc {
+  return convertResult(await Net.read(connection, maxBytes))
+}
+
+async function writeTask(
+  connection: Connection,
+  data: bytes,
+): Result<int, HttpError> uses io, alloc {
+  return convertResult(await Net.write(connection, data))
+}
+
+async function connectTask(host: string, port: int): Result<Connection, HttpError> uses io, alloc {
+  return convertResult(await Net.connect(host, port))
+}
+
+/// A connection to the host and port, or the error that stopped it.
+export async function connect(
+  host: string,
+  port: int,
+  limit: Option<Duration>,
+): Result<Connection, HttpError> uses io, alloc {
+  return await within(limit, connectTask(host, port))
+}
+
+/// Writes every byte of the data.
+export async function writeAll(
+  connection: Connection,
+  data: bytes,
+  limit: Option<Duration>,
+): Option<HttpError> uses io, alloc {
+  if (Bytes.length(data) == 0) {
+    return None
+  }
+  const written = await within(limit, writeTask(connection, data))
+  if (written is Err(error)) {
+    return Some(error)
+  }
+  return None
+}
+
+function calculateTimeLeft(total: Option<Duration>, since: Instant): Option<Duration> uses io {
+  if (total is Some(duration)) {
+    // A total that has passed gives a limit of zero, which times out at once.
+    const left = Time.asNanoseconds(duration) - Time.asNanoseconds(Time.elapsed(since))
+    if (left <= 0) {
+      return Some(Time.nanoseconds(0))
+    }
+    return Some(Time.nanoseconds(left))
+  }
+  return None
+}
+
+/// Reads once from the connection and adds the bytes to the cell. It gives false when the peer
+/// has closed its side.
+export async function fill(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  limit: Option<Duration>,
+): Result<bool, HttpError> uses io, alloc {
+  const data = await within(limit, readTask(connection, READ_SIZE))
+  if (data is Err(error)) {
+    return Err(error)
+  }
+  if (Bytes.length(data.value) == 0) {
+    return Ok(false)
+  }
+  Cells.set(leftover, Bytes.concat(Cells.get(leftover), data.value))
+  return Ok(true)
+}
+
+function sliceBytes(data: bytes, start: int, end: int): bytes uses alloc {
+  // A range outside the data gives empty bytes.
+  if (Bytes.slice(data, start, end) is Some(piece)) {
+    return piece
+  }
+  return Bytes.fromString("")
+}
+
+function readByte(data: bytes, index: int): int {
+  if (Bytes.at(data, index) is Some(byte)) {
+    return Int.from(byte)
+  }
+  return -1
+}
+
+function findHeadEnd(data: bytes, start: int): Option<int> {
+  // The index just after the first blank line (CR LF CR LF) from start on.
+  for (const index of Ranges.between(start, Bytes.length(data) - 3)) {
+    if (
+      readByte(data, index) == 13 &&
+        readByte(data, index + 1) == 10 &&
+        readByte(data, index + 2) == 13 &&
+        readByte(data, index + 3) == 10
+    ) {
+      return Some(index + 4)
+    }
+  }
+  return None
+}
+
+/// Reads the head of a message: the text before the first blank line, without that blank line.
+/// The bytes after it stay in the cell. It gives None when the peer closed before it sent a byte,
+/// TooLarge("headers") when no blank line comes within maxBytes, Closed when the peer closed
+/// inside a head, and Malformed when the head is not UTF-8. The wait for the first byte takes
+/// at most firstWait, and the rest of the head at most headTimeout in all.
+export async function readHead(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  maxBytes: int,
+  firstWait: Option<Duration>,
+  headTimeout: Option<Duration>,
+): Result<Option<string>, HttpError> uses io, alloc {
+  let scanned = 0
+  let startedHead = Time.now()
+  while (true) {
+    const data = Cells.get(leftover)
+    const length = Bytes.length(data)
+    if (findHeadEnd(data, scanned) is Some(end)) {
+      if (end > maxBytes) {
+        return Err(HttpError.TooLarge("headers"))
+      }
+      Cells.set(leftover, sliceBytes(data, end, length))
+      const text = Bytes.toString(sliceBytes(data, 0, end - 4))
+      if (text is Err(_)) {
+        return Err(HttpError.Malformed("the head is not UTF-8 text"))
+      }
+      return Ok(Some(text.value))
+    }
+    if (length > maxBytes) {
+      return Err(HttpError.TooLarge("headers"))
+    }
+    scanned = length - 3
+    if (scanned < 0) {
+      scanned = 0
+    }
+    // Before the first byte the wait is firstWait; after it the whole head has headTimeout.
+    let limit = firstWait
+    if (length > 0) {
+      limit = calculateTimeLeft(headTimeout, startedHead)
+    }
+    const more = await fill(connection, leftover, limit)
+    if (more is Err(error)) {
+      return Err(error)
+    }
+    if (!more.value) {
+      if (length == 0) {
+        return Ok(None)
+      }
+      return Err(HttpError.Closed)
+    }
+    if (length == 0) {
+      startedHead = Time.now()
+    }
+  }
+}
+
+/// Up to maxBytes bytes of the body: what the cell holds, or else one read. Empty bytes mean the
+/// peer has closed its side.
+export async function readSome(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  maxBytes: int,
+  limit: Option<Duration>,
+): Result<bytes, HttpError> uses io, alloc {
+  const waiting = Cells.get(leftover)
+  const length = Bytes.length(waiting)
+  if (length > 0) {
+    if (length <= maxBytes) {
+      Cells.set(leftover, Bytes.fromString(""))
+      return Ok(waiting)
+    }
+    Cells.set(leftover, sliceBytes(waiting, maxBytes, length))
+    return Ok(sliceBytes(waiting, 0, maxBytes))
+  }
+  let want = maxBytes
+  if (want > READ_SIZE) {
+    want = READ_SIZE
+  }
+  return await within(limit, readTask(connection, want))
+}
+
+async function readLine(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  limit: Option<Duration>,
+): Result<string, HttpError> uses io, alloc {
+  // One line of a chunked body, without its CR LF.
+  let scanned = 0
+  while (true) {
+    const data = Cells.get(leftover)
+    const length = Bytes.length(data)
+    for (const index of Ranges.between(scanned, length - 1)) {
+      if (readByte(data, index) == 13 && readByte(data, index + 1) == 10) {
+        Cells.set(leftover, sliceBytes(data, index + 2, length))
+        const text = Bytes.toString(sliceBytes(data, 0, index))
+        if (text is Err(_)) {
+          return Err(HttpError.Malformed("a chunk line is not text"))
+        }
+        return Ok(text.value)
+      }
+    }
+    if (length > MAX_LINE) {
+      return Err(HttpError.TooLarge("chunk line"))
+    }
+    scanned = length - 1
+    if (scanned < 0) {
+      scanned = 0
+    }
+    const more = await fill(connection, leftover, limit)
+    if (more is Err(error)) {
+      return Err(error)
+    }
+    if (!more.value) {
+      return Err(HttpError.Closed)
+    }
+  }
+}
+
+function isHexDigits(text: string): bool {
+  if (Str.length(text) == 0) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(text))) {
+    const byte = Str.byteAt(text, index)
+    const isDigit = byte >= 48 && byte <= 57
+    const isLower = byte >= 97 && byte <= 102
+    const isUpper = byte >= 65 && byte <= 70
+    if (!isDigit && !isLower && !isUpper) {
+      return false
+    }
+  }
+  return true
+}
+
+/// The size a chunk-size line gives: hex digits, then optional extensions after a semicolon.
+export function parseChunkSize(line: string): Result<int, HttpError> uses alloc {
+  let digits = line
+  if (Str.indexOf(line, ";") is Some(semicolon)) {
+    const before = Str.slice(line, 0, semicolon)
+    if (before is Some(prefix)) {
+      digits = prefix
+    }
+  }
+  // Fifteen hex digits stay below 2^60, so the size cannot overflow.
+  if (!isHexDigits(digits) || Str.length(digits) > 15) {
+    return Err(HttpError.Malformed("bad chunk size"))
+  }
+  const size = Int.parse(digits, 16)
+  if (size is Err(_)) {
+    return Err(HttpError.Malformed("bad chunk size"))
+  }
+  return Ok(size.value)
+}
+
+/// The limit of one read of a body: the step limit, or the time left of the deadline when that
+/// is shorter. The deadline counts from started.
+export function bodyLimit(
+  step: Option<Duration>,
+  deadline: Option<Duration>,
+  started: Instant,
+): Option<Duration> from step uses io {
+  if (deadline is None) {
+    return step
+  }
+  const left = calculateTimeLeft(deadline, started)
+  if (step is Some(stepDuration)) {
+    if (left is Some(leftDuration)) {
+      if (Time.asNanoseconds(stepDuration) < Time.asNanoseconds(leftDuration)) {
+        return step
+      }
+    }
+  }
+  return left
+}
+
+/// The body of a message with a Content-Length: count bytes, then the end of the stream. A peer
+/// that closes early gives one Err(Closed). Each read waits at most limit, and the whole body
+/// at most deadline; either one ends it with Err(TimedOut).
+export async function* streamLength(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  count: int,
+  limit: Option<Duration>,
+  deadline: Option<Duration>,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  const started = Time.now()
+  let remaining = count
+  while (remaining > 0) {
+    const piece = await readSome(
+      connection,
+      leftover,
+      remaining,
+      bodyLimit(limit, deadline, started),
+    )
+    if (piece is Err(error)) {
+      yield Err(error)
+      return
+    }
+    const size = Bytes.length(piece.value)
+    if (size == 0) {
+      yield Err(HttpError.Closed)
+      return
+    }
+    remaining -= size
+    yield Ok(piece.value)
+  }
+}
+
+/// The body of a message that runs until the peer closes the connection.
+export async function* streamUntilClose(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  limit: Option<Duration>,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  while (true) {
+    const piece = await readSome(connection, leftover, READ_SIZE, limit)
+    if (piece is Err(error)) {
+      yield Err(error)
+      return
+    }
+    if (Bytes.length(piece.value) == 0) {
+      return
+    }
+    yield Ok(piece.value)
+  }
+}
+
+/// The body of a chunked message: the data of every chunk, then the end of the stream once the
+/// last chunk and its trailers are read. Trailers are dropped. A bad chunk size gives
+/// Err(Malformed), and more than maxBytes of data gives Err(TooLarge("body")). The limit and the
+/// deadline are as for streamLength.
+export async function* streamChunked(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  maxBytes: int,
+  limit: Option<Duration>,
+  deadline: Option<Duration>,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  const started = Time.now()
+  let total = 0
+  while (true) {
+    const sizeLine = await readLine(connection, leftover, bodyLimit(limit, deadline, started))
+    if (sizeLine is Err(error)) {
+      yield Err(error)
+      return
+    }
+    const size = parseChunkSize(sizeLine.value)
+    if (size is Err(error)) {
+      yield Err(error)
+      return
+    }
+    if (size.value == 0) {
+      // The last chunk: trailer lines follow, up to the blank line.
+      for (const _line of Ranges.between(0, MAX_TRAILERS)) {
+        const trailer = await readLine(connection, leftover, bodyLimit(limit, deadline, started))
+        if (trailer is Err(error)) {
+          yield Err(error)
+          return
+        }
+        if (Str.length(trailer.value) == 0) {
+          return
+        }
+      }
+      yield Err(HttpError.TooLarge("trailers"))
+      return
+    }
+    total += size.value
+    if (total > maxBytes) {
+      yield Err(HttpError.TooLarge("body"))
+      return
+    }
+    let remaining = size.value
+    while (remaining > 0) {
+      const piece = await readSome(
+        connection,
+        leftover,
+        remaining,
+        bodyLimit(limit, deadline, started),
+      )
+      if (piece is Err(error)) {
+        yield Err(error)
+        return
+      }
+      if (Bytes.length(piece.value) == 0) {
+        yield Err(HttpError.Closed)
+        return
+      }
+      remaining -= Bytes.length(piece.value)
+      yield Ok(piece.value)
+    }
+    // Each chunk ends with a CR LF.
+    const ending = await readLine(connection, leftover, bodyLimit(limit, deadline, started))
+    if (ending is Err(error)) {
+      yield Err(error)
+      return
+    }
+    if (Str.length(ending.value) != 0) {
+      yield Err(HttpError.Malformed("a chunk does not end with CR LF"))
+      return
+    }
+  }
+}
+
+/// One chunk of a chunked message: the size in hex, the data and a CR LF. Empty data gives
+/// empty bytes, because a chunk of size 0 would end the message.
+export function encodeChunk(data: bytes): bytes uses alloc {
+  const size = Bytes.length(data)
+  if (size == 0) {
+    return data
+  }
+  const head = Bytes.fromString(`${Int.toHex(size)}\r\n`)
+  return Bytes.concat(Bytes.concat(head, data), Bytes.fromString("\r\n"))
+}
+
+/// Writes the head of a message and then its body. A chunked body is written as chunks and ends
+/// with the last chunk. A body that is not chunked is written as it is. The head goes out in
+/// the same write as the data of the body, before the first piece of its stream. It gives the
+/// error that stopped it.
+export async function writeMessage(
+  connection: Connection,
+  head: bytes,
+  body: Body,
+  chunked: bool,
+  limit: Option<Duration>,
+): Option<HttpError> uses io, alloc {
+  let first = Bytes.concat(head, body.data)
+  if (chunked) {
+    first = Bytes.concat(head, encodeChunk(body.data))
+  }
+  if (body.stream is Some(stream)) {
+    const started = await writeAll(connection, first, limit)
+    if (started is Some(_)) {
+      return started
+    }
+    for await (const piece of stream) {
+      if (piece is Err(error)) {
+        return Some(error)
+      }
+      let part = piece.value
+      if (chunked) {
+        part = encodeChunk(piece.value)
+      }
+      const failure = await writeAll(connection, part, limit)
+      if (failure is Some(_)) {
+        return failure
+      }
+    }
+    if (chunked) {
+      return await writeAll(connection, Bytes.fromString("0\r\n\r\n"), limit)
+    }
+    return None
+  }
+  if (chunked) {
+    return await writeAll(connection, Bytes.concat(first, Bytes.fromString("0\r\n\r\n")), limit)
+  }
+  return await writeAll(connection, first, limit)
+}

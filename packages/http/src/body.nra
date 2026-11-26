@@ -1,0 +1,72 @@
+// http/body: the content of a request or a response.
+
+import * as Bytes from "std/bytes"
+import { HttpError } from "http/error"
+
+/// The pieces of a body: each Ok value is one piece, and an Err ends the message with that
+/// error. The type carries the effects of reading a connection.
+export type BodyStream = AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc)
+
+/// The content of a message. An outgoing body holds bytes in data, or a stream that the sender
+/// reads when it writes the message (a stream is sent chunked). An incoming body has a stream
+/// that reads the connection, and an empty data.
+export struct Body {
+  data: bytes
+  stream: Option<BodyStream>
+}
+
+/// A body with no content.
+export function empty(): Body {
+  return Body { data: Bytes.fromString(""), stream: None }
+}
+
+/// A body of the UTF-8 bytes of the text.
+export function fromText(text: string): Body {
+  return Body { data: Bytes.fromString(text), stream: None }
+}
+
+/// A body of the bytes.
+export function fromBytes(data: bytes): Body {
+  return Body { data, stream: None }
+}
+
+/// A body that the sender reads piece by piece. Each Ok value is one piece, and an Err ends the
+/// message with that error.
+export function fromStream(stream: BodyStream): Body from stream {
+  return Body { data: Bytes.fromString(""), stream: Some(stream) }
+}
+
+/// Every byte of the body. It reads the stream to its end, and gives TooLarge("body") as soon as
+/// more than maxBytes bytes have come. The stream is used up afterwards.
+export async function readAll(body: Body, maxBytes: int): Result<bytes, HttpError> uses io, alloc {
+  let content = body.data
+  if (Bytes.length(content) > maxBytes) {
+    return Err(HttpError.TooLarge("body"))
+  }
+  if (body.stream is Some(stream)) {
+    for await (const piece of stream) {
+      if (piece is Err(error)) {
+        return Err(error)
+      }
+      content = Bytes.concat(content, piece.value)
+      if (Bytes.length(content) > maxBytes) {
+        return Err(HttpError.TooLarge("body"))
+      }
+    }
+  }
+  return Ok(content)
+}
+
+/// The body as one stream: its data first when it has any, then the pieces of its stream.
+export async function* chunks(
+  body: Body,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  if (Bytes.length(body.data) > 0) {
+    yield Ok(body.data)
+  }
+  if (body.stream is Some(stream)) {
+    for await (const piece of stream) {
+      yield piece
+    }
+  }
+}

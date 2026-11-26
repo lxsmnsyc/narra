@@ -1,0 +1,514 @@
+// Checks of the pure parts: header lists, heads, framing decisions, chunk sizes, and a fuzz run
+// that feeds random text to every parser.
+
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Message from "http/message"
+import * as Options from "std/option"
+import * as Random from "std/random"
+import * as Ranges from "std/range"
+import * as Requests from "http/request"
+import * as Responses from "http/response"
+import * as Str from "std/string"
+import * as Wire from "http/framing"
+import { Framing } from "http/message"
+import { Method } from "http/request"
+import { Report, expect, expectText } from "http/checkkit"
+
+export function runMessageChecks(report: Report) uses io, alloc {
+  checkHeaders(report)
+  checkRequestHeads(report)
+  checkRefusals(report)
+  checkRequestFraming(report)
+  checkResponseFraming(report)
+  checkChunks(report)
+  checkWriting(report)
+  checkFuzz(report)
+}
+
+function checkHeaders(report: Report) uses io, alloc {
+  let headers = Fields.empty()
+  Fields.add(mutable headers, "Content-Type", "text/plain")
+  Fields.add(mutable headers, "X-Tag", "one")
+  Fields.add(mutable headers, "x-tag", "two")
+  expectText(
+    report,
+    "headers: get ignores case",
+    Options.withDefault(Fields.get(headers, "content-TYPE"), ""),
+    "text/plain",
+  )
+  expect(report, "headers: get of a missing name is None", Fields.get(headers, "Accept") is None)
+  expectText(
+    report,
+    "headers: getAll keeps the order",
+    Str.join(Fields.getAll(headers, "X-TAG"), ","),
+    "one,two",
+  )
+  Fields.set(mutable headers, "X-Tag", "three")
+  expectText(
+    report,
+    "headers: set replaces every field",
+    Str.join(Fields.getAll(headers, "x-tag"), ","),
+    "three",
+  )
+  expect(report, "headers: set keeps the position", headers.entries[1].name == "X-Tag")
+  Fields.remove(mutable headers, "content-type")
+  expect(report, "headers: remove", Arrays.length(headers.entries) == 1)
+}
+
+function checkRequestHeads(report: Report) uses io, alloc {
+  const text = "GET /a/b?x=1 HTTP/1.1\r\nHost: example.com\r\nAccept:  text/html \r\nX-A: 1\r\nx-a: 2"
+  const parsed = Message.parseRequestHead(text)
+  if (parsed is Err(_)) {
+    expect(report, "head: a plain request parses", false)
+    return
+  }
+  const head = parsed.value
+  expect(report, "head: method", head.method == Method.Get)
+  expectText(report, "head: path", head.url.path, "/a/b")
+  expect(report, "head: query", head.url.query is Some("x=1"))
+  expect(report, "head: version", head.version == 1)
+  expectText(
+    report,
+    "head: host",
+    Options.withDefault(Fields.get(head.headers, "host"), ""),
+    "example.com",
+  )
+  expectText(
+    report,
+    "head: values are trimmed",
+    Options.withDefault(Fields.get(head.headers, "Accept"), ""),
+    "text/html",
+  )
+  expectText(
+    report,
+    "head: repeated names",
+    Str.join(Fields.getAll(head.headers, "X-A"), ","),
+    "1,2",
+  )
+  const old = Message.parseRequestHead("DELETE / HTTP/1.0")
+  expect(report, "head: HTTP/1.0 with no headers", old is Ok(_))
+  const custom = Message.parseRequestHead("PURGE /x HTTP/1.1\r\nHost: h")
+  if (custom is Ok(found)) {
+    expectText(
+      report,
+      "head: other methods keep their name",
+      Requests.methodName(found.method),
+      "PURGE",
+    )
+  }
+}
+
+function findHeadStatus(text: string): int uses alloc {
+  const parsed = Message.parseRequestHead(text)
+  if (parsed is Err(rejection)) {
+    return Message.chooseStatus(rejection)
+  }
+  return 0
+}
+
+function checkRefusals(report: Report) uses io, alloc {
+  expect(report, "refuse: a request line of two parts is 400", findHeadStatus("GET /") == 400)
+  expect(
+    report,
+    "refuse: a request line of four parts is 400",
+    findHeadStatus("GET / HTTP/1.1 x") == 400,
+  )
+  expect(
+    report,
+    "refuse: a method with a bad character is 400",
+    findHeadStatus("G@T / HTTP/1.1") == 400,
+  )
+  expect(report, "refuse: HTTP/2.0 is 505", findHeadStatus("GET / HTTP/2.0") == 505)
+  expect(report, "refuse: HTTP/0.9 is 505", findHeadStatus("GET / HTTP/0.9") == 505)
+  expect(
+    report,
+    "refuse: a version that is not HTTP is 400",
+    findHeadStatus("GET / FTP/1.1") == 400,
+  )
+  expect(
+    report,
+    "refuse: a folded header is 400",
+    findHeadStatus("GET / HTTP/1.1\r\nA: b\r\n c") == 400,
+  )
+  expect(
+    report,
+    "refuse: a header without a colon is 400",
+    findHeadStatus("GET / HTTP/1.1\r\nHost") == 400,
+  )
+  expect(
+    report,
+    "refuse: a space before the colon is 400",
+    findHeadStatus("GET / HTTP/1.1\r\nHost : x") == 400,
+  )
+  expect(
+    report,
+    "refuse: a bare line feed in a value is 400",
+    findHeadStatus("GET / HTTP/1.1\r\nA: b\nC: d") == 400,
+  )
+  expect(
+    report,
+    "refuse: an empty header line is 400",
+    findHeadStatus("GET / HTTP/1.1\r\n\r\nA: b") == 400,
+  )
+  expect(report, "refuse: a target with a space is 400", findHeadStatus("GET /a b HTTP/1.1") == 400)
+  expect(report, "refuse: HTTP/abc is 400", findHeadStatus("GET / HTTP/abc") == 400)
+  expect(report, "refuse: HTTP/1 is 400", findHeadStatus("GET / HTTP/1") == 400)
+  expect(report, "refuse: HTTP/1.x is 400", findHeadStatus("GET / HTTP/1.x") == 400)
+  expect(report, "refuse: HTTP/1.2 is 505", findHeadStatus("GET / HTTP/1.2") == 505)
+  expect(report, "refuse: HTTP/1.1 with no Host is 400", findHeadStatus("GET / HTTP/1.1") == 400)
+  expect(
+    report,
+    "refuse: two Host headers are 400",
+    findHeadStatus("GET / HTTP/1.1\r\nHost: a\r\nHost: b") == 400,
+  )
+  expect(report, "refuse: HTTP/1.0 needs no Host", findHeadStatus("GET / HTTP/1.0") == 0)
+  expect(
+    report,
+    "refuse: a good head is accepted",
+    findHeadStatus("GET /a HTTP/1.1\r\nHost: h") == 0,
+  )
+}
+
+function classifyRequest(headerLines: string, limit: int): string uses alloc {
+  const parsed = Message.parseRequestHead(`POST / HTTP/1.1\r\nHost: h${headerLines}`)
+  if (parsed is Err(_)) {
+    return "bad head"
+  }
+  const framing = Message.requestFraming(parsed.value.headers, limit)
+  if (framing is Err(rejection)) {
+    return Int.toString(Message.chooseStatus(rejection))
+  }
+  return describeFraming(framing.value)
+}
+
+function describeFraming(framing: Framing): string uses alloc {
+  if (framing is Framing.Length(count)) {
+    return `length ${Int.toString(count)}`
+  }
+  if (framing is Framing.Chunked) {
+    return "chunked"
+  }
+  if (framing is Framing.UntilClose) {
+    return "until close"
+  }
+  return "empty"
+}
+
+function checkRequestFraming(report: Report) uses io, alloc {
+  expectText(report, "request framing: no body", classifyRequest("", 100), "empty")
+  expectText(
+    report,
+    "request framing: a length",
+    classifyRequest("\r\nContent-Length: 5", 100),
+    "length 5",
+  )
+  expectText(
+    report,
+    "request framing: a zero length",
+    classifyRequest("\r\nContent-Length: 0", 100),
+    "empty",
+  )
+  expectText(
+    report,
+    "request framing: chunked",
+    classifyRequest("\r\nTransfer-Encoding: chunked", 100),
+    "chunked",
+  )
+  expectText(
+    report,
+    "request framing: chunked in capitals",
+    classifyRequest("\r\nTransfer-Encoding: Chunked", 100),
+    "chunked",
+  )
+  expectText(
+    report,
+    "request framing: both is 400",
+    classifyRequest("\r\nTransfer-Encoding: chunked\r\nContent-Length: 4", 100),
+    "400",
+  )
+  expectText(
+    report,
+    "request framing: gzip is 501",
+    classifyRequest("\r\nTransfer-Encoding: gzip", 100),
+    "501",
+  )
+  expectText(
+    report,
+    "request framing: gzip then chunked is 501",
+    classifyRequest("\r\nTransfer-Encoding: gzip, chunked", 100),
+    "501",
+  )
+  expectText(
+    report,
+    "request framing: a long body is 413",
+    classifyRequest("\r\nContent-Length: 101", 100),
+    "413",
+  )
+  expectText(
+    report,
+    "request framing: a huge number is 413",
+    classifyRequest("\r\nContent-Length: 99999999999999999999", 100),
+    "413",
+  )
+  expectText(
+    report,
+    "request framing: a signed length is 400",
+    classifyRequest("\r\nContent-Length: -1", 100),
+    "400",
+  )
+  expectText(
+    report,
+    "request framing: a word is 400",
+    classifyRequest("\r\nContent-Length: five", 100),
+    "400",
+  )
+  expectText(
+    report,
+    "request framing: two equal lengths",
+    classifyRequest("\r\nContent-Length: 3\r\nContent-Length: 3", 100),
+    "length 3",
+  )
+  expectText(
+    report,
+    "request framing: two different lengths are 400",
+    classifyRequest("\r\nContent-Length: 3\r\nContent-Length: 4", 100),
+    "400",
+  )
+}
+
+function classifyResponse(method: Method, status: int, headerLines: string): string uses alloc {
+  const parsed = Message.parseRequestHead(`GET / HTTP/1.1\r\nHost: h${headerLines}`)
+  if (parsed is Err(_)) {
+    return "bad head"
+  }
+  const framing = Message.responseFraming(method, status, parsed.value.headers)
+  if (framing is Err(_)) {
+    return "error"
+  }
+  return describeFraming(framing.value)
+}
+
+function checkResponseFraming(report: Report) uses io, alloc {
+  expectText(
+    report,
+    "response framing: a length",
+    classifyResponse(Method.Get, 200, "\r\nContent-Length: 7"),
+    "length 7",
+  )
+  expectText(
+    report,
+    "response framing: chunked",
+    classifyResponse(Method.Get, 200, "\r\nTransfer-Encoding: chunked"),
+    "chunked",
+  )
+  expectText(
+    report,
+    "response framing: neither runs until close",
+    classifyResponse(Method.Get, 200, ""),
+    "until close",
+  )
+  expectText(
+    report,
+    "response framing: HEAD has no body",
+    classifyResponse(Method.Head, 200, "\r\nContent-Length: 7"),
+    "empty",
+  )
+  expectText(
+    report,
+    "response framing: 204 has no body",
+    classifyResponse(Method.Get, 204, ""),
+    "empty",
+  )
+  expectText(
+    report,
+    "response framing: 304 has no body",
+    classifyResponse(Method.Get, 304, "\r\nContent-Length: 7"),
+    "empty",
+  )
+  const response = Message.parseResponseHead("HTTP/1.1 404 Not Found\r\nContent-Length: 3")
+  if (response is Ok(found)) {
+    expect(report, "response head: status", found.status == 404)
+    expect(report, "response head: version", found.version == 1)
+  } else {
+    expect(report, "response head: a status line parses", false)
+  }
+  expect(
+    report,
+    "response head: a status with no reason is accepted",
+    Message.parseResponseHead("HTTP/1.1 200") is Ok(_),
+  )
+  expect(
+    report,
+    "response head: a status of two digits is refused",
+    Message.parseResponseHead("HTTP/1.1 20 OK") is Err(_),
+  )
+}
+
+function readChunkSize(line: string): int uses alloc {
+  const size = Wire.parseChunkSize(line)
+  if (size is Ok(count)) {
+    return count
+  }
+  return -1
+}
+
+function checkChunks(report: Report) uses io, alloc {
+  expect(report, "chunk size: hex digits", readChunkSize("1a") == 26)
+  expect(report, "chunk size: capitals", readChunkSize("1A") == 26)
+  expect(report, "chunk size: zero", readChunkSize("0") == 0)
+  expect(report, "chunk size: an extension is ignored", readChunkSize("5;name=value") == 5)
+  expect(report, "chunk size: empty is refused", readChunkSize("") == -1)
+  expect(report, "chunk size: a space before is refused", readChunkSize(" 5") == -1)
+  expect(report, "chunk size: a space after is refused", readChunkSize("5 ") == -1)
+  expect(report, "chunk size: a sign is refused", readChunkSize("-1") == -1)
+  expect(report, "chunk size: a prefix is refused", readChunkSize("0x5") == -1)
+  expect(report, "chunk size: a word is refused", readChunkSize("zz") == -1)
+  expect(report, "chunk size: too many digits are refused", readChunkSize("ffffffffffffffff") == -1)
+  const encoded = Bytes.toString(Wire.encodeChunk(Bytes.fromString("hello")))
+  if (encoded is Ok(text)) {
+    expectText(report, "chunk: encoding", text, "5\r\nhello\r\n")
+  }
+  expect(
+    report,
+    "chunk: empty data is not a chunk",
+    Bytes.length(Wire.encodeChunk(Bytes.fromString(""))) == 0,
+  )
+}
+
+function checkWriting(report: Report) uses io, alloc {
+  let headers = Fields.empty()
+  Fields.add(mutable headers, "Content-Length", "5")
+  expectText(
+    report,
+    "write: a response head",
+    Message.writeResponseHead(200, headers),
+    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+  )
+  expectText(
+    report,
+    "write: a request head",
+    Message.writeRequestHead(Method.Post, "/x?y=1", headers),
+    "POST /x?y=1 HTTP/1.1\r\nContent-Length: 5\r\n\r\n",
+  )
+  expectText(
+    report,
+    "write: a reason phrase",
+    Responses.reasonPhrase(431),
+    "Request Header Fields Too Large",
+  )
+  let unsafe = Fields.empty()
+  Fields.add(mutable unsafe, "X-A", "b\r\nSet-Cookie: c=d")
+  expect(
+    report,
+    "write: a line break in a value is found",
+    Message.findBadHeader(unsafe) is Some(_),
+  )
+  let badName = Fields.empty()
+  Fields.add(mutable badName, "X A", "b")
+  expect(report, "write: a space in a name is found", Message.findBadHeader(badName) is Some(_))
+  expect(report, "write: good headers pass", Message.findBadHeader(headers) is None)
+  expect(
+    report,
+    "request: a url that does not parse",
+    Requests.create(Method.Get, "http://[::1") is Err(_),
+  )
+  expect(
+    report,
+    "request: a url that parses",
+    Requests.create(Method.Get, "http://127.0.0.1:80/a?b") is Ok(_),
+  )
+  expect(
+    report,
+    "request: method names round trip",
+    Requests.methodFromName(Requests.methodName(Method.Patch)) == Method.Patch,
+  )
+}
+
+const FUZZ_PIECES = [
+  "GET",
+  "POST",
+  "HEAD",
+  " ",
+  "  ",
+  "/",
+  "/a/b",
+  "?",
+  "x=1",
+  "#",
+  "%",
+  "%zz",
+  "[",
+  "]",
+  "@",
+  ":",
+  ";",
+  ",",
+  "HTTP/1.1",
+  "HTTP/1.0",
+  "HTTP/9",
+  "\r\n",
+  "\r\n\r\n",
+  "\n",
+  "\r",
+  "\t",
+  "Host",
+  "Content-Length",
+  "Transfer-Encoding",
+  "chunked",
+  "gzip",
+  "5",
+  "0",
+  "-1",
+  "99999999999999999999",
+  "ffff",
+  "é",
+  "\"",
+  "=",
+]
+
+function randomText(mutable random: Random.Random): string uses alloc {
+  const count = Options.withDefault(Random.nextInt(mutable random, 1, 30), 1)
+  let text = ""
+  for (const _step of Ranges.between(0, count)) {
+    const choice = Options.withDefault(
+      Random.nextInt(mutable random, 0, Arrays.length(FUZZ_PIECES)),
+      0,
+    )
+    text = `${text}${FUZZ_PIECES[choice]}`
+  }
+  return text
+}
+
+function checkFuzz(report: Report) uses io, alloc {
+  let random = Random.seeded(20261126)
+  let accepted = 0
+  let refused = 0
+  // Whatever the text, a parser answers with a value; a panic would end the run.
+  for (const _round of Ranges.between(0, 4000)) {
+    const text = randomText(mutable random)
+    const request = Message.parseRequestHead(text)
+    if (request is Ok(head)) {
+      accepted += 1
+      const framing = Message.requestFraming(head.headers, 1000)
+      if (framing is Err(_)) {
+        refused += 1
+      }
+    } else {
+      refused += 1
+    }
+    const response = Message.parseResponseHead(text)
+    if (response is Ok(_)) {
+      accepted += 1
+    }
+    const size = Wire.parseChunkSize(text)
+    if (size is Ok(count)) {
+      if (count < 0) {
+        expect(report, "fuzz: a chunk size is never negative", false)
+      }
+    }
+  }
+  expect(report, "fuzz: 4000 random heads went through every parser", accepted + refused > 0)
+}

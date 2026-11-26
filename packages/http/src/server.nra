@@ -1,0 +1,351 @@
+// http/server: an HTTP/1.1 server over std/net.
+
+import * as Async from "std/async"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Message from "http/message"
+import * as Net from "std/net"
+import * as Responses from "http/response"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import * as Wire from "http/framing"
+import { AsyncError } from "std/async"
+import { BodyStream } from "http/body"
+import { Cell } from "std/cell"
+import { Connection, Listener } from "std/net"
+import { Duration } from "std/time"
+import { Framing } from "http/message"
+import { Headers } from "http/headers"
+import { HttpError } from "http/error"
+import { Method, Request } from "http/request"
+import { Response } from "http/response"
+
+/// The limits of a server. maxHeaderBytes caps the request line and the headers together, and
+/// maxBodyBytes caps a request body. headerTimeout is how long a client has to send the head of
+/// a request, and idleTimeout how long a connection may wait for its next request, and for the
+/// body of a request or the writing of a response, without a byte. bodyTimeout is how long a
+/// whole request body may take to arrive, however steadily its bytes come.
+export struct ServerOptions {
+  maxHeaderBytes: int
+  maxBodyBytes: int
+  headerTimeout: Duration
+  idleTimeout: Duration
+  bodyTimeout: Duration
+}
+
+/// 16 KiB of headers, 8 MiB of body, 10 seconds for a head, 60 seconds idle and 60 seconds for
+/// a body.
+export function defaultOptions(): ServerOptions {
+  return ServerOptions {
+    maxHeaderBytes: 16384,
+    maxBodyBytes: 8388608,
+    headerTimeout: Time.seconds(10),
+    idleTimeout: Time.seconds(60),
+    bodyTimeout: Time.seconds(60),
+  }
+}
+
+/// Accepts connections on the listener and serves each one in a task of its own, with the
+/// handler answering every request. It runs until its task is cancelled, which stops the
+/// accepting and leaves the connections that are open to finish.
+export async function serve(
+  listener: Listener,
+  options: ServerOptions,
+  escaping handler: (request: Request) => Async<Response> uses (io, alloc),
+) uses io, alloc {
+  while (true) {
+    const accepted = await Net.accept(listener)
+    if (accepted is Err(error)) {
+      if (error is AsyncError.Cancelled) {
+        return
+      }
+      // A failed accept, such as too many open files, may pass; wait a moment before the next.
+      const _slept = await Time.sleep(Time.milliseconds(10))
+    } else {
+      Async.detach(serveConnection(accepted.value, options, handler))
+    }
+  }
+}
+
+/// Serves the requests that come on one connection, one after the other, until the client or
+/// the response ends it. The connection closes when the function returns.
+export async function serveConnection(
+  connection: Connection,
+  options: ServerOptions,
+  escaping handler: (request: Request) => Async<Response> uses (io, alloc),
+) uses io, alloc {
+  const leftover = Cells.create(Bytes.fromString(""))
+  // A new connection has the head timeout for its first request, and the idle timeout after it.
+  let waiting = Some(options.headerTimeout)
+  while (true) {
+    const read = await Wire.readHead(
+      connection,
+      leftover,
+      options.maxHeaderBytes,
+      waiting,
+      Some(options.headerTimeout),
+    )
+    waiting = Some(options.idleTimeout)
+    if (read is Err(error)) {
+      await refuseUnreadable(connection, leftover, error, options)
+      return
+    }
+    const text = read.value
+    if (text is None) {
+      return
+    }
+    const reusable = await serveRequest(connection, leftover, text.value, options, handler)
+    if (!reusable) {
+      return
+    }
+  }
+}
+
+async function refuseUnreadable(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  error: HttpError,
+  options: ServerOptions,
+) uses io, alloc {
+  // 431 for a head over the limit, 400 for one that is not text, 408 for one that did not
+  // finish in time. A closed connection gets nothing.
+  if (error is HttpError.TooLarge(_)) {
+    await refuse(connection, 431, "the headers are too large", options)
+  } else if (error is HttpError.Malformed(message)) {
+    await refuse(connection, 400, message, options)
+  } else if (error is HttpError.TimedOut) {
+    if (Bytes.length(Cells.get(leftover)) > 0) {
+      await refuse(connection, 408, "the request head did not arrive in time", options)
+    }
+  }
+}
+
+async function refuse(
+  connection: Connection,
+  status: int,
+  message: string,
+  options: ServerOptions,
+) uses io, alloc {
+  // A short plain-text answer that closes the connection; a failed write changes nothing.
+  let headers = Fields.empty()
+  Fields.add(mutable headers, "Content-Type", "text/plain; charset=utf-8")
+  Fields.add(mutable headers, "Content-Length", Int.toString(Str.length(message)))
+  Fields.add(mutable headers, "Connection", "close")
+  const head = Bytes.fromString(Message.writeResponseHead(status, headers))
+  const _failure = await Wire.writeAll(
+    connection,
+    Bytes.concat(head, Bytes.fromString(message)),
+    Some(options.idleTimeout),
+  )
+}
+
+function shouldKeepAlive(version: int, headers: Headers): bool uses alloc {
+  if (Message.hasToken(headers, "Connection", "close")) {
+    return false
+  }
+  if (version == 1) {
+    return true
+  }
+  return Message.hasToken(headers, "Connection", "keep-alive")
+}
+
+async function* watch(
+  source: BodyStream,
+  failure: Cell<Option<HttpError>>,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  // Passes the pieces on, and notes an error in the cell.
+  for await (const piece of source) {
+    if (piece is Err(error)) {
+      Cells.set(failure, Some(error))
+    }
+    yield piece
+  }
+}
+
+function openBody(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  framing: Framing,
+  failure: Cell<Option<HttpError>>,
+  options: ServerOptions,
+): Option<BodyStream> uses alloc {
+  const limit = Some(options.idleTimeout)
+  const deadline = Some(options.bodyTimeout)
+  if (framing is Framing.Length(count)) {
+    return Some(watch(Wire.streamLength(connection, leftover, count, limit, deadline), failure))
+  }
+  if (framing is Framing.Chunked) {
+    return Some(
+      watch(
+        Wire.streamChunked(connection, leftover, options.maxBodyBytes, limit, deadline),
+        failure,
+      ),
+    )
+  }
+  return None
+}
+
+async function serveRequest(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  text: string,
+  options: ServerOptions,
+  escaping handler: (request: Request) => Async<Response> uses (io, alloc),
+): bool uses io, alloc {
+  // Answers the request that the head text holds; true means the connection can take another.
+  const parsed = Message.parseRequestHead(text)
+  if (parsed is Err(rejection)) {
+    await refuse(
+      connection,
+      Message.chooseStatus(rejection),
+      Message.describeRejection(rejection),
+      options,
+    )
+    return false
+  }
+  const head = parsed.value
+  const framing = Message.requestFraming(head.headers, options.maxBodyBytes)
+  if (framing is Err(rejection)) {
+    await refuse(
+      connection,
+      Message.chooseStatus(rejection),
+      Message.describeRejection(rejection),
+      options,
+    )
+    return false
+  }
+  const failure = Cells.create<Option<HttpError>>(None)
+  const unread = openBody(connection, leftover, framing.value, failure, options)
+  let body = Bodies.empty()
+  if (unread is Some(stream)) {
+    body = Bodies.fromStream(stream)
+    // A client that waits for permission to send a body gets it.
+    if (head.version == 1 && Message.hasToken(head.headers, "Expect", "100-continue")) {
+      const permitted = await Wire.writeAll(
+        connection,
+        Bytes.fromString("HTTP/1.1 100 Continue\r\n\r\n"),
+        Some(options.idleTimeout),
+      )
+      if (permitted is Some(_)) {
+        return false
+      }
+    }
+  }
+  const request = Request { method: head.method, url: head.url, headers: head.headers, body }
+  let reply = await handler(request)
+  let reusable = shouldKeepAlive(head.version, head.headers)
+  // A body that failed while the handler read it overrides a success the handler gave.
+  const problem = Cells.get(failure)
+  if (problem is Some(error)) {
+    reusable = false
+    if (error is HttpError.Closed || error is HttpError.Io(_)) {
+      return false
+    }
+    if (reply.status < 400) {
+      if (error is HttpError.Malformed(message)) {
+        reply = Responses.text(400, message)
+      } else if (error is HttpError.TooLarge(_)) {
+        reply = Responses.text(413, "the body is too large")
+      } else {
+        reply = Responses.text(408, "the body did not arrive in time")
+      }
+    }
+  }
+  const sent = await sendResponse(
+    connection,
+    leftover,
+    reply,
+    head.method,
+    head.version,
+    reusable,
+    options,
+  )
+  if (!sent) {
+    return false
+  }
+  // What the handler left unread is read and dropped, so the next request starts clean.
+  if (unread is Some(rest)) {
+    for await (const piece of rest) {
+      if (piece is Err(_)) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+async function sendResponse(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  response: Response,
+  method: Method,
+  version: int,
+  keepAlive: bool,
+  options: ServerOptions,
+): bool uses io, alloc {
+  // Writes the response; true means the connection can carry another request.
+  let reply = copy(response)
+  // Only a 101 with an upgrade may be an interim status.
+  const interim = reply.status < 200 && !(reply.status == 101 && reply.upgrade is Some(_))
+  if (interim || reply.status > 599) {
+    reply = Responses.text(500, "the handler gave an invalid status")
+  }
+  if (Message.findBadHeader(reply.headers) is Some(_)) {
+    reply = Responses.text(500, "the handler gave an invalid header")
+  }
+  const limit = Some(options.idleTimeout)
+  let headers = copy(reply.headers)
+  let reusable = keepAlive
+  if (Message.hasToken(headers, "Connection", "close")) {
+    reusable = false
+  }
+  // A 101 hands the connection to the upgrade, which owns it from here.
+  if (reply.status == 101) {
+    if (reply.upgrade is Some(upgrade)) {
+      const head = Bytes.fromString(Message.writeResponseHead(101, headers))
+      const failure = await Wire.writeAll(connection, head, limit)
+      if (failure is Some(_)) {
+        return false
+      }
+      await upgrade.run(connection, Cells.get(leftover))
+      return false
+    }
+  }
+  const hasBody = reply.status >= 200 && reply.status != 204 && reply.status != 304
+  let chunked = false
+  // The framing headers come from the body, never from the handler.
+  Fields.remove(mutable headers, "Transfer-Encoding")
+  Fields.remove(mutable headers, "Content-Length")
+  if (hasBody) {
+    if (reply.body.stream is Some(_)) {
+      // A stream is chunked, or ends with the connection for an HTTP/1.0 client.
+      if (version == 1) {
+        chunked = true
+        Fields.set(mutable headers, "Transfer-Encoding", "chunked")
+      } else {
+        reusable = false
+      }
+    } else {
+      Fields.set(mutable headers, "Content-Length", Int.toString(Bytes.length(reply.body.data)))
+    }
+  }
+  if (!reusable) {
+    Fields.set(mutable headers, "Connection", "close")
+  } else if (version == 0) {
+    Fields.set(mutable headers, "Connection", "keep-alive")
+  }
+  const head = Bytes.fromString(Message.writeResponseHead(reply.status, headers))
+  let failure: Option<HttpError> = None
+  if (hasBody && method != Method.Head) {
+    failure = await Wire.writeMessage(connection, head, reply.body, chunked, limit)
+  } else {
+    failure = await Wire.writeAll(connection, head, limit)
+  }
+  if (failure is Some(_)) {
+    return false
+  }
+  return reusable
+}

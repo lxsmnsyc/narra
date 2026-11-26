@@ -1,0 +1,85 @@
+// A check against curl: a server on a thread of its own answers two requests that curl sends on
+// one connection. The check is skipped when curl is not installed.
+
+import * as Channel from "std/channel"
+import * as Int from "std/int"
+import * as Net from "std/net"
+import * as Process from "std/process"
+import * as Server from "http/server"
+import * as Thread from "std/thread"
+import * as Time from "std/time"
+import * as Wire from "http/framing"
+import { Connection, Listener } from "std/net"
+import { HttpError } from "http/error"
+import { Report, expectContains } from "http/checkkit"
+import { Sender } from "std/channel"
+import { route } from "http/checknet"
+
+async function acceptTask(listener: Listener): Result<Connection, HttpError> uses io, alloc {
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(error)) {
+    return Err(HttpError.Io(error))
+  }
+  return Ok(accepted.value)
+}
+
+async function serveOneConnection(ports: Sender<int>): int uses io, alloc {
+  // Listens, tells the port, and serves the first connection until curl closes it. It gives up
+  // when no connection comes in 20 seconds, so a failed curl cannot hang the check.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    const _told = Channel.send(ports, 0)
+    return -1
+  }
+  const _told = Channel.send(ports, Net.localPort(listener.value))
+  const accepted = await Wire.within(Some(Time.seconds(20)), acceptTask(listener.value))
+  if (accepted is Err(_)) {
+    return -1
+  }
+  await Server.serveConnection(accepted.value, Server.defaultOptions(), route)
+  return 0
+}
+
+export function runCurlChecks(report: Report) uses io, alloc {
+  const probe = Process.run("curl", ["--version"])
+  if (probe is Err(_)) {
+    print("skip - curl is not installed")
+    return
+  }
+  if (probe.value[0] != 0) {
+    print("skip - curl does not run")
+    return
+  }
+  const #[sender, receiver] = Channel.create<int>(1)
+  const output = Thread.scope((scope) => {
+    const server = Thread.startAsync(scope, async () => await serveOneConnection(sender))
+    const port = Channel.receive(receiver)
+    let text = "no port"
+    if (port is Some(number)) {
+      const base = `http://127.0.0.1:${Int.toString(number)}`
+      const arguments = [
+        "-s",
+        "-i",
+        "--max-time",
+        "20",
+        "-w",
+        "[%{num_connects}]",
+        `${base}/hello`,
+        `${base}/stream`,
+      ]
+      const fetched = Process.run("curl", arguments)
+      if (fetched is Ok(result)) {
+        text = result[1]
+      } else {
+        text = "curl failed"
+      }
+    }
+    const _joined = Thread.join(server)
+    return text
+  })
+  expectContains(report, "curl: a plain answer", output, "HTTP/1.1 200 OK")
+  expectContains(report, "curl: the first request opens the connection", output, "hello[1]")
+  expectContains(report, "curl: a chunked answer", output, "Transfer-Encoding: chunked")
+  expectContains(report, "curl: the chunks are decoded", output, "onetwothree")
+  expectContains(report, "curl: the second request reuses the connection", output, "onetwothree[0]")
+}

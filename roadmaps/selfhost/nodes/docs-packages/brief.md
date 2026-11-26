@@ -1,7 +1,7 @@
 ---
 id: docs-packages
 title: "docs: a packages section on the site, and [c] in the narra.toml reference"
-status: active
+status: done
 priority: could
 type: docs
 story: batch-26
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 123000
 owns:
   - roadmaps/selfhost/nodes/docs-packages/**
   - website/**

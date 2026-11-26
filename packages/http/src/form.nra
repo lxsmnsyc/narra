@@ -2,8 +2,8 @@
 
 import * as Arrays from "std/array"
 import * as Bodies from "http/body"
-import * as Bytes from "std/bytes"
 import * as Fields from "http/headers"
+import * as FormState from "http/formdata"
 import * as Multipart from "http/multipart"
 import * as Str from "std/string"
 import * as Unicode from "std/unicode"
@@ -82,14 +82,38 @@ export async function* parts(
   }
 }
 
+/// The fields and files of a form that a program builds and sends. Make one with create, add to
+/// it with append and appendFile, and send it with Bodies.fromForm.
+export type FormData = FormState.FormData
+
+/// A form with no fields.
+export const create = FormState.create
+
+/// Adds a text field to the end of the form. Order is kept, and a name may repeat.
+export function append(mutable form: FormData, name: string, value: string) uses alloc {
+  FormState.append(mutable form, name, value)
+}
+
+/// Adds a file to the end of the form: the name of the field, the filename and the content type
+/// that the part tells, and the body that holds the bytes. The body may be a stream, which is
+/// read when the form is sent.
+export function appendFile(
+  mutable form: FormData,
+  name: string,
+  filename: string,
+  contentType: string,
+  body: Body,
+) uses alloc {
+  FormState.appendFile(mutable form, name, filename, contentType, body)
+}
+
 /// The text fields of a form request, in order and with repeated names kept. The Content-Type
 /// picks the format: application/x-www-form-urlencoded or multipart/form-data. In a multipart
-/// form every part must be text without a filename, and the fields together may hold at most
-/// maxBytes bytes. A file part, a body that is not UTF-8 and any other Content-Type give
-/// Malformed.
+/// form every part must be text without a filename. The body of the request carries the limit,
+/// so a form over it gives TooLarge("body"). A file part, a body that is not UTF-8 and any
+/// other Content-Type give Malformed.
 export async function readFields(
   request: Request,
-  maxBytes: int,
 ): Result<Array<FormField>, HttpError> uses io, alloc {
   const contentType = Fields.get(request.headers, "Content-Type")
   if (contentType is None) {
@@ -97,10 +121,10 @@ export async function readFields(
   }
   const mediaType = findMediaType(contentType.value)
   if (mediaType == "application/x-www-form-urlencoded") {
-    return await readUrlEncoded(request, maxBytes)
+    return await readUrlEncoded(request)
   }
   if (mediaType == "multipart/form-data") {
-    return await readMultipart(request, maxBytes)
+    return await readMultipart(request)
   }
   return Err(HttpError.Malformed("Content-Type is not a form"))
 }
@@ -116,9 +140,8 @@ function findMediaType(contentType: string): string uses alloc {
 
 async function readUrlEncoded(
   request: Request,
-  maxBytes: int,
 ): Result<Array<FormField>, HttpError> uses io, alloc {
-  const text = await Bodies.readText(request.body, maxBytes)
+  const text = await Bodies.readText(request.body)
   if (text is Err(error)) {
     return Err(error)
   }
@@ -133,31 +156,19 @@ async function readUrlEncoded(
   return Ok(fields)
 }
 
-async function readMultipart(
-  request: Request,
-  maxBytes: int,
-): Result<Array<FormField>, HttpError> uses io, alloc {
-  const options = FormOptions {
-    maxParts: defaultOptions().maxParts,
-    maxPartHeaderBytes: defaultOptions().maxPartHeaderBytes,
-    maxPartBytes: maxBytes,
-  }
+async function readMultipart(request: Request): Result<Array<FormField>, HttpError> uses io, alloc {
   let fields: Array<FormField> = []
-  let remaining = maxBytes
-  for await (const piece of parts(request, options)) {
+  for await (const piece of parts(request, defaultOptions())) {
     if (piece is Err(error)) {
       return Err(error)
     }
     if (piece.value.filename is Some(_)) {
       return Err(HttpError.Malformed("a file part in a text form"))
     }
-    // A field counts its name and its value in bytes.
-    remaining -= Bytes.length(Bytes.fromString(piece.value.name))
-    const text = await Bodies.readText(piece.value.body, remaining)
+    const text = await Bodies.readText(piece.value.body)
     if (text is Err(error)) {
       return Err(error)
     }
-    remaining -= Bytes.length(Bytes.fromString(text.value))
     Arrays.push(mutable fields, FormField { name: piece.value.name, value: text.value })
   }
   return Ok(fields)

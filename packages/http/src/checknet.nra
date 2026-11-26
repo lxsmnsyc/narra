@@ -73,7 +73,7 @@ export async function route(request: Request): Response uses io, alloc {
     return Responses.text(200, Options.withDefault(request.url.query, "none"))
   }
   if (path == "/echo") {
-    const content = await Bodies.readAll(request.body, 1000000)
+    const content = await Bodies.readAll(request.body)
     if (content is Err(error)) {
       return Responses.text(400, Errors.describe(error))
     }
@@ -85,7 +85,7 @@ export async function route(request: Request): Response uses io, alloc {
   }
   if (path == "/echo-ignoring-errors") {
     // A handler that ignores a failed body still gets the 400 or 413 of the server.
-    const _content = await Bodies.readAll(request.body, 1000000)
+    const _content = await Bodies.readAll(request.body)
     return Responses.text(200, "fine")
   }
   if (path == "/ignore") {
@@ -141,7 +141,7 @@ export async function route(request: Request): Response uses io, alloc {
       promised = 5
     }
     let response = Responses.create(200)
-    response.body = State.fromIncoming(generatePieces(), Some(promised))
+    response.body = State.fromIncoming(generatePieces(), Some(promised), 1000000)
     return response
   }
   if (path == "/announced") {
@@ -190,7 +190,7 @@ function buildAddress(port: int, path: string): string uses alloc {
 }
 
 async function readBodyText(body: Bodies.Body): string uses io, alloc {
-  const content = await Bodies.readAll(body, 1000000)
+  const content = await Bodies.readAll(body)
   if (content is Err(error)) {
     return `error: ${Errors.describe(error)}`
   }
@@ -456,7 +456,8 @@ async function checkBodyFraming(report: Report, port: int) uses io, alloc {
   const overrun = "GET /long HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
   const longer = await exchange(port, encodeText(overrun))
   expect(report, "body length: a long stream ends the connection", countParts(longer, "hello") == 0)
-  const shortSent = await sendBody(port, "/echo", State.fromIncoming(generatePieces(), Some(20)), 0)
+  const shortBody = State.fromIncoming(generatePieces(), Some(20), 1000000)
+  const shortSent = await sendBody(port, "/echo", shortBody, 0)
   expect(report, "body length: the client gives Closed for a short body", shortSent is None)
   const announced = await sendBody(port, "/announced", Bodies.fromText("abc"), 0)
   expectText(
@@ -1062,7 +1063,7 @@ async function checkResponseFuzz(report: Report) uses io, alloc {
         // Any answer is fine, a value or an error, as long as the client returns.
         const answered = await Client.send(prepared, options)
         if (answered is Ok(response)) {
-          const _body = await Bodies.readAll(response.body, 1000)
+          const _body = await Bodies.readAll(response.body)
         }
         finished += 1
       }

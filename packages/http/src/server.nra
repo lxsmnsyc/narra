@@ -25,7 +25,8 @@ import { Method, Request } from "http/request"
 import { Response } from "http/response"
 
 /// The limits of a server. maxHeaderBytes caps the request line and the headers together, and
-/// maxBodyBytes caps a request body. headerTimeout is how long a client has to send the head of
+/// maxBodyBytes caps a request body, and every reader of that body gives TooLarge("body") once
+/// it is over. headerTimeout is how long a client has to send the head of
 /// a request, and idleTimeout how long a connection may wait for its next request, and for the
 /// body of a request or the writing of a response, without a byte. bodyTimeout is how long a
 /// whole request body may take to arrive, however steadily its bytes come.
@@ -227,7 +228,7 @@ async function serveRequest(
     if (framing.value is Framing.Length(count)) {
       announced = Some(count)
     }
-    body = State.fromIncoming(stream, announced)
+    body = State.fromIncoming(stream, announced, options.maxBodyBytes)
     // A client that waits for permission to send a body gets it.
     if (head.version == 1 && Message.hasToken(head.headers, "Expect", "100-continue")) {
       const permitted = await Wire.writeAll(
@@ -326,6 +327,12 @@ async function sendResponse(
   Fields.remove(mutable headers, "Transfer-Encoding")
   Fields.remove(mutable headers, "Content-Length")
   if (hasBody) {
+    // The body names its content type when the handler gave none.
+    if (Fields.get(headers, "Content-Type") is None) {
+      if (State.findContentType(reply.body) is Some(contentType)) {
+        Fields.set(mutable headers, "Content-Type", contentType)
+      }
+    }
     const length = State.findLength(reply.body)
     if (length is Some(count)) {
       Fields.set(mutable headers, "Content-Length", Int.toString(count))

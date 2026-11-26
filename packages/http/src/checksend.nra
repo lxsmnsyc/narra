@@ -1,0 +1,601 @@
+// Checks of the limit that a body carries, the content type of a body, and sending forms: the
+// bytes that Bodies.fromForm writes, a form sent by the client and read back by the server, names
+// that try to break the framing, and the limits of the server and the client.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Client from "http/client"
+import * as Errors from "http/error"
+import * as Fields from "http/headers"
+import * as Forms from "http/form"
+import * as Int from "std/int"
+import * as Net from "std/net"
+import * as Options from "std/option"
+import * as Requests from "http/request"
+import * as Responses from "http/response"
+import * as Server from "http/server"
+import * as State from "http/bodystate"
+import * as Str from "std/string"
+import { Body } from "http/body"
+import { FormData } from "http/form"
+import { HttpError } from "http/error"
+import { Method, Request } from "http/request"
+import { QueryParam } from "std/url"
+import { Report, expect, expectContains, expectText } from "http/checkkit"
+import { Response } from "http/response"
+
+const MULTIPART_PREFIX = "multipart/form-data; boundary="
+
+async function* generatePieces(
+  data: bytes,
+  size: int,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  const length = Bytes.length(data)
+  let position = 0
+  while (position < length) {
+    let end = position + size
+    if (end > length) {
+      end = length
+    }
+    if (Bytes.slice(data, position, end) is Some(piece)) {
+      yield Ok(piece)
+    }
+    position = end
+  }
+}
+
+function describeHeader(request: Request, name: string): string uses alloc {
+  return Options.withDefault(Fields.get(request.headers, name), "none")
+}
+
+async function describeParts(request: Request): string uses io, alloc {
+  // One line for each part: the name, the filename, the type and the content in hex.
+  let lines: Array<string> = []
+  for await (const piece of Forms.parts(request, Forms.defaultOptions())) {
+    if (piece is Err(error)) {
+      Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
+      break
+    }
+    const content = await Bodies.readAll(piece.value.body)
+    if (content is Err(error)) {
+      Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
+      break
+    }
+    const filename = Options.withDefault(piece.value.filename, "-")
+    const contentType = Options.withDefault(piece.value.contentType, "-")
+    Arrays.push(
+      mutable lines,
+      `${piece.value.name}|${filename}|${contentType}|${Bytes.toHex(content.value)}`,
+    )
+  }
+  return Str.join(lines, "\n")
+}
+
+async function describeSizes(request: Request): string uses io, alloc {
+  // One line for each part: the name, the filename and how many bytes the part has.
+  let lines: Array<string> = []
+  for await (const piece of Forms.parts(request, Forms.defaultOptions())) {
+    if (piece is Err(error)) {
+      Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
+      break
+    }
+    let size = 0
+    for await (const chunk of Bodies.chunks(piece.value.body)) {
+      if (chunk is Ok(content)) {
+        size += Bytes.length(content)
+      }
+    }
+    const filename = Options.withDefault(piece.value.filename, "-")
+    Arrays.push(mutable lines, `${piece.value.name}|${filename}|${Int.toString(size)}`)
+  }
+  return Str.join(lines, "\n")
+}
+
+async function* countdown(): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  yield Ok(Bytes.fromString("0123456789"))
+  yield Ok(Bytes.fromString("0123456789"))
+  yield Ok(Bytes.fromString("0123456789"))
+}
+
+async function routeSend(request: Request): Response uses io, alloc {
+  const path = request.url.path
+  if (path == "/type") {
+    return Responses.text(200, describeHeader(request, "Content-Type"))
+  }
+  if (path == "/framing") {
+    if (Fields.get(request.headers, "Transfer-Encoding") is Some(_)) {
+      return Responses.text(200, "chunked")
+    }
+    return Responses.text(200, `length:${describeHeader(request, "Content-Length")}`)
+  }
+  if (path == "/parts") {
+    return Responses.text(200, await describeParts(request))
+  }
+  if (path == "/sizes") {
+    return Responses.text(200, await describeSizes(request))
+  }
+  if (path == "/fields") {
+    const fields = await Forms.readFields(request)
+    if (fields is Err(error)) {
+      return Responses.text(400, Errors.describe(error))
+    }
+    let lines: Array<string> = []
+    for (const field of Arrays.values(fields.value)) {
+      Arrays.push(mutable lines, `${field.name}=${field.value}`)
+    }
+    return Responses.text(200, Str.join(lines, ","))
+  }
+  if (path == "/text") {
+    const text = await Bodies.readText(request.body)
+    if (text is Err(error)) {
+      return Responses.text(400, Errors.describe(error))
+    }
+    return Responses.text(200, text.value)
+  }
+  if (path == "/bodytype") {
+    return Responses.withBody(200, Bodies.fromText("x"))
+  }
+  if (path == "/typewins") {
+    let response = Responses.withBody(200, Bodies.fromText("x"))
+    Fields.add(mutable response.headers, "Content-Type", "application/json")
+    return response
+  }
+  if (path == "/held") {
+    return Responses.withBody(200, Bodies.fromText(Str.join(["0123456789", "0123456789"], "")))
+  }
+  if (path == "/chunky") {
+    return Responses.stream(200, countdown())
+  }
+  return Responses.text(404, "no such route")
+}
+
+function buildRequest(port: int, path: string, body: Body): Request from body uses alloc {
+  const created = Requests.create(Method.Post, `http://127.0.0.1:${Int.toString(port)}${path}`)
+  if (created is Err(error)) {
+    panic(Errors.describe(error))
+  }
+  let request = copy(created.value)
+  request.body = body
+  return request
+}
+
+async function readReply(result: Result<Response, HttpError>): string uses io, alloc {
+  if (result is Err(error)) {
+    return `error: ${Errors.describe(error)}`
+  }
+  const text = await Bodies.readText(result.value.body)
+  if (text is Ok(value)) {
+    return `${Int.toString(result.value.status)} ${value}`
+  }
+  return `${Int.toString(result.value.status)} ${Errors.describe(text.error)}`
+}
+
+async function sendBody(port: int, path: string, body: Body): string uses io, alloc {
+  const request = buildRequest(port, path, body)
+  return await readReply(await Client.send(request, Client.defaultOptions()))
+}
+
+async function sendForm(port: int, path: string, form: FormData): string uses io, alloc {
+  return await sendBody(port, path, Bodies.fromForm(form))
+}
+
+async function readWhole(body: Body): string uses io, alloc {
+  const content = await Bodies.readAll(body)
+  if (content is Err(error)) {
+    return `error: ${Errors.describe(error)}`
+  }
+  const text = Bytes.toString(content.value)
+  if (text is Ok(value)) {
+    return value
+  }
+  return "not text"
+}
+
+function hex(text: string): string uses alloc {
+  return Bytes.toHex(Bytes.fromString(text))
+}
+
+function readBoundary(body: Body): string uses alloc {
+  const contentType = Options.withDefault(State.findContentType(body), "")
+  if (Str.startsWith(contentType, MULTIPART_PREFIX)) {
+    return Str.sliceFrom(contentType, Str.length(MULTIPART_PREFIX))
+  }
+  return ""
+}
+
+async function checkLimits(report: Report) uses io, alloc {
+  const long = Bodies.fromText("abcdef")
+  const first = await Bodies.readText(Bodies.limit(long, 3))
+  expect(report, "limit: a body over the limit is TooLarge", first is Err(HttpError.TooLarge(_)))
+  const fitting = await Bodies.readText(Bodies.limit(long, 6))
+  expect(report, "limit: a body at the limit reads", fitting is Ok("abcdef"))
+  const free = await Bodies.readText(long)
+  expect(report, "limit: a body that a program built has no limit", free is Ok("abcdef"))
+  const tighter = Bodies.limit(Bodies.limit(long, 3), 100)
+  const tighterRead = await Bodies.readText(tighter)
+  expect(report, "limit: a limit is never made wider", tighterRead is Err(HttpError.TooLarge(_)))
+  const streamed = Bodies.limit(Bodies.fromStream(generatePieces(Bytes.fromString("abcdef"), 2)), 5)
+  const streamedRead = await Bodies.readAll(streamed)
+  expect(
+    report,
+    "limit: a stream over the limit is TooLarge",
+    streamedRead is Err(HttpError.TooLarge(_)),
+  )
+  let steps = 0
+  let ended = false
+  const stepped = Bodies.limit(Bodies.fromStream(generatePieces(Bytes.fromString("abcdef"), 2)), 3)
+  for await (const piece of Bodies.chunks(stepped)) {
+    steps += 1
+    if (piece is Err(_)) {
+      ended = true
+    }
+  }
+  expect(report, "limit: chunks gives the first piece, then TooLarge", steps == 2 && ended)
+}
+
+async function checkWire(report: Report) uses io, alloc {
+  // The bytes of a form, with a text field, a file of held bytes and a file of a stream.
+  let form = Forms.create()
+  Forms.append(mutable form, "a", "1")
+  Forms.appendFile(
+    mutable form,
+    "f",
+    "n.txt",
+    "text/plain",
+    Bodies.fromBytes(Bytes.fromString("xyz")),
+  )
+  const held = Bodies.fromForm(form)
+  const boundary = readBoundary(held)
+  expect(
+    report,
+    "form wire: the boundary is 1 to 70 characters",
+    Str.length(boundary) >= 1 && Str.length(boundary) <= 70,
+  )
+  const expected = `--${boundary}\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="n.txt"\r\nContent-Type: text/plain\r\n\r\nxyz\r\n--${boundary}--\r\n`
+  expectText(
+    report,
+    "form wire: part heads, content and the final delimiter",
+    await readWhole(held),
+    expected,
+  )
+  expect(
+    report,
+    "form wire: a form of held bytes has a length",
+    State.findLength(held) == Some(Str.length(expected)),
+  )
+  expect(report, "form wire: a form of held bytes can be sent again", State.isReplayable(held))
+  let streamedForm = Forms.create()
+  Forms.append(mutable streamedForm, "a", "1")
+  const piped = Bodies.fromStream(generatePieces(Bytes.fromString("xyz"), 1))
+  Forms.appendFile(mutable streamedForm, "f", "n.txt", "text/plain", piped)
+  const streamed = Bodies.fromForm(streamedForm)
+  const streamedBoundary = readBoundary(streamed)
+  expectText(
+    report,
+    "form wire: a stream file gives the same bytes",
+    await readWhole(streamed),
+    Str.replace(expected, boundary, streamedBoundary),
+  )
+  expect(
+    report,
+    "form wire: a form with a stream has no length",
+    State.findLength(streamed) is None,
+  )
+  expect(report, "form wire: a form with a stream is sent once", !State.isReplayable(streamed))
+  expect(report, "form wire: each form has a boundary of its own", boundary != streamedBoundary)
+  const empty = Bodies.fromForm(Forms.create())
+  const emptyBoundary = readBoundary(empty)
+  expectText(
+    report,
+    "form wire: an empty form is the closing delimiter",
+    await readWhole(empty),
+    `--${emptyBoundary}--\r\n`,
+  )
+}
+
+async function checkNames(report: Report, port: int) uses io, alloc {
+  // Names, filenames and types that try to end a quoted value or add a header line.
+  const evilName = "we\"ird\r\nname"
+  const evilFilename = "f\"\r\n--b.txt"
+  let form = Forms.create()
+  Forms.appendFile(
+    mutable form,
+    evilName,
+    evilFilename,
+    "text/plain\r\nX-Evil: 1",
+    Bodies.fromBytes(Bytes.fromString("v")),
+  )
+  Forms.append(mutable form, "next\"; filename=\"x", "w")
+  Forms.append(mutable form, "p%41q", "z")
+  const expected = [
+    `${evilName}|${evilFilename}|text/plainX-Evil: 1|${hex("v")}`,
+    `next"; filename="x|-|-|${hex("w")}`,
+    `p%41q|-|-|${hex("z")}`,
+  ]
+  expectText(
+    report,
+    "form names: quotes and line breaks are escaped and the parts stay whole",
+    await sendForm(port, "/parts", form),
+    `200 ${Str.join(expected, "\n")}`,
+  )
+}
+
+async function checkSending(report: Report, port: int) uses io, alloc {
+  let form = Forms.create()
+  Forms.append(mutable form, "a", "1")
+  Forms.append(mutable form, "a", "two words")
+  Forms.append(mutable form, "b", "h\u{e9}llo\r\n--x")
+  const content = Bytes.fromString("line\r\n--narra\r\n\0end")
+  Forms.appendFile(
+    mutable form,
+    "up",
+    "x.bin",
+    "application/octet-stream",
+    Bodies.fromBytes(content),
+  )
+  Forms.appendFile(mutable form, "empty", "e.txt", "text/plain", Bodies.empty())
+  const expected = [
+    `a|-|-|${hex("1")}`,
+    `a|-|-|${hex("two words")}`,
+    `b|-|-|${hex("h\u{e9}llo\r\n--x")}`,
+    `up|x.bin|application/octet-stream|${Bytes.toHex(content)}`,
+    "empty|e.txt|text/plain|",
+  ]
+  expectText(
+    report,
+    "form send: parts read back in order with repeated names, files and types",
+    await sendForm(port, "/parts", form),
+    `200 ${Str.join(expected, "\n")}`,
+  )
+  expectContains(
+    report,
+    "form send: a form of held bytes goes out with a length",
+    await sendForm(port, "/framing", form),
+    "200 length:",
+  )
+  expectText(
+    report,
+    "form send: the same form can be built into a body again",
+    await sendForm(port, "/parts", form),
+    `200 ${Str.join(expected, "\n")}`,
+  )
+  let textOnly = Forms.create()
+  Forms.append(mutable textOnly, "a", "1")
+  Forms.append(mutable textOnly, "b", "x y")
+  Forms.append(mutable textOnly, "a", "3")
+  expectText(
+    report,
+    "form send: readFields reads a sent form",
+    await sendForm(port, "/fields", textOnly),
+    "200 a=1,b=x y,a=3",
+  )
+  // A large file from a stream goes out chunked, and the server reads every byte.
+  const data = Bytes.fromString(Options.withDefault(Str.repeat("0123456789", 30000), ""))
+  let big = Forms.create()
+  Forms.append(mutable big, "title", "big")
+  Forms.appendFile(
+    mutable big,
+    "big",
+    "big.txt",
+    "text/plain",
+    Bodies.fromStream(generatePieces(data, 65536)),
+  )
+  expectText(
+    report,
+    "form send: a streamed file is read in full",
+    await sendForm(port, "/sizes", big),
+    "200 title|-|3\nbig|big.txt|300000",
+  )
+  let again = Forms.create()
+  Forms.appendFile(
+    mutable again,
+    "big",
+    "big.txt",
+    "text/plain",
+    Bodies.fromStream(generatePieces(Bytes.fromString("abc"), 1)),
+  )
+  expectText(
+    report,
+    "form send: a form with a stream goes out chunked",
+    await sendForm(port, "/framing", again),
+    "200 chunked",
+  )
+}
+
+async function checkQuery(report: Report, port: int) uses io, alloc {
+  const pairs = [
+    QueryParam { name: "a", value: "1" },
+    QueryParam { name: "b c", value: "x&y=z" },
+    QueryParam { name: "a", value: "h\u{e9}llo+" },
+  ]
+  expectText(
+    report,
+    "query: fromQuery round-trips through readFields",
+    await sendBody(port, "/fields", Bodies.fromQuery(pairs)),
+    "200 a=1,b c=x&y=z,a=h\u{e9}llo+",
+  )
+  const text = await Bodies.readText(Bodies.fromQuery(pairs))
+  expect(report, "query: the text is urlencoded", text is Ok("a=1&b+c=x%26y%3Dz&a=h%C3%A9llo%2B"))
+}
+
+async function checkTypes(report: Report, port: int) uses io, alloc {
+  expectText(
+    report,
+    "type: fromQuery gives urlencoded",
+    await sendBody(port, "/type", Bodies.fromQuery([QueryParam { name: "a", value: "1" }])),
+    "200 application/x-www-form-urlencoded",
+  )
+  expectText(
+    report,
+    "type: fromText gives text/plain",
+    await sendBody(port, "/type", Bodies.fromText("x")),
+    "200 text/plain; charset=utf-8",
+  )
+  expectText(
+    report,
+    "type: fromBytes gives none",
+    await sendBody(port, "/type", Bodies.fromBytes(Bytes.fromString("x"))),
+    "200 none",
+  )
+  expectText(
+    report,
+    "type: a stream gives none",
+    await sendBody(port, "/type", Bodies.fromStream(generatePieces(Bytes.fromString("x"), 1))),
+    "200 none",
+  )
+  expectText(
+    report,
+    "type: empty gives none",
+    await sendBody(port, "/type", Bodies.empty()),
+    "200 none",
+  )
+  expectContains(
+    report,
+    "type: fromForm gives multipart with a boundary",
+    await sendBody(port, "/type", Bodies.fromForm(Forms.create())),
+    "200 multipart/form-data; boundary=",
+  )
+  // A type that the caller set wins over the type of the body.
+  let request = buildRequest(port, "/type", Bodies.fromText("x"))
+  Fields.add(mutable request.headers, "Content-Type", "application/json")
+  expectText(
+    report,
+    "type: a type of the caller wins on the client",
+    await readReply(await Client.send(request, Client.defaultOptions())),
+    "200 application/json",
+  )
+  const answered = await Client.send(
+    buildRequest(port, "/bodytype", Bodies.empty()),
+    Client.defaultOptions(),
+  )
+  if (answered is Ok(response)) {
+    expectText(
+      report,
+      "type: a response body gives the Content-Type",
+      Options.withDefault(Fields.get(response.headers, "Content-Type"), "none"),
+      "text/plain; charset=utf-8",
+    )
+  } else {
+    expect(report, "type: the bodytype route answers", false)
+  }
+  const wins = await Client.send(
+    buildRequest(port, "/typewins", Bodies.empty()),
+    Client.defaultOptions(),
+  )
+  if (wins is Ok(response)) {
+    expectText(
+      report,
+      "type: a type of the handler wins on the server",
+      Options.withDefault(Fields.get(response.headers, "Content-Type"), "none"),
+      "application/json",
+    )
+  } else {
+    expect(report, "type: the typewins route answers", false)
+  }
+}
+
+async function checkClientLimit(report: Report, port: int) uses io, alloc {
+  let small = Client.defaultOptions()
+  small.maxBodyBytes = 15
+  for (const path of ["/held", "/chunky"]) {
+    const request = buildRequest(port, path, Bodies.empty())
+    const answered = await Client.send(request, small)
+    if (answered is Ok(response)) {
+      const read = await Bodies.readAll(response.body)
+      expect(
+        report,
+        `client limit: ${path} over maxBodyBytes is TooLarge`,
+        read is Err(HttpError.TooLarge(_)),
+      )
+    } else {
+      expect(report, `client limit: ${path} answers`, false)
+    }
+  }
+  const fitting = await Client.send(
+    buildRequest(port, "/held", Bodies.empty()),
+    Client.defaultOptions(),
+  )
+  expectText(
+    report,
+    "client limit: a body under the default limit reads",
+    await readReply(fitting),
+    "200 01234567890123456789",
+  )
+  let tighter = Client.defaultOptions()
+  tighter.maxBodyBytes = 20
+  const exact = await Client.send(buildRequest(port, "/held", Bodies.empty()), tighter)
+  expectText(
+    report,
+    "client limit: a body at maxBodyBytes reads",
+    await readReply(exact),
+    "200 01234567890123456789",
+  )
+  const narrowed = await Client.send(
+    buildRequest(port, "/held", Bodies.empty()),
+    Client.defaultOptions(),
+  )
+  if (narrowed is Ok(response)) {
+    const read = await Bodies.readText(Bodies.limit(response.body, 5))
+    expect(
+      report,
+      "client limit: Bodies.limit narrows a response",
+      read is Err(HttpError.TooLarge(_)),
+    )
+  }
+}
+
+async function checkServerLimit(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "server limit: the test server listens", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  let options = Server.defaultOptions()
+  options.maxBodyBytes = 10
+  const server = Server.serve(listener.value, options, routeSend)
+  expectText(
+    report,
+    "server limit: a body under maxBodyBytes reads",
+    await sendBody(port, "/text", Bodies.fromBytes(Bytes.fromString("0123456789"))),
+    "200 0123456789",
+  )
+  const sent = Bytes.fromString("0123456789ab")
+  const streamedRead = await sendBody(port, "/text", Bodies.fromStream(generatePieces(sent, 4)))
+  expectContains(
+    report,
+    "server limit: a chunked body over maxBodyBytes is TooLarge",
+    streamedRead,
+    "too large",
+  )
+  let form = Forms.create()
+  Forms.append(mutable form, "name", "a value that is longer than ten bytes")
+  expectContains(
+    report,
+    "server limit: readFields over maxBodyBytes is TooLarge",
+    await sendForm(port, "/fields", form),
+    "too large",
+  )
+  Async.cancel(server)
+}
+
+export async function runSendChecks(report: Report) uses io, alloc {
+  await checkLimits(report)
+  await checkWire(report)
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "send: the test server listens", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  const server = Server.serve(listener.value, Server.defaultOptions(), routeSend)
+  await checkNames(report, port)
+  await checkSending(report, port)
+  await checkQuery(report, port)
+  await checkTypes(report, port)
+  await checkClientLimit(report, port)
+  Async.cancel(server)
+  await checkServerLimit(report)
+}

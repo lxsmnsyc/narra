@@ -19,33 +19,89 @@ enum Source {
 }
 
 /// The content of a message. Callers see a stream of bytes. Inside the package the body also
-/// knows its length when its source tells it, and whether it can be sent again.
+/// knows its length when its source tells it, whether it can be sent again, the most bytes a
+/// reader may take from it, and the content type that a sender writes for it.
 export opaque struct Body {
   source: Source
   length: Option<int>
   // Set once a piece of an incoming stream has been read, so its length no longer holds.
   used: Option<Cell<bool>>
+  limit: Option<int>
+  contentType: Option<string>
 }
 
 /// A body with no content.
 export function empty(): Body {
-  return Body { source: Source.Held(Bytes.fromString("")), length: Some(0), used: None }
+  return Body {
+    source: Source.Held(Bytes.fromString("")),
+    length: Some(0),
+    used: None,
+    limit: None,
+    contentType: None,
+  }
 }
 
-/// A body of the UTF-8 bytes of the text.
+/// A body of the UTF-8 bytes of the text, with the content type text/plain.
 export function fromText(text: string): Body {
   const content = Bytes.fromString(text)
-  return Body { source: Source.Held(content), length: Some(Bytes.length(content)), used: None }
+  return Body {
+    source: Source.Held(content),
+    length: Some(Bytes.length(content)),
+    used: None,
+    limit: None,
+    contentType: Some("text/plain; charset=utf-8"),
+  }
 }
 
 /// A body of the bytes.
 export function fromBytes(content: bytes): Body {
-  return Body { source: Source.Held(content), length: Some(Bytes.length(content)), used: None }
+  return Body {
+    source: Source.Held(content),
+    length: Some(Bytes.length(content)),
+    used: None,
+    limit: None,
+    contentType: None,
+  }
 }
 
 /// A body that the sender reads piece by piece. It has no length and is sent once.
 export function fromStream(pieces: BodyStream): Body from pieces {
-  return Body { source: Source.Piped(pieces), length: None, used: None }
+  return Body {
+    source: Source.Piped(pieces),
+    length: None,
+    used: None,
+    limit: None,
+    contentType: None,
+  }
+}
+
+/// The same body with a content type that a sender writes when the message has none.
+export function withContentType(body: Body, contentType: string): Body from body {
+  return Body {
+    source: body.source,
+    length: body.length,
+    used: body.used,
+    limit: body.limit,
+    contentType: Some(contentType),
+  }
+}
+
+/// The same body with a limit on the bytes that a reader takes from it. A limit that the body
+/// already has stays when it is lower.
+export function limit(body: Body, maxBytes: int): Body from body {
+  let tightest = maxBytes
+  if (body.limit is Some(existing)) {
+    if (existing < tightest) {
+      tightest = existing
+    }
+  }
+  return Body {
+    source: body.source,
+    length: body.length,
+    used: body.used,
+    limit: Some(tightest),
+    contentType: body.contentType,
+  }
 }
 
 async function* markUsed(
@@ -59,14 +115,31 @@ async function* markUsed(
   }
 }
 
-/// A body that arrived on a connection: a stream, with the length that the peer announced. Once
-/// any of the stream has been read, the length is gone: what is left is not what was announced.
-export function fromIncoming(pieces: BodyStream, length: Option<int>): Body from pieces uses alloc {
+/// A body that arrived on a connection: a stream, with the length that the peer announced and the
+/// most bytes that a reader may take from it. Once any of the stream has been read, the length is
+/// gone: what is left is not what was announced.
+export function fromIncoming(
+  pieces: BodyStream,
+  length: Option<int>,
+  maxBytes: int,
+): Body from pieces uses alloc {
   if (length is Some(_)) {
     const used = Cells.create(false)
-    return Body { source: Source.Piped(markUsed(pieces, used)), length, used: Some(used) }
+    return Body {
+      source: Source.Piped(markUsed(pieces, used)),
+      length,
+      used: Some(used),
+      limit: Some(maxBytes),
+      contentType: None,
+    }
   }
-  return Body { source: Source.Piped(pieces), length, used: None }
+  return Body {
+    source: Source.Piped(pieces),
+    length,
+    used: None,
+    limit: Some(maxBytes),
+    contentType: None,
+  }
 }
 
 /// The length of the body in bytes when its source knows it and the body is whole. None means
@@ -104,43 +177,63 @@ export function findPieces(body: Body): Option<BodyStream> from body {
   return None
 }
 
+/// The content type that a sender writes for the body when the message has none.
+export function findContentType(body: Body): Option<string> {
+  return body.contentType
+}
+
+function isOverLimit(limit: Option<int>, total: int): bool {
+  if (limit is Some(maxBytes)) {
+    return total > maxBytes
+  }
+  return false
+}
+
 /// Every byte of the body. It reads the stream to its end, and gives TooLarge("body") as soon as
-/// more than maxBytes bytes have come. A body of bytes can be read again; a stream is used up
-/// afterwards, and a second read of it gives no bytes.
-export async function readAll(body: Body, maxBytes: int): Result<bytes, HttpError> uses io, alloc {
+/// more bytes have come than the limit of the body allows. A body of bytes can be read again; a
+/// stream is used up afterwards, and a second read of it gives no bytes.
+export async function readAll(body: Body): Result<bytes, HttpError> uses io, alloc {
   if (body.source is Source.Held(content)) {
-    if (Bytes.length(content) > maxBytes) {
+    if (isOverLimit(body.limit, Bytes.length(content))) {
       return Err(HttpError.TooLarge("body"))
     }
     return Ok(content)
   }
   let content = Bytes.fromString("")
-  if (body.source is Source.Piped(pieces)) {
-    for await (const piece of pieces) {
-      if (piece is Err(error)) {
-        return Err(error)
-      }
-      content = Bytes.concat(content, piece.value)
-      if (Bytes.length(content) > maxBytes) {
-        return Err(HttpError.TooLarge("body"))
-      }
+  for await (const piece of chunks(body)) {
+    if (piece is Err(error)) {
+      return Err(error)
     }
+    content = Bytes.concat(content, piece.value)
   }
   return Ok(content)
 }
 
 /// The body as one stream of pieces: its bytes when it holds them, otherwise the pieces of its
-/// stream.
+/// stream. An Err of TooLarge("body") ends the stream when more bytes have come than the limit of
+/// the body allows.
 export async function* chunks(
   body: Body,
 ): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
   if (body.source is Source.Held(content)) {
+    if (isOverLimit(body.limit, Bytes.length(content))) {
+      yield Err(HttpError.TooLarge("body"))
+      return
+    }
     if (Bytes.length(content) > 0) {
       yield Ok(content)
     }
   }
   if (body.source is Source.Piped(pieces)) {
+    let total = 0
     for await (const piece of pieces) {
+      if (piece is Ok(content)) {
+        total += Bytes.length(content)
+        if (isOverLimit(body.limit, total)) {
+          yield Err(HttpError.TooLarge("body"))
+          return
+        }
+      }
       yield piece
     }
   }

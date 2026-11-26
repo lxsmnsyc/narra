@@ -1,7 +1,7 @@
 ---
 id: pkg-http-fetch-parity
 title: "http: readers without a required limit, and sending forms"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-27
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 285000
 owns:
   - roadmaps/selfhost/nodes/pkg-http-fetch-parity/**
   - packages/http/**

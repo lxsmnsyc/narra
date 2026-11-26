@@ -1,0 +1,367 @@
+// The writer of the yaml package: a Value as block-style YAML. A mapping keeps the order of its
+// fields, a sequence goes under its key indented by two, and a string is quoted only when it would
+// read back as another type or break the syntax.
+
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Scalars from "yaml/scalar"
+import { Value } from "std/shape"
+
+/// write gives the document text of a value, which ends with a line break.
+export function write(value: Value): string uses alloc {
+  let builder = Str.builder()
+  if (value is Value.List(items)) {
+    if (Arrays.length(items) > 0) {
+      writeSequence(mutable builder, items, 0, false)
+      return Str.build(builder)
+    }
+  }
+  if (value is Value.Record(fields)) {
+    if (Maps.size(fields) > 0) {
+      writeMapping(mutable builder, fields, 0, false)
+      return Str.build(builder)
+    }
+  }
+  writeAfterIndicator(mutable builder, value, 0, "", false)
+  return Str.build(builder)
+}
+
+/// writeFloat writes a float so that it reads back as a float: `.inf`, `-.inf`, `.nan`, `-0.0`, and
+/// a whole number with its `.0`.
+export function writeFloat(number: f64): string uses alloc {
+  if (number != number) {
+    return ".nan"
+  }
+  if (number - number != 0.0) {
+    if (number > 0.0) {
+      return ".inf"
+    }
+    return "-.inf"
+  }
+  const text = Float.toString(number)
+  if (Str.contains(text, ".") || Str.contains(text, "e")) {
+    return text
+  }
+  return `${text}.0`
+}
+
+function appendSpaces(mutable builder: StringBuilder, count: int) uses alloc {
+  let index = 0
+  while (index < count) {
+    Str.append(mutable builder, " ")
+    index += 1
+  }
+}
+
+function isIndicatorByte(byte: int): bool {
+  return (byte == 44 ||
+    byte == 91 ||
+    byte == 93 ||
+    byte == 123 ||
+    byte == 125 ||
+    byte == 35 ||
+    byte == 38 ||
+    byte == 42 ||
+    byte == 33 ||
+    byte == 124 ||
+    byte == 62 ||
+    byte == 39 ||
+    byte == 34 ||
+    byte == 37 ||
+    byte == 64 ||
+    byte == 96)
+}
+
+function isControlByte(byte: int): bool {
+  return (byte < 32 && byte != 9) || byte == 127
+}
+
+function needsQuotes(text: string): bool uses alloc {
+  const length = Str.length(text)
+  if (length == 0 || text == "<<") {
+    return true
+  }
+  const first = Str.byteAt(text, 0)
+  const last = Str.byteAt(text, length - 1)
+  if (first == 32 || first == 9 || last == 32 || last == 9) {
+    return true
+  }
+  if (isIndicatorByte(first)) {
+    return true
+  }
+  // A byte order mark at the start would be dropped by the reader.
+  if (first == 239 && length > 2 && Str.byteAt(text, 1) == 187 && Str.byteAt(text, 2) == 191) {
+    return true
+  }
+  if (first == 45 || first == 63 || first == 58) {
+    if (length == 1 || Str.byteAt(text, 1) == 32 || Str.byteAt(text, 1) == 9) {
+      return true
+    }
+  }
+  if (last == 58) {
+    return true
+  }
+  if (Str.startsWith(text, "---") || Str.startsWith(text, "...")) {
+    return true
+  }
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (isControlByte(byte)) {
+      return true
+    }
+    if (index > 0) {
+      const before = Str.byteAt(text, index - 1)
+      if ((byte == 32 || byte == 9) && before == 58) {
+        return true
+      }
+      if (byte == 35 && (before == 32 || before == 9)) {
+        return true
+      }
+    }
+    index += 1
+  }
+  return !(Scalars.resolvePlain(text) is Value.Text(_))
+}
+
+function escapeByte(byte: int): string uses alloc {
+  if (byte == 34) {
+    return "\\\""
+  }
+  if (byte == 92) {
+    return "\\\\"
+  }
+  if (byte == 10) {
+    return "\\n"
+  }
+  if (byte == 13) {
+    return "\\r"
+  }
+  if (byte == 9) {
+    return "\\t"
+  }
+  if (byte == 0) {
+    return "\\0"
+  }
+  if (byte == 7) {
+    return "\\a"
+  }
+  if (byte == 8) {
+    return "\\b"
+  }
+  if (byte == 11) {
+    return "\\v"
+  }
+  if (byte == 12) {
+    return "\\f"
+  }
+  if (byte == 27) {
+    return "\\e"
+  }
+  const hex = Int.toHex(byte)
+  if (Str.length(hex) == 1) {
+    return `\\x0${hex}`
+  }
+  return `\\x${hex}`
+}
+
+function writeDoubleQuoted(mutable builder: StringBuilder, text: string) uses alloc {
+  Str.append(mutable builder, "\"")
+  const length = Str.length(text)
+  // The start of the bytes that need no escape and are not yet copied.
+  let runStart = 0
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (!isControlByte(byte) && byte != 34 && byte != 92) {
+      index += 1
+      continue
+    }
+    if (Str.slice(text, runStart, index) is Some(run)) {
+      Str.append(mutable builder, run)
+    }
+    Str.append(mutable builder, escapeByte(byte))
+    index += 1
+    runStart = index
+  }
+  if (Str.slice(text, runStart, length) is Some(run)) {
+    Str.append(mutable builder, run)
+  }
+  Str.append(mutable builder, "\"")
+}
+
+function writeScalarText(mutable builder: StringBuilder, text: string) uses alloc {
+  if (needsQuotes(text)) {
+    writeDoubleQuoted(mutable builder, text)
+  } else {
+    Str.append(mutable builder, text)
+  }
+}
+
+function canWriteBlock(text: string): bool {
+  const length = Str.length(text)
+  if (!Str.contains(text, "\n")) {
+    return false
+  }
+  let index = 0
+  let firstLine = true
+  let atLineStart = true
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 10) {
+      atLineStart = true
+      index += 1
+      continue
+    }
+    if (isControlByte(byte) && byte != 9) {
+      return false
+    }
+    if (byte == 13) {
+      return false
+    }
+    if (atLineStart && firstLine) {
+      if (byte == 32 || byte == 9) {
+        return false
+      }
+      firstLine = false
+    }
+    atLineStart = false
+    index += 1
+  }
+  // A string of nothing but line breaks has no first line to write.
+  return !firstLine
+}
+
+function writeBlockText(mutable builder: StringBuilder, text: string, indent: int) uses alloc {
+  let end = Str.length(text)
+  while (end > 0 && Str.byteAt(text, end - 1) == 10) {
+    end -= 1
+  }
+  const trailing = Str.length(text) - end
+  if (trailing == 0) {
+    Str.append(mutable builder, "|-")
+  } else if (trailing == 1) {
+    Str.append(mutable builder, "|")
+  } else {
+    Str.append(mutable builder, "|+")
+  }
+  Str.append(mutable builder, "\n")
+  let lineStart = 0
+  while (lineStart <= end) {
+    let lineEnd = lineStart
+    while (lineEnd < end && Str.byteAt(text, lineEnd) != 10) {
+      lineEnd += 1
+    }
+    if (lineEnd > lineStart) {
+      appendSpaces(mutable builder, indent)
+      if (Str.slice(text, lineStart, lineEnd) is Some(line)) {
+        Str.append(mutable builder, line)
+      }
+    }
+    Str.append(mutable builder, "\n")
+    lineStart = lineEnd + 1
+  }
+  // A kept run of line breaks adds its blank lines after the last line.
+  let blank = 1
+  while (blank < trailing) {
+    Str.append(mutable builder, "\n")
+    blank += 1
+  }
+}
+
+function writeAfterIndicator(
+  mutable builder: StringBuilder,
+  value: Value,
+  indent: int,
+  prefix: string,
+  compact: bool,
+) uses alloc {
+  match (value) {
+    Value.Null => {
+      Str.append(mutable builder, `${prefix}null\n`)
+    }
+    Value.Bool(flag) => {
+      if (flag) {
+        Str.append(mutable builder, `${prefix}true\n`)
+      } else {
+        Str.append(mutable builder, `${prefix}false\n`)
+      }
+    }
+    Value.Int(number) => {
+      Str.append(mutable builder, `${prefix}${Int.toString(number)}\n`)
+    }
+    Value.Float(number) => {
+      Str.append(mutable builder, `${prefix}${writeFloat(number)}\n`)
+    }
+    Value.Text(text) => {
+      Str.append(mutable builder, prefix)
+      if (canWriteBlock(text)) {
+        writeBlockText(mutable builder, text, indent + 2)
+      } else {
+        writeScalarText(mutable builder, text)
+        Str.append(mutable builder, "\n")
+      }
+    }
+    Value.List(items) => {
+      if (Arrays.length(items) == 0) {
+        Str.append(mutable builder, `${prefix}[]\n`)
+      } else if (compact) {
+        Str.append(mutable builder, prefix)
+        writeSequence(mutable builder, items, indent + 2, true)
+      } else {
+        Str.append(mutable builder, "\n")
+        writeSequence(mutable builder, items, indent + 2, false)
+      }
+    }
+    Value.Record(fields) => {
+      if (Maps.size(fields) == 0) {
+        Str.append(mutable builder, `${prefix}{}\n`)
+      } else if (compact) {
+        Str.append(mutable builder, prefix)
+        writeMapping(mutable builder, fields, indent + 2, true)
+      } else {
+        Str.append(mutable builder, "\n")
+        writeMapping(mutable builder, fields, indent + 2, false)
+      }
+    }
+  }
+}
+
+function writeSequence(
+  mutable builder: StringBuilder,
+  items: Array<Value>,
+  indent: int,
+  firstInline: bool,
+) uses alloc {
+  let first = true
+  for (const item of Arrays.values(items)) {
+    if (!(first && firstInline)) {
+      appendSpaces(mutable builder, indent)
+    }
+    first = false
+    Str.append(mutable builder, "-")
+    writeAfterIndicator(mutable builder, item, indent, " ", true)
+  }
+}
+
+function writeMapping(
+  mutable builder: StringBuilder,
+  fields: Map<string, Value>,
+  indent: int,
+  firstInline: bool,
+) uses alloc {
+  let first = true
+  for (const pair of Maps.entries(fields)) {
+    const #[key, field] = pair
+    if (!(first && firstInline)) {
+      appendSpaces(mutable builder, indent)
+    }
+    first = false
+    writeScalarText(mutable builder, key)
+    Str.append(mutable builder, ":")
+    writeAfterIndicator(mutable builder, field, indent, " ", false)
+  }
+}

@@ -1,0 +1,510 @@
+// Checks of the reader that name what it does: scalars, collections, strings, anchors, merge keys,
+// documents, errors and limits.
+
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Str from "std/string"
+import * as Yaml from "yaml/yaml"
+import {
+  Report,
+  expect,
+  expectFailure,
+  expectFailureWith,
+  expectValue,
+  makeInts,
+  makeRecord,
+  makeTexts,
+} from "yaml/checkkit"
+import { ReadOptions } from "yaml/yaml"
+import { Value } from "std/shape"
+
+export function runReaderChecks(report: Report) uses io, alloc {
+  checkScalars(report)
+  checkCollections(report)
+  checkStrings(report)
+  checkAnchors(report)
+  checkMerge(report)
+  checkDocuments(report)
+  checkErrors(report)
+  checkLimits(report)
+}
+
+function checkScalars(report: Report) uses io, alloc {
+  const infinity = 1.0e308 * 10.0
+  expectValue(report, "null word", "null", Value.Null)
+  expectValue(report, "null tilde", "~", Value.Null)
+  expectValue(report, "null empty", "a:", makeRecord([#["a", Value.Null]]))
+  expectValue(report, "null capitals", "[Null, NULL]", Value.List([Value.Null, Value.Null]))
+  expectValue(report, "true", "true", Value.Bool(true))
+  expectValue(report, "false", "False", Value.Bool(false))
+  expectValue(report, "yes is text", "yes", Value.Text("yes"))
+  expectValue(report, "int", "42", Value.Int(42))
+  expectValue(report, "negative int", "-17", Value.Int(-17))
+  expectValue(report, "plus int", "+5", Value.Int(5))
+  expectValue(report, "hex", "0x1F", Value.Int(31))
+  expectValue(report, "octal", "0o17", Value.Int(15))
+  expectValue(report, "leading zeros", "007", Value.Int(7))
+  expectValue(report, "binary is text", "0b11", Value.Text("0b11"))
+  expectValue(report, "underscore is text", "1_000", Value.Text("1_000"))
+  expectValue(report, "float", "1.5", Value.Float(1.5))
+  expectValue(report, "float exponent", "-2.5e3", Value.Float(-2500.0))
+  expectValue(report, "float no integer part", ".5", Value.Float(0.5))
+  expectValue(report, "float no fraction", "5.", Value.Float(5.0))
+  expectValue(report, "float integer exponent", "1e3", Value.Float(1000.0))
+  expectValue(report, "infinity", ".inf", Value.Float(infinity))
+  expectValue(report, "negative infinity", "-.Inf", Value.Float(-infinity))
+  expectValue(report, "not a number", ".NaN", Value.Float(infinity - infinity))
+  expectValue(report, "version is text", "1.2.3", Value.Text("1.2.3"))
+  expectValue(report, "date is text", "2001-12-14", Value.Text("2001-12-14"))
+  expectValue(report, "quoted int is text", "\"123\"", Value.Text("123"))
+  expectValue(report, "quoted bool is text", "'true'", Value.Text("true"))
+  expectValue(report, "tag str", "!!str 123", Value.Text("123"))
+  expectValue(report, "tag int on text", "!!int \"7\"", Value.Int(7))
+  expectValue(report, "tag float on int", "!!float 1", Value.Float(1.0))
+  expectValue(report, "tag bool", "!!bool true", Value.Bool(true))
+  expectValue(report, "tag null", "!!null ''", Value.Null)
+  expectValue(
+    report,
+    "tag str empty",
+    "a: !!str\nb: 1",
+    makeRecord([#["a", Value.Text("")], #["b", Value.Int(1)]]),
+  )
+  expectValue(report, "tag seq empty", "!!seq", Value.List([]))
+  expectValue(report, "tag map empty", "!!map", makeRecord([]))
+  expectValue(report, "tag verbatim", "!<tag:yaml.org,2002:str> 5", Value.Text("5"))
+  expectValue(report, "tag bang is text", "! 12", Value.Text("12"))
+}
+
+function checkCollections(report: Report) uses io, alloc {
+  expectValue(
+    report,
+    "block mapping",
+    "a: 1\nb: two\n",
+    makeRecord([#["a", Value.Int(1)], #["b", Value.Text("two")]]),
+  )
+  expectValue(
+    report,
+    "nested mapping",
+    "a:\n  b:\n    c: 1\n",
+    makeRecord([#["a", makeRecord([#["b", makeRecord([#["c", Value.Int(1)]])]])]]),
+  )
+  expectValue(report, "block sequence", "- 1\n- 2\n", makeInts([1, 2]))
+  expectValue(
+    report,
+    "sequence at the key indent",
+    "a:\n- 1\n- 2\nb: 3\n",
+    makeRecord([#["a", makeInts([1, 2])], #["b", Value.Int(3)]]),
+  )
+  expectValue(
+    report,
+    "compact mapping in a sequence",
+    "- a: 1\n  b: 2\n- c: 3\n",
+    Value.List([
+      makeRecord([#["a", Value.Int(1)], #["b", Value.Int(2)]]),
+      makeRecord([#["c", Value.Int(3)]]),
+    ]),
+  )
+  expectValue(
+    report,
+    "sequence in a sequence",
+    "- - 1\n  - 2\n- - 3\n",
+    Value.List([makeInts([1, 2]), makeInts([3])]),
+  )
+  expectValue(
+    report,
+    "flow sequence",
+    "[1, two, [3], {a: 4}]",
+    Value.List([
+      Value.Int(1),
+      Value.Text("two"),
+      makeInts([3]),
+      makeRecord([#["a", Value.Int(4)]]),
+    ]),
+  )
+  expectValue(
+    report,
+    "flow mapping",
+    "{a: 1, b: [x, y], c: {d: e}}",
+    makeRecord([
+      #["a", Value.Int(1)],
+      #["b", makeTexts(["x", "y"])],
+      #["c", makeRecord([#["d", Value.Text("e")]])],
+    ]),
+  )
+  expectValue(
+    report,
+    "flow mapping without values",
+    "{a, b: }",
+    makeRecord([#["a", Value.Null], #["b", Value.Null]]),
+  )
+  expectValue(
+    report,
+    "flow pair in a sequence",
+    "[a: 1, b]",
+    Value.List([makeRecord([#["a", Value.Int(1)]]), Value.Text("b")]),
+  )
+  expectValue(
+    report,
+    "flow on many lines",
+    "{\n  a: [1,\n    2],\n  b: c,\n}\n",
+    makeRecord([#["a", makeInts([1, 2])], #["b", Value.Text("c")]]),
+  )
+  expectValue(report, "explicit key", "? a\n: b\n", makeRecord([#["a", Value.Text("b")]]))
+  expectValue(
+    report,
+    "key keeps its text",
+    "1: a\n0x10: b\nnull: c\n",
+    makeRecord([#["1", Value.Text("a")], #["0x10", Value.Text("b")], #["null", Value.Text("c")]]),
+  )
+  expectValue(
+    report,
+    "explicit key keeps its text",
+    "? 0x10\n: a\n? ~\n: b\n? 1.50\n: c\n",
+    makeRecord([#["0x10", Value.Text("a")], #["~", Value.Text("b")], #["1.50", Value.Text("c")]]),
+  )
+  expectValue(
+    report,
+    "alias key keeps the text",
+    "- &k 0x10\n- {*k : 1}\n",
+    Value.List([Value.Int(16), makeRecord([#["0x10", Value.Int(1)]])]),
+  )
+  expectValue(
+    report,
+    "quoted key",
+    "\"a b\": 1\n'c': 2\n",
+    makeRecord([#["a b", Value.Int(1)], #["c", Value.Int(2)]]),
+  )
+  expectValue(
+    report,
+    "keys keep their order",
+    "z: 1\ny: 2\nx: 3\n",
+    makeRecord([#["z", Value.Int(1)], #["y", Value.Int(2)], #["x", Value.Int(3)]]),
+  )
+  expectValue(
+    report,
+    "comments",
+    "# top\na: 1 # one\n# between\nb: 2\n",
+    makeRecord([#["a", Value.Int(1)], #["b", Value.Int(2)]]),
+  )
+  expectValue(report, "colon without space", "a:b: c\n", makeRecord([#["a:b", Value.Text("c")]]))
+  expectValue(report, "hash without space", "a: b#c\n", makeRecord([#["a", Value.Text("b#c")]]))
+}
+
+function checkStrings(report: Report) uses io, alloc {
+  expectValue(report, "single quotes", "'it''s'", Value.Text("it's"))
+  expectValue(report, "double escapes", "\"a\\tb\\n\\u00e9\"", Value.Text("a\tb\n\u{e9}"))
+  expectValue(report, "hex escapes", "\"\\x41\\u0042\\U00000043\"", Value.Text("ABC"))
+  expectValue(report, "escaped quote", "\"say \\\"hi\\\"\"", Value.Text("say \"hi\""))
+  expectValue(report, "plain on two lines", "a\n  b\n\n  c", Value.Text("a b\nc"))
+  expectValue(report, "double quoted on two lines", "\"a\n  b\"", Value.Text("a b"))
+  expectValue(report, "escaped line break", "\"a\\\n   b\"", Value.Text("ab"))
+  expectValue(report, "literal", "|\n  a\n  b\n", Value.Text("a\nb\n"))
+  expectValue(report, "literal strip", "|-\n  a\n  b\n\n", Value.Text("a\nb"))
+  expectValue(report, "literal keep", "|+\n  a\n\n", Value.Text("a\n\n"))
+  expectValue(report, "folded", ">\n  a\n  b\n\n  c\n", Value.Text("a b\nc\n"))
+  expectValue(report, "folded more indented", ">\n  a\n    b\n  c\n", Value.Text("a\n  b\nc\n"))
+  expectValue(
+    report,
+    "literal indentation",
+    "k: |2\n   a\n",
+    makeRecord([#["k", Value.Text(" a\n")]]),
+  )
+  expectValue(
+    report,
+    "literal in a sequence",
+    "- |\n  a\n- b\n",
+    Value.List([Value.Text("a\n"), Value.Text("b")]),
+  )
+  expectValue(report, "literal keeps blank lines", "|\n  a\n\n  b\n", Value.Text("a\n\nb\n"))
+  expectValue(
+    report,
+    "crlf lines",
+    "a: 1\r\nb: 2\r\n",
+    makeRecord([#["a", Value.Int(1)], #["b", Value.Int(2)]]),
+  )
+  expectValue(
+    report,
+    "unicode",
+    "k: caf\u{e9} \u{1f600}\n",
+    makeRecord([#["k", Value.Text("caf\u{e9} \u{1f600}")]]),
+  )
+}
+
+function checkAnchors(report: Report) uses io, alloc {
+  expectValue(
+    report,
+    "alias of a list",
+    "a: &x [1, 2]\nb: *x\n",
+    makeRecord([#["a", makeInts([1, 2])], #["b", makeInts([1, 2])]]),
+  )
+  expectValue(
+    report,
+    "alias of a scalar",
+    "- &a hello\n- *a\n- &n 5\n- *n\n",
+    Value.List([Value.Text("hello"), Value.Text("hello"), Value.Int(5), Value.Int(5)]),
+  )
+  expectValue(
+    report,
+    "anchor of a mapping",
+    "a: &m\n  x: 1\nb: *m\n",
+    makeRecord([
+      #["a", makeRecord([#["x", Value.Int(1)]])],
+      #["b", makeRecord([#["x", Value.Int(1)]])],
+    ]),
+  )
+  expectValue(
+    report,
+    "anchor on a key",
+    "&k a: 1\nb: *k\n",
+    makeRecord([#["a", Value.Int(1)], #["b", Value.Text("a")]]),
+  )
+  expectValue(
+    report,
+    "alias as a key",
+    "[&k a, {*k : 1}]",
+    Value.List([Value.Text("a"), makeRecord([#["a", Value.Int(1)]])]),
+  )
+  expectFailure(report, "alias key repeats a key", "&k a: 1\n*k : 2\n", "duplicate key")
+  expectValue(report, "anchor is redefined", "- &a 1\n- &a 2\n- *a\n", makeInts([1, 2, 2]))
+  expectValue(
+    report,
+    "alias in flow",
+    "[&a x, *a, {k: *a}]",
+    Value.List([Value.Text("x"), Value.Text("x"), makeRecord([#["k", Value.Text("x")]])]),
+  )
+  expectFailure(report, "alias before its anchor", "- *a\n- &a x\n", "not defined")
+  expectFailure(report, "alias inside its anchor", "&a [*a]", "contains it")
+  expectFailure(report, "alias inside its mapping", "a: &a\n  b: *a\n", "contains it")
+  expectFailure(report, "anchors do not cross documents", "- &a x\n---\n- *a\n", "not defined")
+}
+
+function checkMerge(report: Report) uses io, alloc {
+  const base = "base: &b {x: 1, y: 2}\n"
+  expectValue(
+    report,
+    "merge",
+    `${base}d:\n  <<: *b\n  y: 3\n  z: 4\n`,
+    makeRecord([
+      #["base", makeRecord([#["x", Value.Int(1)], #["y", Value.Int(2)]])],
+      #["d", makeRecord([#["x", Value.Int(1)], #["y", Value.Int(3)], #["z", Value.Int(4)]])],
+    ]),
+  )
+  expectValue(
+    report,
+    "merge list, earlier wins",
+    "a: &a {x: 1, y: 1}\nb: &b {x: 2, z: 2}\nc:\n  <<: [*a, *b]\n",
+    makeRecord([
+      #["a", makeRecord([#["x", Value.Int(1)], #["y", Value.Int(1)]])],
+      #["b", makeRecord([#["x", Value.Int(2)], #["z", Value.Int(2)]])],
+      #["c", makeRecord([#["x", Value.Int(1)], #["y", Value.Int(1)], #["z", Value.Int(2)]])],
+    ]),
+  )
+  expectValue(
+    report,
+    "merge after own keys",
+    "a: &a {x: 1}\nc:\n  y: 2\n  <<: *a\n",
+    makeRecord([
+      #["a", makeRecord([#["x", Value.Int(1)]])],
+      #["c", makeRecord([#["y", Value.Int(2)], #["x", Value.Int(1)]])],
+    ]),
+  )
+  expectValue(
+    report,
+    "merge in a flow mapping",
+    "{a: &a {x: 1}, b: {<<: *a, y: 2}}",
+    makeRecord([
+      #["a", makeRecord([#["x", Value.Int(1)]])],
+      #["b", makeRecord([#["x", Value.Int(1)], #["y", Value.Int(2)]])],
+    ]),
+  )
+  expectValue(
+    report,
+    "quoted merge key is a key",
+    "a: &a {x: 1}\nb:\n  \"<<\": 1\n",
+    makeRecord([
+      #["a", makeRecord([#["x", Value.Int(1)]])],
+      #["b", makeRecord([#["<<", Value.Int(1)]])],
+    ]),
+  )
+  const plain = ReadOptions { maxDepth: 512, maxAliasNodes: 100000, mergeKeys: false }
+  const parsed = Yaml.parseWith("a: &a {x: 1}\nb:\n  <<: *a\n", plain)
+  if (parsed is Ok(value)) {
+    expect(report, "merge off keeps the key", Str.contains(Yaml.stringify(value), "<<"))
+  } else {
+    expect(report, "merge off keeps the key", false)
+  }
+  expectFailure(report, "merge of a scalar", "a:\n  <<: 5\n", "merge value")
+  expectFailure(report, "merge of a list of scalars", "a:\n  <<: [1]\n", "merge value")
+}
+
+function checkDocuments(report: Report) uses io, alloc {
+  const several = Yaml.parseAll("---\na\n---\nb\n...\n---\nc\n")
+  if (several is Ok(documents)) {
+    expect(report, "three documents", Arrays.length(documents) == 3)
+  } else {
+    expect(report, "three documents", false)
+  }
+  const none = Yaml.parseAll("# only a comment\n")
+  if (none is Ok(documents)) {
+    expect(report, "no documents", Arrays.length(documents) == 0)
+  } else {
+    expect(report, "no documents", false)
+  }
+  expectValue(report, "empty text is null", "", Value.Null)
+  expectValue(report, "comment only is null", "# nothing\n", Value.Null)
+  expectValue(report, "directive", "%YAML 1.2\n---\na\n", Value.Text("a"))
+  expectValue(report, "document end", "a: 1\n...\n", makeRecord([#["a", Value.Int(1)]]))
+  expectValue(report, "bom", "\u{feff}a: 1\n", makeRecord([#["a", Value.Int(1)]]))
+  expectFailure(report, "two documents in parse", "a\n---\nb\n", "single document")
+  expectFailure(report, "directive without a document", "%YAML 1.2\na\n", "---")
+  expectFailure(report, "content after a document", "---\na\n... b\n", "unexpected content")
+}
+
+function checkErrors(report: Report) uses io, alloc {
+  expectFailure(report, "mapping on a mapping line", "a: b: c\n", "mapping value")
+  expectFailure(report, "duplicate key", "a: 1\nb: 2\na: 3\n", "duplicate key")
+  expectFailure(report, "unclosed flow sequence", "[a, b", "not closed")
+  expectFailure(report, "unclosed flow mapping", "{a: 1", "not closed")
+  expectFailure(report, "unclosed double quote", "\"abc", "not closed")
+  expectFailure(report, "unclosed single quote", "'abc", "not closed")
+  expectFailure(report, "undefined alias", "a: *x", "not defined")
+  expectFailure(report, "tag outside the core schema", "!foo bar", "core schema")
+  expectFailure(report, "tag does not fit", "!!int abc", "tag !!int")
+  expectFailure(report, "tag on the wrong collection", "!!seq {a: 1}", "tag !!seq")
+  expectFailure(report, "sequence key", "? [a]\n: b\n", "collection cannot be a key")
+  expectFailure(report, "tab indent", "a:\n\t- b\n", "tab")
+  expectFailure(report, "bad indentation", "a:\n  b: 1\n c: 2\n", "indentation")
+  expectFailure(report, "bad escape", "\"\\q\"", "escape")
+  expectFailure(report, "flow end after a flow sequence", "a: [b]]\n", "unexpected")
+  expectValue(
+    report,
+    "bracket in a block scalar",
+    "a: b]\n",
+    makeRecord([#["a", Value.Text("b]")]]),
+  )
+  expectFailure(report, "unexpected comma", "[a,, b]", "comma")
+  expectFailure(report, "block scalar in flow", "[|\n a]", "flow")
+  expectFailure(report, "document marker in quotes", "\"a\n---\nb\"", "marker")
+  const failed = Yaml.parse("a: 1\nb: [\n")
+  if (failed is Err(error)) {
+    expect(report, "error line", error.line == 3 || error.line == 2)
+    expect(report, "error format", Str.contains(Yaml.formatError(error), ":"))
+  } else {
+    expect(report, "error line", false)
+  }
+  const located = Yaml.parse("a: 1\nb: 2\nb: 3\n")
+  if (located is Err(error)) {
+    expect(report, "duplicate key at its line", error.line == 3 && error.column == 1)
+  } else {
+    expect(report, "duplicate key at its line", false)
+  }
+}
+
+function repeatText(text: string, count: int): string uses alloc {
+  let builder = Str.builder()
+  let index = 0
+  while (index < count) {
+    Str.append(mutable builder, text)
+    index += 1
+  }
+  return Str.build(builder)
+}
+
+function buildBombText(levels: int): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, "a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n")
+  let level = 1
+  while (level < levels) {
+    const before = `*a${Int.toString(level - 1)}`
+    Str.append(
+      mutable builder,
+      `a${Int.toString(level)}: &a${Int.toString(level)} [${repeatText(`${before}, `, 9)}${before}]\n`,
+    )
+    level += 1
+  }
+  return Str.build(builder)
+}
+
+function checkLimits(report: Report) uses io, alloc {
+  expectFailure(report, "alias bomb", buildBombText(12), "aliases copy more than")
+  const small = ReadOptions { maxDepth: 512, maxAliasNodes: 3, mergeKeys: true }
+  expectFailureWith(
+    report,
+    "alias limit",
+    "a: &a [1, 2, 3]\nb: *a\n",
+    small,
+    "aliases copy more than",
+  )
+  expect(report, "a small alias bomb is read", Yaml.parse(buildBombText(3)) is Ok(_))
+  const shallow = ReadOptions { maxDepth: 3, maxAliasNodes: 100000, mergeKeys: true }
+  expectFailureWith(report, "depth option", "[[[[1]]]]", shallow, "nesting is deeper than 3")
+  expectFailureWith(
+    report,
+    "depth option, blocks",
+    "a:\n  b:\n    c:\n      d: 1\n",
+    shallow,
+    "nesting is deeper than 3",
+  )
+  const huge = ReadOptions { maxDepth: 1000000, maxAliasNodes: 100000, mergeKeys: true }
+  expectFailureWith(
+    report,
+    "a huge depth option is lowered, flow",
+    repeatText("[", 100000),
+    huge,
+    "nesting is deeper than 512",
+  )
+  expectFailureWith(
+    report,
+    "a huge depth option is lowered, block",
+    `${repeatText("- ", 100000)}x\n`,
+    huge,
+    "nesting is deeper than 512",
+  )
+  expectFailureWith(
+    report,
+    "a huge depth option is lowered, mapping",
+    repeatText("{a: ", 100000),
+    huge,
+    "nesting is deeper than 512",
+  )
+  expectFailure(
+    report,
+    "deep flow",
+    `${repeatText("[", 513)}${repeatText("]", 513)}`,
+    "nesting is deeper",
+  )
+  const deepest = Yaml.parse(`${repeatText("[", 512)}${repeatText("]", 512)}`)
+  expect(report, "flow at the limit", deepest is Ok(_))
+  expectFailure(report, "deep block sequence", `${repeatText("- ", 600)}x\n`, "nesting is deeper")
+  let blockMapping = ""
+  let level = 0
+  while (level < 600) {
+    blockMapping = `${blockMapping}${repeatText(" ", level)}k:\n`
+    level += 1
+  }
+  expectFailure(report, "deep block mapping", blockMapping, "nesting is deeper")
+  // Long inputs must not slow the reader down quadratically.
+  expectLength(report, "wide flow sequence", `[${repeatText("1, ", 60000)}1]`, 60001)
+  expectLength(report, "long block sequence", repeatText("- a\n", 60000), 60000)
+  const long = Yaml.parse(repeatText("word ", 40000))
+  if (long is Ok(parsed)) {
+    if (parsed is Value.Text(text)) {
+      expect(report, "long plain scalar", Str.length(text) == 199999)
+    } else {
+      expect(report, "long plain scalar", false)
+    }
+  } else {
+    expect(report, "long plain scalar", false)
+  }
+}
+
+function expectLength(report: Report, name: string, text: string, length: int) uses io, alloc {
+  const parsed = Yaml.parse(text)
+  if (parsed is Ok(value)) {
+    if (value is Value.List(items)) {
+      expect(report, name, Arrays.length(items) == length)
+      return
+    }
+  }
+  expect(report, name, false)
+}

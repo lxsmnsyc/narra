@@ -1,0 +1,240 @@
+// The core schema of YAML 1.2: what the text of a plain scalar means, and what each scalar tag asks
+// of its text. The reader resolves scalars with it and the writer asks it which texts need quotes.
+
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Float from "std/float"
+import * as Ranges from "std/range"
+import { Value } from "std/shape"
+
+/// The value of a plain scalar: null, a boolean, an integer, a float, or else the text itself.
+export function resolvePlain(text: string): Value uses alloc {
+  if (isNullText(text)) {
+    return Value.Null
+  }
+  if (readBool(text) is Some(flag)) {
+    return Value.Bool(flag)
+  }
+  if (readInteger(text) is Some(number)) {
+    return Value.Int(number)
+  }
+  if (readFloat(text) is Some(number)) {
+    return Value.Float(number)
+  }
+  return Value.Text(text)
+}
+
+/// Whether the text is one of the spellings of null, or empty.
+export function isNullText(text: string): bool {
+  return text == "" || text == "~" || text == "null" || text == "Null" || text == "NULL"
+}
+
+/// The value of a scalar that carries a core tag, or the reason its text does not fit the tag. A
+/// `!` tag and `str` give the text; `seq` and `map` fit only an empty plain scalar.
+export function readTagged(
+  tag: string,
+  text: string,
+  plain: bool,
+): Result<Value, string> uses alloc {
+  if (tag == "!" || tag == "str") {
+    return Ok(Value.Text(text))
+  }
+  if (tag == "null") {
+    if (isNullText(text)) {
+      return Ok(Value.Null)
+    }
+    return Err("the text is not null")
+  }
+  if (tag == "bool") {
+    if (readBool(text) is Some(flag)) {
+      return Ok(Value.Bool(flag))
+    }
+    return Err("the text is not a boolean")
+  }
+  if (tag == "int") {
+    if (readInteger(text) is Some(number)) {
+      return Ok(Value.Int(number))
+    }
+    return Err("the text is not an integer, or is out of range")
+  }
+  if (tag == "float") {
+    if (readFloat(text) is Some(number)) {
+      return Ok(Value.Float(number))
+    }
+    if (readInteger(text) is Some(whole)) {
+      return Ok(Value.Float(Float.fromInt(whole)))
+    }
+    return Err("the text is not a float")
+  }
+  if (plain && text == "" && tag == "seq") {
+    return Ok(Value.List([]))
+  }
+  if (plain && text == "" && tag == "map") {
+    return Ok(Value.Record(Map {}))
+  }
+  return Err("a scalar does not fit the tag")
+}
+
+/// The positive infinity.
+export function infinity(): f64 {
+  return 1.0e308 * 10.0
+}
+
+function readBool(text: string): Option<bool> {
+  if (text == "true" || text == "True" || text == "TRUE") {
+    return Some(true)
+  }
+  if (text == "false" || text == "False" || text == "FALSE") {
+    return Some(false)
+  }
+  return None
+}
+
+function isDigit(byte: int): bool {
+  return byte >= 48 && byte <= 57
+}
+
+function allDigits(text: string, start: int, base: int): bool {
+  const length = Str.length(text)
+  if (start >= length) {
+    return false
+  }
+  for (const index of Ranges.between(start, length)) {
+    const byte = Str.byteAt(text, index)
+    const isHex = (byte >= 97 && byte <= 102) || (byte >= 65 && byte <= 70)
+    if (base == 16 && !isDigit(byte) && !isHex) {
+      return false
+    }
+    if (base == 10 && !isDigit(byte)) {
+      return false
+    }
+    if (base == 8 && (byte < 48 || byte > 55)) {
+      return false
+    }
+  }
+  return true
+}
+
+function readInteger(text: string): Option<int> uses alloc {
+  const length = Str.length(text)
+  if (length == 0) {
+    return None
+  }
+  if (length > 2 && Str.byteAt(text, 0) == 48) {
+    const marker = Str.byteAt(text, 1)
+    if (marker == 120 && allDigits(text, 2, 16)) {
+      if (Int.parse(Str.sliceFrom(text, 2), 16) is Ok(number)) {
+        return Some(number)
+      }
+      return None
+    }
+    if (marker == 111 && allDigits(text, 2, 8)) {
+      if (Int.parse(Str.sliceFrom(text, 2), 8) is Ok(number)) {
+        return Some(number)
+      }
+      return None
+    }
+  }
+  const first = Str.byteAt(text, 0)
+  let start = 0
+  if (first == 43 || first == 45) {
+    start = 1
+  }
+  if (!allDigits(text, start, 10)) {
+    return None
+  }
+  let digits = Str.sliceFrom(text, start)
+  if (first == 45) {
+    digits = `-${digits}`
+  }
+  if (Int.parse(digits, 10) is Ok(number)) {
+    return Some(number)
+  }
+  return None
+}
+
+function digitRunEnd(text: string, start: int): int {
+  const length = Str.length(text)
+  let index = start
+  while (index < length && isDigit(Str.byteAt(text, index))) {
+    index += 1
+  }
+  return index
+}
+
+function readFloat(text: string): Option<f64> uses alloc {
+  const length = Str.length(text)
+  if (text == ".nan" || text == ".NaN" || text == ".NAN") {
+    return Some(infinity() - infinity())
+  }
+  let start = 0
+  let negative = false
+  if (length > 0 && (Str.byteAt(text, 0) == 43 || Str.byteAt(text, 0) == 45)) {
+    negative = Str.byteAt(text, 0) == 45
+    start = 1
+  }
+  const body = Str.sliceFrom(text, start)
+  if (body == ".inf" || body == ".Inf" || body == ".INF") {
+    if (negative) {
+      return Some(-infinity())
+    }
+    return Some(infinity())
+  }
+  const wholeEnd = digitRunEnd(text, start)
+  let index = wholeEnd
+  let fractionStart = -1
+  let fractionEnd = -1
+  if (index < length && Str.byteAt(text, index) == 46) {
+    fractionStart = index + 1
+    fractionEnd = digitRunEnd(text, fractionStart)
+    index = fractionEnd
+  }
+  if (wholeEnd == start && fractionEnd - fractionStart <= 0) {
+    return None
+  }
+  let exponent = ""
+  if (index < length && (Str.byteAt(text, index) == 101 || Str.byteAt(text, index) == 69)) {
+    let exponentStart = index + 1
+    let exponentSign = ""
+    if (
+      exponentStart < length &&
+        (Str.byteAt(text, exponentStart) == 43 || Str.byteAt(text, exponentStart) == 45)
+    ) {
+      if (Str.byteAt(text, exponentStart) == 45) {
+        exponentSign = "-"
+      }
+      exponentStart += 1
+    }
+    const exponentEnd = digitRunEnd(text, exponentStart)
+    if (exponentEnd == exponentStart) {
+      return None
+    }
+    if (Str.slice(text, exponentStart, exponentEnd) is Some(digits)) {
+      exponent = `e${exponentSign}${digits}`
+    }
+    index = exponentEnd
+  }
+  if (index != length) {
+    return None
+  }
+  let whole = "0"
+  if (wholeEnd > start) {
+    if (Str.slice(text, start, wholeEnd) is Some(digits)) {
+      whole = digits
+    }
+  }
+  let fraction = "0"
+  if (fractionEnd > fractionStart) {
+    if (Str.slice(text, fractionStart, fractionEnd) is Some(digits)) {
+      fraction = digits
+    }
+  }
+  let sign = ""
+  if (negative) {
+    sign = "-"
+  }
+  if (Float.parse(`${sign}${whole}.${fraction}${exponent}`) is Ok(number)) {
+    return Some(number)
+  }
+  return None
+}

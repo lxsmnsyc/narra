@@ -1,7 +1,7 @@
 ---
 id: pkg-http-cookies
 title: "http cookies: read Cookie, build Set-Cookie"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-25
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 125000
 owns:
   - roadmaps/selfhost/nodes/pkg-http-cookies/**
   - packages/http/src/cookie.nra

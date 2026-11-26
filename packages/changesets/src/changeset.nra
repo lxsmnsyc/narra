@@ -1,0 +1,215 @@
+// changesets/changeset: the files under .changeset/ that name members and a bump level.
+
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Str from "std/string"
+
+/// How far a change moves a version.
+export enum Level derives Show, Equatable {
+  Patch
+  Minor
+  Major
+}
+
+/// One line of the frontmatter: a member and its level.
+export struct Entry {
+  member: string
+  level: Level
+}
+
+/// A parsed changeset file: its path, the members it bumps and the summary text.
+export struct Changeset {
+  file: string
+  entries: Array<Entry>
+  summary: string
+}
+
+/// Something wrong in a file, at a line counted from 1.
+export struct Problem {
+  file: string
+  line: int
+  message: string
+}
+
+/// Reads `patch`, `minor` or `major`.
+export function parseLevel(text: string): Option<Level> {
+  if (text == "patch") {
+    return Some(Level.Patch)
+  }
+  if (text == "minor") {
+    return Some(Level.Minor)
+  }
+  if (text == "major") {
+    return Some(Level.Major)
+  }
+  return None
+}
+
+/// Writes a level as it appears in a file.
+export function levelName(level: Level): string {
+  return match (level) { Level.Patch => "patch", Level.Minor => "minor", Level.Major => "major" }
+}
+
+/// Orders levels: patch below minor below major.
+export function levelRank(level: Level): int {
+  return match (level) { Level.Patch => 0, Level.Minor => 1, Level.Major => 2 }
+}
+
+/// Writes a problem as `file:line: message`.
+export function formatProblem(problem: Problem): string uses alloc {
+  return `${problem.file}:${Int.toString(problem.line)}: ${problem.message}`
+}
+
+/// Reads one changeset file. The members are the names that may appear. The first problem found
+/// is returned with its line.
+export function parseChangeset(
+  file: string,
+  text: string,
+  members: Array<string>,
+): Result<Changeset, Problem> uses alloc {
+  const split = Str.split(text, "\n")
+  if (split is None) {
+    return Err(Problem { file, line: 1, message: "the file cannot be read" })
+  }
+  const lines = split.value
+  if (Arrays.length(lines) == 0 || Str.trim(lines[0]) != "---") {
+    return Err(Problem { file, line: 1, message: "the file must start with a --- line" })
+  }
+  let entries: Array<Entry> = []
+  let seen: Array<string> = []
+  let closing = 0
+  let index = 1
+  while (index < Arrays.length(lines)) {
+    const line = Str.trim(lines[index])
+    if (line == "---") {
+      closing = index
+      break
+    }
+    if (line != "") {
+      const entry = parseEntry(file, index + 1, line, members, seen)
+      if (entry is Err(problem)) {
+        return Err(problem)
+      }
+      Arrays.push(mutable seen, entry.value.member)
+      Arrays.push(mutable entries, entry.value)
+    }
+    index += 1
+  }
+  if (closing == 0) {
+    return Err(Problem {
+      file,
+      line: Arrays.length(lines),
+      message: "the frontmatter has no closing --- line",
+    })
+  }
+  if (Arrays.length(entries) == 0) {
+    return Err(Problem { file, line: closing + 1, message: "the frontmatter names no member" })
+  }
+  let summaryLines: Array<string> = []
+  let rest = closing + 1
+  while (rest < Arrays.length(lines)) {
+    Arrays.push(mutable summaryLines, lines[rest])
+    rest += 1
+  }
+  const summary = Str.trim(Str.join(summaryLines, "\n"))
+  if (summary == "") {
+    return Err(Problem { file, line: closing + 1, message: "the summary is empty" })
+  }
+  return Ok(Changeset { file, entries, summary })
+}
+
+function parseEntry(
+  file: string,
+  lineNumber: int,
+  line: string,
+  members: Array<string>,
+  seen: Array<string>,
+): Result<Entry, Problem> uses alloc {
+  if (!Str.startsWith(line, "\"")) {
+    return Err(Problem { file, line: lineNumber, message: "expected \"member\": level" })
+  }
+  const afterQuote = Str.sliceFrom(line, 1)
+  const quoteEnd = Str.indexOf(afterQuote, "\"")
+  if (quoteEnd is None) {
+    return Err(Problem { file, line: lineNumber, message: "the member name has no closing quote" })
+  }
+  const member = Str.slice(afterQuote, 0, quoteEnd.value)
+  const tail = Str.trim(Str.sliceFrom(afterQuote, quoteEnd.value + 1))
+  if (member is None) {
+    return Err(Problem { file, line: lineNumber, message: "expected \"member\": level" })
+  }
+  if (!Str.startsWith(tail, ":")) {
+    return Err(Problem { file, line: lineNumber, message: "expected \"member\": level" })
+  }
+  const name = member.value
+  const levelText = Str.trim(Str.sliceFrom(tail, 1))
+  if (!Arrays.contains(members, name)) {
+    return Err(Problem { file, line: lineNumber, message: `unknown member ${name}` })
+  }
+  if (Arrays.contains(seen, name)) {
+    return Err(Problem { file, line: lineNumber, message: `member ${name} is named twice` })
+  }
+  const level = parseLevel(levelText)
+  if (level is None) {
+    return Err(Problem {
+      file,
+      line: lineNumber,
+      message: `unknown level ${levelText}, expected patch, minor or major`,
+    })
+  }
+  return Ok(Entry { member: name, level: level.value })
+}
+
+/// Writes a changeset file: the frontmatter lines and then the summary.
+export function renderChangeset(entries: Array<Entry>, summary: string): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, "---\n")
+  for (const entry of entries) {
+    Str.append(mutable builder, `"${entry.member}": ${levelName(entry.level)}\n`)
+  }
+  Str.append(mutable builder, "---\n\n")
+  Str.append(mutable builder, summary)
+  Str.append(mutable builder, "\n")
+  return Str.build(builder)
+}
+
+/// Reads every `.md` file of `<root>/.changeset`, in name order. Every problem of every file is
+/// returned together, and a missing folder means no changesets.
+export function loadChangesets(
+  root: string,
+  members: Array<string>,
+): Result<Array<Changeset>, Array<Problem>> uses io, alloc {
+  const folder = `${root}/.changeset`
+  if (!Fs.isDir(folder)) {
+    return Ok([])
+  }
+  const listing = Fs.listDir(folder)
+  if (listing is Err(message)) {
+    return Err([Problem { file: folder, line: 1, message }])
+  }
+  let names = copy(listing.value)
+  Arrays.sort(mutable names)
+  let changesets: Array<Changeset> = []
+  let problems: Array<Problem> = []
+  for (const name of names) {
+    if (Str.endsWith(name, ".md") && name != "README.md") {
+      const file = `${folder}/${name}`
+      const text = Fs.readText(file)
+      if (text is Err(message)) {
+        Arrays.push(mutable problems, Problem { file, line: 1, message })
+      } else {
+        const parsed = parseChangeset(file, text.value, members)
+        if (parsed is Err(problem)) {
+          Arrays.push(mutable problems, problem)
+        } else {
+          Arrays.push(mutable changesets, parsed.value)
+        }
+      }
+    }
+  }
+  if (Arrays.length(problems) > 0) {
+    return Err(problems)
+  }
+  return Ok(changesets)
+}

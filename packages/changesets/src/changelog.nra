@@ -1,0 +1,76 @@
+// changesets/changelog: the CHANGELOG.md text of a release.
+
+import * as Arrays from "std/array"
+import * as Str from "std/string"
+import { Level } from "changesets/changeset"
+import { Release } from "changesets/release"
+
+/// Writes the section of a release: `## <version>`, then `### Major changes`, `### Minor changes`
+/// and `### Patch changes` for the levels that have notes, with one bullet for each note.
+export function renderSection(release: Release): string uses alloc {
+  let builder = Str.builder()
+  Str.append(mutable builder, `## ${release.newVersion}\n`)
+  const levels = [Level.Major, Level.Minor, Level.Patch]
+  const headings = ["### Major changes", "### Minor changes", "### Patch changes"]
+  for (const #[position, level] of Arrays.entries(levels)) {
+    let wrote = false
+    for (const note of release.notes) {
+      if (note.level == level) {
+        if (!wrote) {
+          Str.append(mutable builder, `\n${headings[position]}\n\n`)
+          wrote = true
+        }
+        Str.append(mutable builder, writeBullet(note.text))
+      }
+    }
+  }
+  return Str.build(builder)
+}
+
+function writeBullet(text: string): string uses alloc {
+  // Windows line endings are dropped, and a blank line stays empty
+  const lines = Str.split(Str.replace(text, "\r", ""), "\n")
+  if (lines is None) {
+    return `- ${text}\n`
+  }
+  let builder = Str.builder()
+  for (const #[position, line] of Arrays.entries(lines.value)) {
+    if (position == 0) {
+      Str.append(mutable builder, `- ${line}`)
+    } else if (line == "") {
+      Str.append(mutable builder, "\n")
+    } else {
+      Str.append(mutable builder, `\n  ${line}`)
+    }
+  }
+  Str.append(mutable builder, "\n")
+  return Str.build(builder)
+}
+
+/// Puts a section at the top of a changelog. A changelog that starts with a `# ` title keeps it
+/// above the new section. With no changelog yet, the title is the member name.
+export function addSection(
+  existing: Option<string>,
+  member: string,
+  section: string,
+): string uses alloc {
+  if (existing is None) {
+    return `# ${member}\n\n${section}`
+  }
+  const text = existing.value
+  if (Str.startsWith(text, "# ")) {
+    const lineEnd = Str.indexOf(text, "\n")
+    if (lineEnd is Some(end)) {
+      const head = Str.slice(text, 0, end + 1)
+      const rest = Str.trimStart(Str.sliceFrom(text, end + 1))
+      if (head is Some(titleLine)) {
+        if (rest == "") {
+          return `${titleLine}\n${section}`
+        }
+        return `${titleLine}\n${section}\n${rest}`
+      }
+    }
+    return `${text}\n\n${section}`
+  }
+  return `${section}\n${text}`
+}

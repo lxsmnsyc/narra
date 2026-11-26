@@ -100,14 +100,14 @@ done
 # The first-party packages (every folder of packages/ with a narra.toml) carry test programs of
 # their own, since a test block cannot wait for a socket. A full run builds each one with the
 # sanitizers and the leak check, runs it, and prints its last line, or all of its output when
-# it fails.
+# it fails. Each package names its test binary `<name>-tests`, which the step selects with -bin.
 if [ "$#" -eq 0 ]; then
   for package in "$root"/packages/*/; do
     if [ -f "${package}narra.toml" ]; then
       name=$(basename "$package")
       echo "test.sh: the checks of packages/$name"
       if NARRA_CHECK_LEAKS=1 NARRA_CHECK_COPIES=1 ASAN_OPTIONS=detect_leaks=0 \
-        "$narrac" run -sanitize "$package" > "$work/package-$name.log" 2>&1; then
+        "$narrac" run -sanitize -bin "$name-tests" "$package" > "$work/package-$name.log" 2>&1; then
         tail -n 1 "$work/package-$name.log"
       else
         cat "$work/package-$name.log"

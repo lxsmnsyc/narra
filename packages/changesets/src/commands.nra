@@ -1,0 +1,333 @@
+// changesets/commands: the four commands of the tool. Each takes the workspace root and gives the
+// exit code and the lines to print, so a test can run it without a terminal.
+
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Options from "std/option"
+import * as Random from "std/random"
+import * as Str from "std/string"
+import {
+  Changeset,
+  Entry,
+  Problem,
+  formatProblem,
+  levelName,
+  loadChangesets,
+  parseLevel,
+  renderChangeset,
+} from "changesets/changeset"
+import { addSection, renderSection } from "changesets/changelog"
+import { createTag, listChangedFiles, listTags } from "changesets/git"
+import { Release, planReleases } from "changesets/release"
+import { Member, loadWorkspace, replaceVersion } from "changesets/workspace"
+
+/// What a command did: the exit code and the lines it prints.
+export struct Outcome {
+  exitCode: int
+  lines: Array<string>
+}
+
+const ADJECTIVES = [
+  "brave",
+  "calm",
+  "eager",
+  "fair",
+  "gentle",
+  "happy",
+  "kind",
+  "lucky",
+  "proud",
+  "quick",
+  "silly",
+  "witty",
+]
+const NOUNS = [
+  "lions",
+  "owls",
+  "foxes",
+  "pears",
+  "rivers",
+  "stones",
+  "tigers",
+  "waves",
+  "ducks",
+  "hills",
+  "moons",
+  "seeds",
+]
+const VERBS = [
+  "dance",
+  "jump",
+  "laugh",
+  "sing",
+  "smile",
+  "sleep",
+  "swim",
+  "wave",
+  "walk",
+  "run",
+  "rest",
+  "play",
+]
+
+function fail(lines: Array<string>): Outcome from lines {
+  return Outcome { exitCode: 1, lines }
+}
+
+function listProblems(problems: Array<Problem>): Array<string> uses alloc {
+  let lines: Array<string> = []
+  for (const problem of problems) {
+    Arrays.push(mutable lines, formatProblem(problem))
+  }
+  return lines
+}
+
+function listMemberNames(members: Array<Member>): Array<string> uses alloc {
+  let names: Array<string> = []
+  for (const member of members) {
+    Arrays.push(mutable names, member.name)
+  }
+  return names
+}
+
+/// Writes `.changeset/<random-words>.md`. Each assignment reads `member:level`.
+export function addChangeset(
+  root: string,
+  assignments: Array<string>,
+  summary: string,
+  mutable random: Random.Random,
+): Outcome uses io, alloc {
+  const members = loadWorkspace(root)
+  if (members is Err(message)) {
+    return fail([message])
+  }
+  const names = listMemberNames(members.value)
+  let entries: Array<Entry> = []
+  for (const assignment of assignments) {
+    const separator = Str.indexOf(assignment, ":")
+    if (separator is None) {
+      return fail([`expected member:level, found ${assignment}`])
+    }
+    const member = Str.slice(assignment, 0, separator.value)
+    const levelText = Str.sliceFrom(assignment, separator.value + 1)
+    const level = parseLevel(levelText)
+    if (member is None) {
+      return fail([`expected member:level, found ${assignment}`])
+    }
+    const memberName = member.value
+    if (!Arrays.contains(names, memberName)) {
+      return fail([`unknown member in ${assignment}`])
+    }
+    if (level is None) {
+      return fail([`unknown level ${levelText} in ${assignment}, expected patch, minor or major`])
+    }
+    for (const entry of entries) {
+      if (entry.member == memberName) {
+        return fail([`member ${memberName} is named twice`])
+      }
+    }
+    Arrays.push(mutable entries, Entry { member: memberName, level: level.value })
+  }
+  if (Arrays.length(entries) == 0) {
+    return fail(["name at least one member:level"])
+  }
+  if (Str.trim(summary) == "") {
+    return fail(["the summary is empty, pass it with -m"])
+  }
+  const folder = `${root}/.changeset`
+  const created = Fs.createDirAll(folder)
+  if (created is Err(message)) {
+    return fail([message])
+  }
+  let path = `${folder}/${pickWords(mutable random)}.md`
+  while (Fs.exists(path)) {
+    path = `${folder}/${pickWords(mutable random)}.md`
+  }
+  const written = Fs.writeText(path, renderChangeset(entries, Str.trim(summary)))
+  if (written is Err(message)) {
+    return fail([message])
+  }
+  return Outcome { exitCode: 0, lines: [`created ${path}`] }
+}
+
+function pickWords(mutable random: Random.Random): string uses alloc {
+  const adjective = Random.nextInt(mutable random, 0, Arrays.length(ADJECTIVES))
+  const noun = Random.nextInt(mutable random, 0, Arrays.length(NOUNS))
+  const verb = Random.nextInt(mutable random, 0, Arrays.length(VERBS))
+  const first = Options.withDefault(adjective, 0)
+  const second = Options.withDefault(noun, 0)
+  const third = Options.withDefault(verb, 0)
+  return `${ADJECTIVES[first]}-${NOUNS[second]}-${VERBS[third]}`
+}
+
+function describeRelease(release: Release): string uses alloc {
+  return `${release.member} ${release.oldVersion} -> ${release.newVersion} (${levelName(release.level)})`
+}
+
+/// Lists the pending releases. The exit code is 1 when a changeset is bad, or when a member
+/// changed since `since` and no changeset names it.
+export function showStatus(root: string, since: string): Outcome uses io, alloc {
+  const members = loadWorkspace(root)
+  if (members is Err(message)) {
+    return fail([message])
+  }
+  const changesets = loadChangesets(root, listMemberNames(members.value))
+  if (changesets is Err(problems)) {
+    return fail(listProblems(problems))
+  }
+  const releases = planReleases(members.value, changesets.value)
+  if (releases is Err(message)) {
+    return fail([message])
+  }
+  let lines: Array<string> = []
+  if (Arrays.length(releases.value) == 0) {
+    Arrays.push(mutable lines, "no pending changesets")
+  }
+  for (const release of releases.value) {
+    Arrays.push(mutable lines, describeRelease(release))
+  }
+  const files = listChangedFiles(root, since)
+  if (files is Err(message)) {
+    Arrays.push(mutable lines, message)
+    return fail(lines)
+  }
+  let exitCode = 0
+  for (const member of members.value) {
+    if (hasChanged(member, files.value) && !isNamed(member, changesets.value)) {
+      Arrays.push(mutable lines, `missing changeset: ${member.name} changed since ${since}`)
+      exitCode = 1
+    }
+  }
+  return Outcome { exitCode, lines }
+}
+
+function hasChanged(member: Member, files: Array<string>): bool uses alloc {
+  for (const file of files) {
+    if (Str.startsWith(file, `${member.folder}/`) && file != `${member.folder}/CHANGELOG.md`) {
+      return true
+    }
+  }
+  return false
+}
+
+function isNamed(member: Member, changesets: Array<Changeset>): bool {
+  for (const changeset of changesets) {
+    for (const entry of changeset.entries) {
+      if (entry.member == member.name) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function removeFiles(paths: Array<string>) uses io, alloc {
+  for (const path of paths) {
+    if (Fs.exists(path)) {
+      const _removed = Fs.removeFile(path)
+    }
+  }
+}
+
+/// Applies every pending changeset: new versions in the manifests, new changelog sections, and
+/// the changeset files deleted. Nothing is written when any file has a problem.
+export function applyVersion(root: string): Outcome uses io, alloc {
+  const members = loadWorkspace(root)
+  if (members is Err(message)) {
+    return fail([message])
+  }
+  const changesets = loadChangesets(root, listMemberNames(members.value))
+  if (changesets is Err(problems)) {
+    return fail(listProblems(problems))
+  }
+  const releases = planReleases(members.value, changesets.value)
+  if (releases is Err(message)) {
+    return fail([message])
+  }
+  if (Arrays.length(releases.value) == 0) {
+    return Outcome { exitCode: 0, lines: ["no pending changesets"] }
+  }
+  // Build every new file before writing any
+  let paths: Array<string> = []
+  let contents: Array<string> = []
+  let lines: Array<string> = []
+  for (const release of releases.value) {
+    const manifestPath = `${root}/${release.folder}/narra.toml`
+    const manifest = Fs.readText(manifestPath)
+    if (manifest is Err(message)) {
+      return fail([`cannot read ${manifestPath}: ${message}`])
+    }
+    const updated = replaceVersion(manifest.value, release.newVersion)
+    if (updated is None) {
+      return fail([`${manifestPath} has no version line in [package]`])
+    }
+    const changelogPath = `${root}/${release.folder}/CHANGELOG.md`
+    let existing: Option<string> = None
+    if (Fs.exists(changelogPath)) {
+      const changelog = Fs.readText(changelogPath)
+      if (changelog is Err(message)) {
+        return fail([`cannot read ${changelogPath}: ${message}`])
+      }
+      existing = Some(changelog.value)
+    }
+    Arrays.push(mutable paths, manifestPath)
+    Arrays.push(mutable contents, updated.value)
+    Arrays.push(mutable paths, changelogPath)
+    Arrays.push(mutable contents, addSection(existing, release.member, renderSection(release)))
+    Arrays.push(mutable lines, describeRelease(release))
+  }
+  // Write every file next to its target first, so a file that cannot be written changes nothing
+  let temporaries: Array<string> = []
+  for (const #[position, path] of Arrays.entries(paths)) {
+    const temporary = `${path}.changesets-tmp`
+    Arrays.push(mutable temporaries, temporary)
+    const written = Fs.writeText(temporary, contents[position])
+    if (written is Err(message)) {
+      removeFiles(temporaries)
+      return fail([`cannot write ${path}: ${message}`])
+    }
+  }
+  // Move them into place, then delete the changesets last
+  for (const #[position, temporary] of Arrays.entries(temporaries)) {
+    const moved = Fs.rename(temporary, paths[position])
+    if (moved is Err(message)) {
+      removeFiles(temporaries)
+      return fail([`cannot replace ${paths[position]}: ${message}`])
+    }
+  }
+  for (const changeset of changesets.value) {
+    const removed = Fs.removeFile(changeset.file)
+    if (removed is Err(message)) {
+      return fail([`cannot remove ${changeset.file}: ${message}`])
+    }
+  }
+  return Outcome { exitCode: 0, lines }
+}
+
+/// Creates the `<name>/v<version>` tag of each member whose tag does not exist. It never pushes.
+export function createTags(root: string): Outcome uses io, alloc {
+  const members = loadWorkspace(root)
+  if (members is Err(message)) {
+    return fail([message])
+  }
+  const existing = listTags(root)
+  if (existing is Err(message)) {
+    return fail([message])
+  }
+  let lines: Array<string> = []
+  for (const member of members.value) {
+    const tag = `${member.name}/v${member.version}`
+    if (!Arrays.contains(existing.value, tag)) {
+      const created = createTag(root, tag)
+      if (created is Err(message)) {
+        Arrays.push(mutable lines, message)
+        return fail(lines)
+      }
+      Arrays.push(mutable lines, `created tag ${tag}`)
+    }
+  }
+  if (Arrays.length(lines) == 0) {
+    Arrays.push(mutable lines, "no tags to create")
+  }
+  return Outcome { exitCode: 0, lines }
+}

@@ -1,0 +1,106 @@
+// changesets/git: the few git calls the tool makes. Each one runs in the given folder.
+
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Process from "std/process"
+import * as Str from "std/string"
+
+/// Runs git and gives its output. A non-zero exit code is an error with the text git wrote.
+export function runGit(
+  folder: string,
+  arguments: Array<string>,
+): Result<string, string> uses io, alloc {
+  const result = Process.run("git", arguments, folder: Some(folder))
+  if (result is Err(message)) {
+    return Err(message)
+  }
+  const #[code, output, errorOutput] = result.value
+  if (code != 0) {
+    const reason = Str.trim(errorOutput)
+    if (reason == "") {
+      return Err(`git ${Str.join(arguments, " ")} exited with ${Int.toString(code)}`)
+    }
+    return Err(reason)
+  }
+  return Ok(output)
+}
+
+function splitLines(text: string): Array<string> uses alloc {
+  let lines: Array<string> = []
+  const split = Str.split(text, "\n")
+  if (split is Some(parts)) {
+    for (const part of parts) {
+      const line = Str.trim(part)
+      if (line != "") {
+        Arrays.push(mutable lines, line)
+      }
+    }
+  }
+  return lines
+}
+
+function splitNames(text: string): Array<string> uses alloc {
+  let names: Array<string> = []
+  const split = Str.split(text, "\0")
+  if (split is Some(parts)) {
+    for (const part of parts) {
+      if (part != "") {
+        Arrays.push(mutable names, part)
+      }
+    }
+  }
+  return names
+}
+
+/// The names of the tags that exist.
+export function listTags(folder: string): Result<Array<string>, string> uses io, alloc {
+  const output = runGit(folder, ["tag", "--list"])
+  if (output is Err(message)) {
+    return Err(message)
+  }
+  return Ok(splitLines(output.value))
+}
+
+/// Creates a tag at the current commit. It does not push.
+export function createTag(folder: string, tag: string): Result<bool, string> uses io, alloc {
+  const output = runGit(folder, ["-c", "tag.gpgSign=false", "tag", "--", tag])
+  if (output is Err(message)) {
+    return Err(message)
+  }
+  return Ok(true)
+}
+
+/// The files that differ from the point where the current commit left `ref`: committed changes,
+/// changes in the working folder and files git does not track yet. Paths are relative to the folder.
+export function listChangedFiles(
+  folder: string,
+  ref: string,
+): Result<Array<string>, string> uses io, alloc {
+  if (Str.startsWith(ref, "-")) {
+    return Err(`the ref ${ref} must not start with a dash`)
+  }
+  const base = runGit(folder, ["merge-base", ref, "HEAD"])
+  if (base is Err(message)) {
+    return Err(`cannot compare with ${ref}: ${message}`)
+  }
+  const changed = runGit(folder, [
+    "diff",
+    "--relative",
+    "--no-renames",
+    "--name-only",
+    "-z",
+    Str.trim(base.value),
+  ])
+  if (changed is Err(message)) {
+    return Err(message)
+  }
+  const untracked = runGit(folder, ["ls-files", "-z", "--others", "--exclude-standard"])
+  if (untracked is Err(message)) {
+    return Err(message)
+  }
+  let files = splitNames(changed.value)
+  for (const file of splitNames(untracked.value)) {
+    Arrays.push(mutable files, file)
+  }
+  return Ok(files)
+}

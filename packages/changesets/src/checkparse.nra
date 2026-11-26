@@ -1,0 +1,290 @@
+// Checks of the changeset parser, the manifest edit, the changelog text and the version rules.
+
+import * as Arrays from "std/array"
+import * as Options from "std/option"
+import * as Random from "std/random"
+import * as Str from "std/string"
+import { Report, expect, expectText } from "changesets/checkkit"
+import { Changeset, Entry, Level, Problem, parseChangeset } from "changesets/changeset"
+import { addSection, renderSection } from "changesets/changelog"
+import { Note, Release, planReleases } from "changesets/release"
+import { Member, replaceVersion } from "changesets/workspace"
+
+const MEMBERS = ["core", "app"]
+
+// The problem a text gives, or a placeholder when it parses.
+function findProblem(text: string): Problem uses alloc {
+  const parsed = parseChangeset("c.md", text, MEMBERS)
+  if (parsed is Err(problem)) {
+    return problem
+  }
+  return Problem { file: "", line: 0, message: "parsed" }
+}
+
+function checkValid(report: Report) uses io, alloc {
+  const parsed = parseChangeset(
+    "c.md",
+    "---\n\"core\": minor\n  \"app\" : patch\n---\n\nAdd a thing.\nMore.\n",
+    MEMBERS,
+  )
+  expect(report, "valid file parses", parsed is Ok(_))
+  if (parsed is Ok(changeset)) {
+    expect(report, "two entries", Arrays.length(changeset.entries) == 2)
+    expect(report, "first level", changeset.entries[0].level == Level.Minor)
+    expect(report, "second member", changeset.entries[1].member == "app")
+    expectText(report, "summary keeps its lines", changeset.summary, "Add a thing.\nMore.")
+  }
+}
+
+function checkProblems(report: Report) uses io, alloc {
+  const unknownMember = findProblem("---\n\"core\": patch\n\"nope\": patch\n---\n\nx\n")
+  expect(report, "unknown member line", unknownMember.line == 3)
+  expect(
+    report,
+    "unknown member message",
+    Str.contains(unknownMember.message, "unknown member nope"),
+  )
+  expectText(report, "problem file", unknownMember.file, "c.md")
+  const unknownLevel = findProblem("---\n\"core\": huge\n---\n\nx\n")
+  expect(report, "unknown level line", unknownLevel.line == 2)
+  expect(report, "unknown level message", Str.contains(unknownLevel.message, "unknown level huge"))
+  const noFrontmatter = findProblem("Just text.\n")
+  expect(report, "no frontmatter line", noFrontmatter.line == 1)
+  expect(report, "no frontmatter message", Str.contains(noFrontmatter.message, "---"))
+  const empty = findProblem("")
+  expect(report, "empty file", empty.line == 1)
+  const twice = findProblem("---\n\"core\": patch\n\n\"core\": minor\n---\n\nx\n")
+  expect(report, "named twice line", twice.line == 4)
+  expect(report, "named twice message", Str.contains(twice.message, "named twice"))
+  const unclosed = findProblem("---\n\"core\": patch\n")
+  expect(report, "unclosed frontmatter", Str.contains(unclosed.message, "closing"))
+  const noSummary = findProblem("---\n\"core\": patch\n---\n\n")
+  expect(report, "empty summary", Str.contains(noSummary.message, "summary"))
+  const noMember = findProblem("---\n---\n\nx\n")
+  expect(report, "no member", Str.contains(noMember.message, "no member"))
+  const badLine = findProblem("---\ncore: patch\n---\n\nx\n")
+  expect(report, "unquoted member", badLine.line == 2)
+  const unterminated = findProblem("---\n\"core: patch\n---\n\nx\n")
+  expect(report, "unterminated quote", unterminated.line == 2)
+}
+
+// A random number from 0 up to but not including the limit.
+function pickNumber(mutable random: Random.Random, limit: int): int {
+  return Options.withDefault(Random.nextInt(mutable random, 0, limit), 0)
+}
+
+// Random text and damaged valid files must give a result with a sensible line and never panic.
+function checkFuzz(report: Report) uses io, alloc {
+  const pieces = [
+    "---\n",
+    "---",
+    "\n",
+    "\"",
+    "\"core\"",
+    "\"app\"",
+    ":",
+    " ",
+    "patch",
+    "minor",
+    "major",
+    "x",
+    "\r\n",
+    "\"core\": minor\n",
+    "\"app\": patch\n",
+    "text",
+  ]
+  let random = Random.seeded(20261126)
+  let bad = 0
+  for (let i = 0; i < 3000; i += 1) {
+    let text = ""
+    const count = pickNumber(mutable random, 14)
+    for (let j = 0; j < count; j += 1) {
+      text += pieces[pickNumber(mutable random, Arrays.length(pieces))]
+    }
+    const parsed = parseChangeset("fuzz.md", text, MEMBERS)
+    if (parsed is Err(problem)) {
+      if (problem.line < 1) {
+        bad += 1
+      }
+    } else if (Arrays.length(parsed.value.entries) == 0 || parsed.value.summary == "") {
+      bad += 1
+    }
+  }
+  const valid = "---\n\"core\": minor\n\"app\": patch\n---\n\nAdd a thing.\n"
+  for (let i = 0; i < 2000; i += 1) {
+    const start = pickNumber(mutable random, Str.length(valid))
+    const length = pickNumber(mutable random, 6)
+    const head = Options.withDefault(Str.slice(valid, 0, start), "")
+    const tail = Options.withDefault(Str.slice(valid, start + length, Str.length(valid)), "")
+    const parsed = parseChangeset("fuzz.md", `${head}${tail}`, MEMBERS)
+    if (parsed is Err(problem)) {
+      if (problem.line < 1) {
+        bad += 1
+      }
+    }
+  }
+  expect(report, "fuzz results are consistent", bad == 0)
+}
+
+function checkReplaceVersion(report: Report) uses io, alloc {
+  const text = "# note\n[package]\nname = \"a\"\nversion = \"0.1.0\" # keep\n\n[dependencies]\nversion = \"7.7.7\"\n"
+  const replaced = replaceVersion(text, "0.2.0")
+  expect(report, "version replaced", replaced is Some(_))
+  if (replaced is Some(changed)) {
+    expectText(
+      report,
+      "only the version changes",
+      changed,
+      "# note\n[package]\nname = \"a\"\nversion = \"0.2.0\" # keep\n\n[dependencies]\nversion = \"7.7.7\"\n",
+    )
+  }
+  expectText(
+    report,
+    "single quotes",
+    Options.withDefault(replaceVersion("[package]\nversion = '0.1.0'\n", "0.2.0"), ""),
+    "[package]\nversion = '0.2.0'\n",
+  )
+  expectText(
+    report,
+    "quoted comment",
+    Options.withDefault(replaceVersion("[package]\nversion = '0.1.0' # \"old\"\n", "0.2.0"), ""),
+    "[package]\nversion = '0.2.0' # \"old\"\n",
+  )
+  expectText(
+    report,
+    "double quotes with a quoted comment",
+    Options.withDefault(replaceVersion("[package]\nversion=\"0.1.0\" # 'old'\r\n", "0.2.0"), ""),
+    "[package]\nversion=\"0.2.0\" # 'old'\r\n",
+  )
+  expect(report, "no version line", replaceVersion("[package]\nname = \"a\"\n", "1.0.0") is None)
+  expect(
+    report,
+    "version in another table",
+    replaceVersion("[other]\nversion = \"1.0.0\"\n", "2.0.0") is None,
+  )
+}
+
+function checkAddSection(report: Report) uses io, alloc {
+  expectText(
+    report,
+    "new changelog",
+    addSection(None, "core", "## 1.0.0\n"),
+    "# core\n\n## 1.0.0\n",
+  )
+  expectText(
+    report,
+    "after the title",
+    addSection(Some("# core\n\n## 0.1.0\n\n- old\n"), "core", "## 0.2.0\n\n- new\n"),
+    "# core\n\n## 0.2.0\n\n- new\n\n## 0.1.0\n\n- old\n",
+  )
+  const release = Release {
+    member: "core",
+    folder: "core",
+    oldVersion: "0.1.0",
+    newVersion: "0.2.0",
+    level: Level.Minor,
+    notes: [Note { level: Level.Minor, text: "First.\r\n\r\nThird.\r\nFourth." }],
+  }
+  expectText(
+    report,
+    "multi-line summary",
+    renderSection(release),
+    "## 0.2.0\n\n### Minor changes\n\n- First.\n\n  Third.\n  Fourth.\n",
+  )
+  expectText(
+    report,
+    "no title",
+    addSection(Some("## 0.1.0\n"), "core", "## 0.2.0\n"),
+    "## 0.2.0\n\n## 0.1.0\n",
+  )
+}
+
+function createMember(
+  name: string,
+  version: string,
+  dependencies: Array<string>,
+): Member from dependencies {
+  return Member { name, folder: name, version, dependencies }
+}
+
+function createChangeset(member: string, level: Level, summary: string): Changeset uses alloc {
+  return Changeset { file: "x.md", entries: [Entry { member, level }], summary }
+}
+
+function findRelease(releases: Array<Release>, member: string): Option<Release> from releases {
+  for (const release of releases) {
+    if (release.member == member) {
+      return Some(release)
+    }
+  }
+  return None
+}
+
+// Prints the version a member gets, or `none`.
+function describeVersion(releases: Array<Release>, member: string): string {
+  const release = findRelease(releases, member)
+  if (release is Some(found)) {
+    return found.newVersion
+  }
+  return "none"
+}
+
+function checkRules(report: Report) uses io, alloc {
+  const members = [
+    createMember("a", "0.3.1", []),
+    createMember("b", "0.1.0", ["a"]),
+    createMember("c", "1.0.0", ["b"]),
+    createMember("d", "2.4.5", []),
+  ]
+  const minor = planReleases(members, [createChangeset("a", Level.Minor, "x")])
+  expect(report, "minor plans", minor is Ok(_))
+  if (minor is Ok(releases)) {
+    expectText(report, "0.x minor", describeVersion(releases, "a"), "0.4.0")
+    expectText(report, "dependent patch", describeVersion(releases, "b"), "0.1.1")
+    expectText(report, "chain patch", describeVersion(releases, "c"), "1.0.1")
+    expectText(report, "unrelated member", describeVersion(releases, "d"), "none")
+  }
+  const patch = planReleases(members, [createChangeset("a", Level.Patch, "x")])
+  if (patch is Ok(releases)) {
+    expectText(report, "0.x patch", describeVersion(releases, "a"), "0.3.2")
+  }
+  const major = planReleases(members, [
+    createChangeset("a", Level.Major, "x"),
+    createChangeset("d", Level.Major, "y"),
+  ])
+  if (major is Ok(releases)) {
+    expectText(report, "0.x major", describeVersion(releases, "a"), "1.0.0")
+    expectText(report, "1.x major", describeVersion(releases, "d"), "3.0.0")
+  }
+  const highest = planReleases(members, [
+    createChangeset("a", Level.Patch, "x"),
+    createChangeset("a", Level.Minor, "y"),
+  ])
+  if (highest is Ok(releases)) {
+    expectText(report, "highest level wins", describeVersion(releases, "a"), "0.4.0")
+  }
+  const own = planReleases(members, [
+    createChangeset("a", Level.Patch, "x"),
+    createChangeset("b", Level.Minor, "y"),
+  ])
+  if (own is Ok(releases)) {
+    expectText(
+      report,
+      "own level beats the dependency bump",
+      describeVersion(releases, "b"),
+      "0.2.0",
+    )
+    expectText(report, "chain follows", describeVersion(releases, "c"), "1.0.1")
+  }
+  const bad = planReleases([createMember("e", "1.0", [])], [createChangeset("e", Level.Patch, "x")])
+  expect(report, "bad version is an error", bad is Err(_))
+}
+
+export function runParseChecks(report: Report) uses io, alloc {
+  checkValid(report)
+  checkProblems(report)
+  checkFuzz(report)
+  checkReplaceVersion(report)
+  checkAddSection(report)
+  checkRules(report)
+}

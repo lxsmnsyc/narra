@@ -1,0 +1,70 @@
+// The command line of the tool. Run it from the workspace root.
+
+import * as Args from "std/args"
+import * as Options from "std/option"
+import * as Random from "std/random"
+import { ArgsError, Command, Flag, Parsed, Rest } from "std/args"
+import { Outcome, addChangeset, applyVersion, createTags, showStatus } from "changesets/commands"
+
+export function describeCommands(): Command uses alloc {
+  return Command {
+    name: "changesets",
+    summary: "Versions, changelogs and tags for the members of a workspace.",
+    commands: [
+      Command {
+        name: "add",
+        summary: "Write a changeset file: add <member>:<level> ... -m <summary>",
+        flags: [Flag { name: "message", short: "m", value: "summary", help: "what changed" }],
+        rest: Rest.Positionals,
+      },
+      Command {
+        name: "status",
+        summary: "List the pending releases; fail when a changed member has no changeset.",
+        flags: [
+          Flag { name: "since", value: "ref", help: "the git ref to compare with (default main)" },
+        ],
+      },
+      Command { name: "version", summary: "Apply the pending changesets." },
+      Command { name: "tag", summary: "Create the git tags that do not exist yet." },
+    ],
+  }
+}
+
+function finish(outcome: Outcome): int uses io {
+  for (const line of outcome.lines) {
+    print(line)
+  }
+  return outcome.exitCode
+}
+
+function runParsed(parsed: Parsed): int uses io, alloc {
+  const path = Args.commandPath(parsed)
+  const command = path[1]
+  if (command == "add") {
+    let random = Random.fromSystem()
+    const summary = Options.withDefault(Args.value(parsed, "message"), "")
+    return finish(addChangeset(".", Args.rest(parsed), summary, mutable random))
+  }
+  if (command == "status") {
+    return finish(showStatus(".", Options.withDefault(Args.value(parsed, "since"), "main")))
+  }
+  if (command == "version") {
+    return finish(applyVersion("."))
+  }
+  return finish(createTags("."))
+}
+
+export function run(args: Array<string>): int uses io, alloc {
+  const description = describeCommands()
+  const parsed = Args.parse(description, args)
+  if (parsed is Err(error)) {
+    if (error is ArgsError.Help(path)) {
+      print(Args.help(description, path))
+      return 0
+    }
+    print(Args.formatError(error))
+    print(Args.help(description, []))
+    return 2
+  }
+  return runParsed(parsed.value)
+}

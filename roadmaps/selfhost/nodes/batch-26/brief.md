@@ -1,7 +1,7 @@
 ---
 id: batch-26
 title: "Batch 26: yaml, changesets, package C sources"
-status: active
+status: done
 priority: could
 type: story
 story:
@@ -18,7 +18,7 @@ spike: false
 hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
-fulfilled_by:
+fulfilled_by: PR #158
 gate: false
 added: 2026-11-26
 spent:
@@ -48,5 +48,5 @@ The branch `feat/batch-26` starts from `feat/batch-25` (PR #157, not merged yet)
 
 ## Acceptance
 
-- [ ] Every child is done.
-- [ ] `sh scripts/test.sh` passes on the branch; `sh selfhost/bootstrap.sh` reaches the fixed point.
+- [x] Every child is done.
+- [x] `sh scripts/test.sh` passes on the branch; `sh selfhost/bootstrap.sh` reaches the fixed point.

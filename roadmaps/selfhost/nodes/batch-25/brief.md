@@ -1,7 +1,7 @@
 ---
 id: batch-25
 title: "Batch 25: the http package"
-status: active
+status: done
 priority: could
 type: story
 story:
@@ -18,7 +18,7 @@ spike: false
 hypothesis:
 verify: sh scripts/test.sh
 exclusive: []
-fulfilled_by:
+fulfilled_by: PR #157
 gate: false
 added: 2026-11-26
 spent:
@@ -51,5 +51,5 @@ pkg-http-pool and pkg-http-compress are outlines outside the batch.
 
 ## Acceptance
 
-- [ ] Every child is done.
-- [ ] `sh scripts/test.sh` passes on the branch; `sh selfhost/bootstrap.sh` reaches the fixed point.
+- [x] Every child is done.
+- [x] `sh scripts/test.sh` passes on the branch; `sh selfhost/bootstrap.sh` reaches the fixed point.

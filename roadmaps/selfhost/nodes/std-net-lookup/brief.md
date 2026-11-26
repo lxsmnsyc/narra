@@ -1,7 +1,7 @@
 ---
 id: std-net-lookup
 title: "std/net: host name lookup, and the http client connects by name"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-25
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 284000
 owns:
   - roadmaps/selfhost/nodes/std-net-lookup/**
   - testdata/net-lookup*

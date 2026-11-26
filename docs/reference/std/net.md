@@ -40,7 +40,7 @@ Functions: [`accept`](#accept), [`connect`](#connect), [`read`](#read), [`chunks
 export function listen(host: string, port: int): Result<Listener, AsyncError> uses io, alloc
 ```
 
-A socket that accepts connections on host and port. host is a numeric IPv4 or IPv6 address, with no name lookup. Port 0 picks a free port, which localPort gives.
+A socket that accepts connections on host and port. host is a numeric IPv4 or IPv6 address, not a name. Port 0 picks a free port, which localPort gives.
 
 Effects: `io`, `alloc`.
 
@@ -64,13 +64,23 @@ The next connection to the listener, waiting until one comes. A cancel ends the 
 
 Effects: `io`, `alloc`.
 
+### lookup
+
+```narra fragment
+export async function lookup(host: string): Result<Array<string>, AsyncError> uses io, alloc
+```
+
+The addresses of host, as numeric IPv6 and IPv4 text in the order of the system resolver (getaddrinfo, so /etc/hosts and the system DNS settings apply). A numeric host is returned as it is, with no lookup. The lookup runs on a helper thread, so other tasks keep running, and a cancel ends the wait at once with Err(AsyncError.Cancelled). A name with no address gives Err(AsyncError.Failed(...)); so does any name on a platform with no resolver (WASI, Windows).
+
+Effects: `io`, `alloc`.
+
 ### connect
 
 ```narra fragment
 export async function connect(host: string, port: int): Result<Connection, AsyncError> uses io, alloc
 ```
 
-A connection to host and port, once the peer accepts it. host is a numeric IPv4 or IPv6 address, with no name lookup.
+A connection to host and port, once the peer accepts it. host is a numeric IPv4 or IPv6 address or a host name. A name is looked up first (see lookup), and each address is tried in turn until one accepts; the error of the last attempt is the result when none does.
 
 Effects: `io`, `alloc`.
 

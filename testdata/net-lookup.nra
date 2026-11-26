@@ -1,0 +1,94 @@
+// std/net host name lookup: a numeric host is returned as it is, localhost
+// gives loopback addresses, a name that does not exist fails, and connect
+// takes a name and reaches a local listener (trying each address in turn,
+// since localhost may list ::1 before 127.0.0.1).
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Net from "std/net"
+import { AsyncError } from "std/async"
+
+function describeLookup(result: Result<Array<string>, AsyncError>): string {
+  if (result is Ok(_)) {
+    return "ok"
+  }
+  if (result is Err(AsyncError.Cancelled)) {
+    return "cancelled"
+  }
+  return "failed"
+}
+
+function isLoopback(address: string): bool {
+  return address == "127.0.0.1" || address == "::1"
+}
+
+async function checkLookups(): bool uses io, alloc {
+  const numeric = await Net.lookup("10.1.2.3")
+  if (numeric is Ok(addresses)) {
+    print(`numeric: ${addresses[0]}`)
+  }
+  const numericSix = await Net.lookup("::1")
+  if (numericSix is Ok(addresses)) {
+    print(`numeric six: ${addresses[0]}`)
+  }
+  const local = await Net.lookup("localhost")
+  if (local is Err(_)) {
+    print("localhost failed")
+    return false
+  }
+  let allLoopback = Arrays.length(local.value) > 0
+  for (const address of Arrays.values(local.value)) {
+    if (!isLoopback(address)) {
+      allLoopback = false
+    }
+  }
+  if (allLoopback) {
+    print("localhost is loopback")
+  }
+  const missing = await Net.lookup("nonexistent.invalid")
+  print(`missing: ${describeLookup(missing)}`)
+  const empty = await Net.lookup("")
+  print(`empty: ${describeLookup(empty)}`)
+  return true
+}
+
+async function checkConnect(): bool uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return false
+  }
+  const port = Net.localPort(listener.value)
+  const connecting = Net.connect("localhost", port)
+  const accepted = await Net.accept(listener.value)
+  const client = await connecting
+  if (accepted is Err(_)) {
+    print("accept failed")
+    return false
+  }
+  if (client is Err(_)) {
+    print("connect by name failed")
+    return false
+  }
+  const sent = await Net.write(client.value, Bytes.fromString("by name"))
+  const received = await Net.read(accepted.value, 16)
+  if (received is Ok(data)) {
+    const text = Bytes.toString(data)
+    if (text is Ok(decoded)) {
+      print(decoded)
+    }
+  }
+  const refused = await Net.connect("nonexistent.invalid", port)
+  if (refused is Err(AsyncError.Failed(_))) {
+    print("connect to a missing name failed")
+  }
+  return sent is Ok(_)
+}
+
+export async function run(_args: Array<string>): int {
+  if (!(await checkLookups())) {
+    return 1
+  }
+  if (!(await checkConnect())) {
+    return 1
+  }
+  return 0
+}

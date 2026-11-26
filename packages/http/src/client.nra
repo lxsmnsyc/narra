@@ -1,6 +1,5 @@
 // http/client: an HTTP/1.1 client over std/net.
 
-import * as Arrays from "std/array"
 import * as Bodies from "http/body"
 import * as Bytes from "std/bytes"
 import * as Cells from "std/cell"
@@ -54,7 +53,7 @@ export async function get(url: string): Result<Response, HttpError> uses io, all
 /// Sends the request on a new connection and gives the response once its head has arrived. The
 /// body of the response is a stream that reads the connection, so the connection stays open
 /// until the body is read to its end or dropped. The url of the request must be absolute, with
-/// the scheme http and a numeric host.
+/// the scheme http. The host is a name or an address, and a name is looked up with std/net.
 export async function send(
   request: Request,
   options: ClientOptions,
@@ -130,37 +129,15 @@ function redirectTarget(
   return Some(Request { method, url: target.value, headers, body })
 }
 
-function findNumericHost(host: string): Option<string> uses alloc {
-  // An IPv6 address in brackets, or an IPv4 address of four decimal parts.
+function findConnectHost(host: string): string uses alloc {
+  // An IPv6 address comes in brackets in a url; the socket takes it without them.
   if (Str.startsWith(host, "[") && Str.endsWith(host, "]") && Str.length(host) > 2) {
-    return Str.slice(host, 1, Str.length(host) - 1)
-  }
-  const parts = Str.split(host, ".")
-  if (parts is None) {
-    return None
-  }
-  if (Arrays.length(parts.value) != 4) {
-    return None
-  }
-  for (const part of Arrays.values(parts.value)) {
-    if (!isDecimal(part)) {
-      return None
+    const inner = Str.slice(host, 1, Str.length(host) - 1)
+    if (inner is Some(address)) {
+      return address
     }
   }
-  return Some(host)
-}
-
-function isDecimal(text: string): bool {
-  if (Str.length(text) == 0 || Str.length(text) > 3) {
-    return false
-  }
-  for (const index of Ranges.between(0, Str.length(text))) {
-    const byte = Str.byteAt(text, index)
-    if (byte < 48 || byte > 57) {
-      return false
-    }
-  }
-  return true
+  return host
 }
 
 function buildTarget(url: Url): string uses alloc {
@@ -194,10 +171,7 @@ async function sendOnce(
     return Err(HttpError.Malformed("the url needs a scheme and a host"))
   }
   const host = hostText.value
-  const address = findNumericHost(host)
-  if (address is None) {
-    return Err(HttpError.Malformed(`the host ${host} is not a numeric address`))
-  }
+  const address = findConnectHost(host)
   let port = 80
   if (request.url.port is Some(portText)) {
     if (Str.length(portText) > 0) {
@@ -235,7 +209,7 @@ async function sendOnce(
     return Err(HttpError.Malformed(`cannot send the ${bad}`))
   }
   const limit = options.timeout
-  const connected = await Wire.connect(address.value, port, limit)
+  const connected = await Wire.connect(address, port, limit)
   if (connected is Err(error)) {
     return Err(error)
   }

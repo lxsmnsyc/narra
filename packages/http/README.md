@@ -235,7 +235,6 @@ async function handleUpload(request: Request): Response uses io, alloc {
 ## Limits
 
 - **No TLS.** A url with the scheme `https` gives `Malformed`. TLS needs a package that compiles C code, which is not available yet.
-- **Numeric hosts only.** `std/net` does no name lookup, so the client needs an IPv4 address such as `127.0.0.1`, or an IPv6 address in brackets. A name such as `localhost` gives `Malformed`.
 - **Text heads.** The request or status line and the headers must be valid UTF-8. A head that is not gets 400 on a server and `Malformed` on a client.
 - **No compression, no trailers.** `Transfer-Encoding: gzip` and the like get 501. Trailers after a chunked body are read and dropped. `Content-Encoding` is left to the caller.
 - **No HTTP/2.** The server answers the requests of one connection one at a time, in order, even when the client sends several at once.

@@ -1,0 +1,52 @@
+// A cancel ends a lookup at once: the helper thread is left to finish and free
+// its result, and the task gets Err(AsyncError.Cancelled). The loop keeps
+// serving other tasks, and a lookup started after a cancel works.
+import * as Async from "std/async"
+import * as Net from "std/net"
+import * as Time from "std/time"
+import { AsyncError } from "std/async"
+
+async function lookupName(name: string): string uses io, alloc {
+  print(`lookup ${name} starts`)
+  const result = await Net.lookup(name)
+  if (result is Err(AsyncError.Cancelled)) {
+    return "cancelled"
+  }
+  if (result is Ok(_)) {
+    return "found"
+  }
+  return "failed"
+}
+
+async function connectName(name: string): string uses io, alloc {
+  const result = await Net.connect(name, 80)
+  if (result is Err(AsyncError.Cancelled)) {
+    return "connect cancelled"
+  }
+  return "connect ended"
+}
+
+export async function run(_args: Array<string>): int {
+  // Cancelled while the lookup waits for its thread.
+  const waiting = lookupName("localhost")
+  Async.cancel(waiting)
+  print(await waiting)
+  // Cancelled in a connect that looks up first.
+  const connecting = connectName("localhost")
+  Async.cancel(connecting)
+  print(await connecting)
+  // A cancel after a few turns, with a task that runs meanwhile.
+  const slow = lookupName("nonexistent.invalid")
+  const slept = await Time.sleep(Time.milliseconds(0))
+  if (slept is Err(_)) {
+    return 1
+  }
+  Async.cancel(slow)
+  print(await slow)
+  // The next lookup is not affected.
+  const next = await Net.lookup("localhost")
+  if (next is Ok(_)) {
+    print("next lookup found")
+  }
+  return 0
+}

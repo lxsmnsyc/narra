@@ -213,6 +213,31 @@ function checkResponseHelpers(report: Report) uses io, alloc {
       Responses.redirect(url, 302) is Err(HttpError.Malformed(_)),
     )
   }
+  const binary = Responses.binary(200, Bytes.fromString("ab"))
+  expectText(
+    report,
+    "response: binary has its Content-Type",
+    Options.withDefault(Fields.get(binary.headers, "Content-Type"), "none"),
+    "application/octet-stream",
+  )
+  const streamed = Responses.stream(206, generateChunks(Bytes.fromString("one two"), 2))
+  expect(report, "response: stream has its status", streamed.status == 206)
+  expect(report, "response: stream keeps the stream", streamed.body.stream is Some(_))
+  const sent = Requests.createWithBody(
+    Method.Post,
+    "http://127.0.0.1/upload",
+    Bodies.fromStream(generateChunks(Bytes.fromString("up"), 1)),
+  )
+  if (sent is Ok(request)) {
+    expect(report, "request: createWithBody keeps the body", request.body.stream is Some(_))
+  } else {
+    expect(report, "request: createWithBody parses the url", false)
+  }
+  expect(
+    report,
+    "request: createWithBody refuses a bad url",
+    Requests.createWithBody(Method.Post, "http://[::1", Bodies.empty()) is Err(_),
+  )
   expect(report, "response: 199 is not ok", !Responses.isOk(Responses.create(199)))
   expect(report, "response: 200 is ok", Responses.isOk(Responses.create(200)))
   expect(report, "response: 299 is ok", Responses.isOk(Responses.create(299)))

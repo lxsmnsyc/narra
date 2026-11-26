@@ -43,7 +43,8 @@ The branch `feat/batch-26` starts from `feat/batch-25` (PR #157, not merged yet)
 - pkg-yaml: first.
 - fix-async-arrow-capture: beside pkg-yaml (no shared files), a compiler fix found by the websocket work.
 - pkg-changesets: after pkg-yaml.
-- package-c-sources: after pkg-changesets.
+- package-c-sources: after pkg-changesets. Design approved 2026-11-26: `extern {} from "./file.c"`, a `[c]` table.
+- c-packages: after package-c-sources. C libraries as packages that fetch upstream source by git and tag (maintainer, 2026-11-26).
 
 ## Acceptance
 

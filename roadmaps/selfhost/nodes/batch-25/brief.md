@@ -41,6 +41,7 @@ The branch `feat/batch-25` starts from `main` at 24a59973. Worktree `../narra-ba
 ## Children
 
 - pkg-http.
+- pkg-http-forms: after pkg-http (maintainer, 2026-11-26).
 
 ## Acceptance
 

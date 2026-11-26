@@ -1,7 +1,7 @@
 ---
 id: fix-async-arrow-capture
 title: "fix: async codegen bugs found by the websocket package"
-status: active
+status: done
 priority: should
 type: fix
 story: batch-26
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 140000
 owns:
   - roadmaps/selfhost/nodes/fix-async-arrow-capture/**
   - testdata/async-arrow-struct*

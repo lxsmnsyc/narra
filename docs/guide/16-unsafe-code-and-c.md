@@ -501,9 +501,46 @@ defines = ["USE_LINUX"]
 - `defines` lists `NAME` or `NAME=value` entries that become `-D` flags.
 - A table named `[c.os.Linux]` adds to `[c]` only when building for that system. The names are `MacOS`, `Linux`, `Windows` and `Wasi`, the same as the `Os` values of `std/build`.
 
-The include folders and defines of a package apply to that package's C files only, never to the files of a package that depends on it or that it depends on. The same holds for every package in the program: each compiles its own files with its own settings.
+The defines of a package apply to that package's C files only, never to the files of a package that depends on it or that it depends on. Each package compiles its own files with its own defines. The include folders of a package also go to the C files of the packages that list it in `[dependencies]`; the section on C packages below shows why.
 
 Compiled files are kept in the build cache, in the `objects` folder of the cache described in [chapter 8](08-modules-and-packages.md). A rebuild with no change compiles nothing. When a header changes, only the files that include it compile again. Adding a file to an include folder compiles the files of that package again, because the new file may hide a header that was found later in the list. To see which files a build compiles, set `NARRA_C_LOG=1`: each compile prints a line `compiled package/file`.
+
+#### C libraries as packages
+
+A C library such as zlib or SQLite should not be copied into every package that uses it. A C package is a small Narra package whose `narra.toml` points at the upstream source by git URL and tag, and says which files to build:
+
+```toml
+[package]
+name = "c_zlib"
+version = "1.3.1"
+
+[c]
+git = "https://github.com/madler/zlib"
+tag = "v1.3.1"
+sources = ["*.c", "!example.c", "!minigzip.c"]
+include = ["."]
+```
+
+With `git` and `tag`, the paths in `[c]` are relative to the upstream checkout instead of the package folder. The package itself holds the manifest and one `.nra` module, so it loads like any other package; its version follows the upstream release. `[c]` takes `git` and `tag` together, and not inside `[c.os.<name>]`. Only a package that is fetched as a dependency can use them: the package you are building, and the members of a workspace, cannot.
+
+A package that uses the library lists the C package in `[dependencies]` and binds the functions with `from "<package>/<path>"`, where the path names a file of the upstream checkout:
+
+```toml
+[dependencies]
+c_zlib = { git = "https://github.com/example/narra-c-zlib", version = "1.3.1" }
+```
+
+```narra fragment
+extern {
+  function zlibVersion(): Ptr<u8>
+} from "c_zlib/zlib.h"
+```
+
+The build fetches the tag of the upstream into the dependency cache the same way it fetches any dependency, compiles the files `sources` lists, and links them once. The path in `from` must exist in the checkout, so a typo is an error when the package loads. A path ending in `.c` that `sources` does not list is compiled too. The package that writes `from "c_zlib/..."` must list `c_zlib` in its own `[dependencies]`; a package that is in the build only because another package needs it cannot be named.
+
+Two things cross from the C package to the packages that depend on it. The include folders do, so a C file of your own can `#include <zlib.h>`. The defines do not: `[c] defines` is for building the library, and a package that depends on it compiles with its own defines only. Version selection works as for every package, so two packages that need different versions of the C package build the highest one, and the program has one copy of the C files.
+
+`narra.lock` records the upstream next to the package: its `c_git`, `c_tag`, `c_commit` and `c_content` (the tree hash). A build fetches the tag only when the cache has no checkout of it, and checks the checkout against the lock. When the upstream moves a tag to another commit, the next fetch finds a different tree and the build stops with an error that names the package.
 
 ### A library for one system
 

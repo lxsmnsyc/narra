@@ -39,7 +39,15 @@ export struct CTable {
   sources: Array<string>
   include: Array<string>
   defines: Array<string>
+  git: string // [c] only: the upstream repository the paths are relative to; "" for the package folder
+  tag: string // [c] only: the tag of the upstream repository
   line: int // narra.toml line of the table header, for diagnostics
+}
+
+// The upstream repository and tag of a C package, both empty when its C files are in the package.
+export struct Upstream {
+  git: string
+  tag: string
 }
 
 export struct Manifest {
@@ -294,11 +302,23 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       return Err(createError(lineNumber, "E0413", `${key} must be an array of strings`))
     }
     if (table == "c" || Str.startsWith(table, "c.os.")) {
+      const last = Arrays.length(cTables) - 1
+      if (key == "git" || key == "tag") {
+        const upstream = readUpstreamKey(table, key, value, lineNumber)
+        if (upstream is Err(error)) {
+          return Err(error)
+        }
+        if (key == "git") {
+          cTables[last].git = upstream.value
+        } else {
+          cTables[last].tag = upstream.value
+        }
+        continue
+      }
       const items = readCList(table, key, value, lineNumber)
       if (items is Err(error)) {
         return Err(error)
       }
-      const last = Arrays.length(cTables) - 1
       if (key == "sources") {
         cTables[last].sources = items.value
       } else if (key == "include") {
@@ -348,6 +368,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   if (checkedExports is Err(error)) {
     return Err(error)
   }
+  const checkedUpstreams = checkUpstreams(cTables)
+  if (checkedUpstreams is Err(error)) {
+    return Err(error)
+  }
   return Ok(Manifest {
     name,
     version,
@@ -382,7 +406,45 @@ function createCTable(table: string, line: int): Result<CTable, LoadError> uses 
       )
     }
   }
-  return Ok(CTable { os, sources: [], include: [], defines: [], line })
+  return Ok(CTable { os, sources: [], include: [], defines: [], git: "", tag: "", line })
+}
+
+function readUpstreamKey(
+  table: string,
+  key: string,
+  value: Value,
+  line: int,
+): Result<string, LoadError> uses alloc {
+  if (table != "c") {
+    return Err(
+      createError(line, "E1000", `[${table}] has no key ${key}; only [c] names an upstream`),
+    )
+  }
+  if (value is Value.VStr(text)) {
+    if (text != "") {
+      return Ok(text)
+    }
+  }
+  return Err(createError(line, "E0412", `${key} must be a non-empty string`))
+}
+
+function checkUpstreams(tables: Array<CTable>): Result<bool, LoadError> uses alloc {
+  // `git` and `tag` come as a pair.
+  for (const table of Arrays.values(tables)) {
+    if ((table.git == "") != (table.tag == "")) {
+      return Err(createError(table.line, "E1000", "[c] needs both git and tag, or neither of them"))
+    }
+  }
+  return Ok(true)
+}
+
+export function findUpstream(tables: Array<CTable>): Upstream uses alloc {
+  for (const table of Arrays.values(tables)) {
+    if (table.git != "") {
+      return Upstream { git: table.git, tag: table.tag }
+    }
+  }
+  return Upstream { git: "", tag: "" }
 }
 
 function readCList(

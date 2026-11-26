@@ -12,8 +12,14 @@ import { parse } from "narrac/syntax/parser"
 import { hashModule } from "narrac/driver/hash"
 import { findUndeclaredImports, prepareDependencies } from "narrac/driver/depload"
 import { ExportTable, checkExportFiles, rewriteImports } from "narrac/driver/exports"
-import { Binary, LoadError, parseManifest } from "narrac/driver/manifest"
-import { PackageC, checkExternFiles, checkSources, findSourceFolder } from "narrac/driver/csources"
+import { Binary, CTable, LoadError, findUpstream, parseManifest } from "narrac/driver/manifest"
+import {
+  PackageC,
+  checkExternFiles,
+  checkPackageFiles,
+  checkSources,
+  findSourceFolder,
+} from "narrac/driver/csources"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { stdSourceFor } from "narrac/std/stdtext"
@@ -210,7 +216,10 @@ function loadFile(
   const module = newModule(stem, base, path, source.ast, source.firstId, source.endId)
   // The loaded std modules stay in `load`, so the push below does not copy the array.
   const fileC = PackageC { name: stem, directory: dirName(path), tables: [] }
-  const fileErrors = checkExternFiles(fileC, base, source.ast, "")
+  let fileErrors = checkExternFiles(fileC, base, source.ast, "")
+  for (const problem of Arrays.values(checkPackageFiles([fileC], stem, base, source.ast))) {
+    Arrays.push(mutable fileErrors, problem)
+  }
   if (Arrays.length(fileErrors) > 0) {
     return Err(fileErrors)
   }
@@ -227,6 +236,26 @@ function loadFile(
     single: true,
     dependencyNames: [],
   })
+}
+
+function createUpstreamError(
+  name: string,
+  file: string,
+  tables: Array<CTable>,
+): LoadError uses alloc {
+  let line = 1
+  for (const table of Arrays.values(tables)) {
+    if (table.git != "") {
+      line = table.line
+    }
+  }
+  return LoadError {
+    code: "E1665",
+    file,
+    line,
+    column: 1,
+    message: `package ${name} names an upstream in [c], but only a package fetched as a dependency can`,
+  }
 }
 
 function loadPackage(
@@ -294,10 +323,18 @@ function loadPackage(
   )) {
     Arrays.push(mutable errors, problem)
   }
-  const ownC = PackageC { name: config.name, directory, tables: config.cTables }
+  const ownC = PackageC {
+    name: config.name,
+    directory,
+    tables: config.cTables,
+    declared: declaredNames,
+  }
   let cPackages: Array<PackageC> = [copy(ownC)]
   for (const problem of Arrays.values(checkSources(ownC, "narra.toml"))) {
     Arrays.push(mutable errors, problem)
+  }
+  if (findUpstream(config.cTables).git != "") {
+    Arrays.push(mutable errors, createUpstreamError(config.name, "narra.toml", config.cTables))
   }
   for (const module of Arrays.values(own.value)) {
     for (const problem of Arrays.values(
@@ -349,8 +386,16 @@ function loadPackage(
       name: dependency.name,
       directory: dependency.directory,
       tables: dependency.cTables,
+      upstream: dependency.upstream,
+      declared: dependency.declared,
     }
     Arrays.push(mutable cPackages, copy(dependencyC))
+    if (dependency.upstream == "" && findUpstream(dependency.cTables).git != "") {
+      Arrays.push(
+        mutable errors,
+        createUpstreamError(dependency.name, manifestFile, dependency.cTables),
+      )
+    }
     for (const problem of Arrays.values(checkSources(dependencyC, manifestFile))) {
       Arrays.push(mutable errors, problem)
     }
@@ -375,6 +420,21 @@ function loadPackage(
         Arrays.push(mutable errors, problem)
       }
       Arrays.push(mutable modules, exposed.module)
+    }
+  }
+  // The files of C packages that the extern blocks bind, now that every C package is known.
+  for (const module of Arrays.values(modules)) {
+    const slash = Str.indexOf(module.path, "/")
+    if (slash is Some(position)) {
+      const bound = checkPackageFiles(
+        cPackages,
+        substring(module.path, 0, position),
+        module.file,
+        module.ast,
+      )
+      for (const problem of Arrays.values(bound)) {
+        Arrays.push(mutable errors, problem)
+      }
     }
   }
   if (Arrays.length(errors) > 0) {

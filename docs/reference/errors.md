@@ -4866,7 +4866,7 @@ Fix: build without `-sanitize`, or build on the target itself.
 the C file %s of package %s does not exist
 ```
 
-A C file named by `from "./file.c"` or listed in `[c] sources` is not in the package folder.
+A C file named by `from "./file.c"` or listed in `[c] sources` is not in the package folder, or a file named by `from "<package>/<path>"` is not in the C package.
 
 Fix: create the file, or correct the path.
 
@@ -4876,7 +4876,7 @@ Fix: create the file, or correct the path.
 the path %s of package %s leaves the package folder; a C path stays inside it
 ```
 
-A C path of a package (`from "./file.c"`, or `sources` and `include` in `[c]`) points outside the package folder, through `..` or an absolute path.
+A C path of a package (`from "./file.c"`, `from "<package>/<path>"`, or `sources` and `include` in `[c]`) points outside the package folder, or outside the upstream checkout of a C package, through `..` or an absolute path.
 
 Fix: keep the C files and folders inside the package.
 
@@ -4889,3 +4889,33 @@ the C file %s of package %s does not compile: %s
 The C compiler rejected a C file of a package. The message shows the first error line of the compiler.
 
 Fix: correct the C file, then build again.
+
+#### E1663
+
+```text
+package %s binds %s, but its narra.toml has no [dependencies] entry for %s
+```
+
+A `from "<package>/<path>"` names a file of a C package, but the package that writes it does not list that package in `[dependencies]`.
+
+Fix: add the C package to `[dependencies]` of the package with the extern block.
+
+#### E1664
+
+```text
+package %s has no [c] table, so %s names no C file of it
+```
+
+A `from "<package>/<path>"` names a package that has no `[c]` table, so it has no C files to bind.
+
+Fix: name a C package, a package whose `narra.toml` has a `[c]` table.
+
+#### E1665
+
+```text
+package %s names an upstream in [c], but only a package fetched as a dependency can
+```
+
+`git` and `tag` in `[c]` fetch the C files from an upstream repository. Only a package fetched as a dependency can have them: the package being built, and the members of a workspace, are not fetched.
+
+Fix: remove `git` and `tag`, or build the package as a dependency of another one.

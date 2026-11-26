@@ -13,8 +13,9 @@ import { Context, TestCase } from "testrunner/context"
 import * as Files from "testrunner/files"
 import * as Fixtures from "testrunner/gitfixtures"
 import * as Shell from "testrunner/shell"
+import { CommandResult } from "testrunner/shell"
 import { SUBSTITUTE_SCRIPT, buildRepositories } from "testrunner/depsresolve"
-import { Scratch, makeScratch, removeScratch, writeFile } from "testrunner/scratch"
+import { Scratch, makeScratch, writeFile } from "testrunner/scratch"
 import { splitString } from "testrunner/textops"
 
 export function collectCases(context: Context): Array<TestCase> uses io, alloc {
@@ -58,6 +59,18 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       Arrays.push(mutable cases, TestCase {
         suite: "packages",
         name: `c-sources/${Path.basename(path)}`,
+        path: path,
+        variant: "commands",
+      })
+    }
+  }
+  // The C packages: commands cases whose `repos/` folder holds the git repositories to build.
+  const cPackagesFolder = Path.join(Path.join(context.testdata, "packages"), "c-packages")
+  for (const path of Arrays.values(Files.listPaths(cPackagesFolder, ""))) {
+    if (Fs.isDir(path)) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "packages",
+        name: `c-packages/${Path.basename(path)}`,
         path: path,
         variant: "commands",
       })
@@ -293,6 +306,61 @@ function checkStepOutput(
   return Ok(true)
 }
 
+function findRepositoriesFolder(rootFolder: string): string uses alloc {
+  // The scratch folder of a case holds `case/root`, `case/repos` (the sources) and `repos` (the
+  // repositories built from them).
+  return Path.join(Path.dirname(Path.dirname(rootFolder)), "repos")
+}
+
+function retagRepository(
+  rootFolder: string,
+  arguments: Array<string>,
+): Result<bool, string> uses io, alloc {
+  // `retag :: REPOSITORY FOLDER TAG` commits the files of `case/repos/REPOSITORY/FOLDER` and moves
+  // the tag to that commit, as a maintainer who rewrites a release would.
+  const repository = Path.join(findRepositoriesFolder(rootFolder), arguments[0])
+  const source = Path.join(
+    Path.join(Path.join(Path.dirname(rootFolder), "repos"), arguments[0]),
+    arguments[1],
+  )
+  const committed = Fixtures.commitFolder(repository, source, arguments[1])
+  if (committed is Err(message)) {
+    return Err(message)
+  }
+  return Fixtures.moveTag(repository, arguments[2])
+}
+
+function checkLockedRevisions(
+  rootFolder: string,
+  lockPath: string,
+  arguments: Array<string>,
+): Result<bool, string> uses io, alloc {
+  // `locked :: LOCK :: REPOSITORY TAG` needs the lock to hold the commit and the tree of the tag in
+  // that repository as the upstream of a C package.
+  const repository = Path.join(findRepositoriesFolder(rootFolder), arguments[0])
+  const commit = Fixtures.readRevision(repository, `${arguments[1]}^{commit}`)
+  if (commit is Err(message)) {
+    return Err(message)
+  }
+  const tree = Fixtures.readRevision(repository, `${arguments[1]}^{tree}`)
+  if (tree is Err(message)) {
+    return Err(message)
+  }
+  const lock = Fs.readText(Path.join(rootFolder, lockPath))
+  if (lock is Err(message)) {
+    return Err(`cannot read ${lockPath}: ${message}`)
+  }
+  for (const line of Arrays.values([
+    `c_commit = "${commit.value}"`,
+    `c_content = "${tree.value}"`,
+  ])) {
+    if (!Str.contains(lock.value, line)) {
+      return Err(`${lockPath} has no ${line}:\n${lock.value}`)
+    }
+  }
+  return Ok(true)
+}
+
 function runCommandStep(
   context: Context,
   rootFolder: string,
@@ -307,6 +375,25 @@ function runCommandStep(
   }
   if (parts[0] == "write") {
     return writeFile(Path.join(rootFolder, parts[1]), Str.replace(parts[2], "\\n", "\n"))
+  }
+  if (parts[0] == "delete") {
+    // The cache holds read-only checkouts, so the folder is made writable first.
+    Fixtures.removeFixtures(Path.join(rootFolder, parts[1]))
+    return Ok(true)
+  }
+  if (parts[0] == "has") {
+    // A file of the case holds each text of the wants, and none that starts with `!`.
+    const read = Fs.readText(Path.join(rootFolder, parts[1]))
+    if (read is Err(message)) {
+      return Err(`cannot read ${parts[1]}: ${message}`)
+    }
+    return checkStepOutput(parts[2], CommandResult { code: 0, output: read.value, errorOutput: "" })
+  }
+  if (parts[0] == "retag") {
+    return retagRepository(rootFolder, splitString(parts[1], " "))
+  }
+  if (parts[0] == "locked") {
+    return checkLockedRevisions(rootFolder, parts[1], splitString(parts[2], " "))
   }
   const wantCode = Int.parse(parts[0], 10)
   if (wantCode is Err(message)) {
@@ -378,10 +465,42 @@ function runCommandsCase(
       outcome = Err(message)
     } else {
       // NARRA_C_LOG makes a build print a line for each C file it compiles.
-      const environment = [`NARRA_CACHE=${Path.join(caseFolder, "cache")}`, "NARRA_C_LOG=1"]
-      outcome = runCommandSteps(context, Path.join(caseFolder, "root"), environment, steps.value)
+      let environment = [`NARRA_CACHE=${Path.join(caseFolder, "cache")}`, "NARRA_C_LOG=1"]
+      const prepared = prepareRepositories(scratch.root, caseFolder, mutable environment)
+      if (prepared is Err(message)) {
+        outcome = Err(message)
+      } else {
+        outcome = runCommandSteps(context, Path.join(caseFolder, "root"), environment, steps.value)
+      }
     }
   }
-  removeScratch(scratch)
+  // The cache holds read-only checkouts, which the fixture removal makes writable first.
+  Fixtures.removeFixtures(scratch.root)
   return outcome
+}
+
+function prepareRepositories(
+  scratchRoot: string,
+  caseFolder: string,
+  mutable environment: Array<string>,
+): Result<bool, string> uses io, alloc {
+  // A case with a `repos/` folder builds a git repository from each folder in it, and its
+  // narra.toml files name them through `@REPOS@`. git runs with no user or system configuration.
+  if (!Fs.isDir(Path.join(caseFolder, "repos"))) {
+    return Ok(true)
+  }
+  if (!Fixtures.isGitAvailable()) {
+    return Err("git is not on PATH")
+  }
+  const repositoriesFolder = Path.join(scratchRoot, "repos")
+  const substituted = Shell.runScript(SUBSTITUTE_SCRIPT, [
+    caseFolder,
+    `file://${repositoriesFolder}`,
+  ])
+  if (substituted.code != 0) {
+    return Err(`cannot fill in the URLs: ${Str.trim(substituted.errorOutput)}`)
+  }
+  Arrays.push(mutable environment, "GIT_CONFIG_GLOBAL=/dev/null")
+  Arrays.push(mutable environment, "GIT_CONFIG_NOSYSTEM=1")
+  return buildRepositories(caseFolder, repositoriesFolder)
 }

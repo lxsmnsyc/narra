@@ -15,7 +15,14 @@ import {
   resolveDependencies,
 } from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
-import { CTable, Dependency, ExportEntry, LoadError, Manifest } from "narrac/driver/manifest"
+import {
+  CTable,
+  Dependency,
+  ExportEntry,
+  LoadError,
+  Manifest,
+  findUpstream,
+} from "narrac/driver/manifest"
 import {
   Member,
   Workspace,
@@ -32,6 +39,7 @@ export struct DependencyPackage {
   declared: Array<string> // the names in the [dependencies] of its manifest
   exports: Array<ExportEntry> // its [exports] table; empty when every module is exposed
   cTables: Array<CTable> // its [c] and [c.os.*] tables
+  upstream: string = "" // the checkout of its `[c] git` and `tag`; empty when the C files are in the package
 }
 
 function createDependencyError(code: string, message: string): LoadError {
@@ -47,6 +55,43 @@ function readLock(lockPath: string): Result<Array<LockEntry>, LoadError> uses io
     return Err(createDependencyError("E0458", `cannot read or write ${lockPath}: ${message}`))
   }
   return parseLock(text.value)
+}
+
+function findUpstreamFolder(
+  entry: LockEntry,
+  manifest: Manifest,
+): Result<string, LoadError> uses io, alloc {
+  // The checkout of the C source of a package, taken from the cache the lock names.
+  const upstream = findUpstream(manifest.cTables)
+  if (upstream.git == "") {
+    return Ok("")
+  }
+  if (entry.cGit != upstream.git || entry.cTag != upstream.tag) {
+    return Err(
+      createDependencyError(
+        "E0461",
+        `narra.lock has no entry for the C source of ${entry.name} ${entry.version} (tag ${upstream.tag} of ${upstream.git}); run narrac build to update it`,
+      ),
+    )
+  }
+  const folder = checkoutPath(upstream.git, upstream.tag)
+  if (!Fs.isDir(folder)) {
+    return Err(
+      createDependencyError(
+        "E0460",
+        `the C source of ${entry.name} ${entry.version} (tag ${upstream.tag} of ${upstream.git}) is not in the cache; run narrac build to fetch it`,
+      ),
+    )
+  }
+  const recorded = readRecorded(folder)
+  if (recorded is Err(error)) {
+    return Err(error)
+  }
+  const matched = checkTree(recorded.value, entry.cContent)
+  if (matched is Err(error)) {
+    return Err(error)
+  }
+  return Ok(folder)
 }
 
 function listPackages(
@@ -81,6 +126,10 @@ function listPackages(
     for (const dependency of Arrays.values(manifest.dependencies)) {
       Arrays.push(mutable declared, dependency.name)
     }
+    const upstream = findUpstreamFolder(entry, manifest)
+    if (upstream is Err(error)) {
+      return Err(error)
+    }
     Arrays.push(mutable packages, DependencyPackage {
       name: entry.name,
       version: entry.version,
@@ -89,6 +138,7 @@ function listPackages(
       declared,
       exports: manifest.exports,
       cTables: manifest.cTables,
+      upstream: upstream.value,
     })
   }
   return Ok(packages)

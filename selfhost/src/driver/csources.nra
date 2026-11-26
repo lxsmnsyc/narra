@@ -8,16 +8,19 @@ import * as Path from "std/path"
 import * as Ranges from "std/range"
 import * as Str from "std/string"
 import * as Process from "std/process"
-import { Decl, File, isCFilePath } from "narrac/syntax/ast"
+import { Decl, File, isCFilePath, isPackageFilePath } from "narrac/syntax/ast"
 import { CFileUse } from "narrac/emit/emitexterns"
 import { CTable, LoadError } from "narrac/driver/manifest"
 import { splitString, substring } from "narrac/driver/textops"
 
-// A package with the folder it lives in and the [c] tables of its manifest.
+// A package with the folder it lives in and the [c] tables of its manifest. A C package with
+// `[c] git` has its [c] paths in the upstream checkout instead of the package folder.
 export struct PackageC {
   name: string
   directory: string
   tables: Array<CTable>
+  upstream: string = "" // the folder of the upstream checkout; empty when [c] paths are in `directory`
+  declared: Array<string> = [] // the names in the [dependencies] of the manifest
 }
 
 // One C file to compile, with the flags of the package that owns it.
@@ -93,11 +96,23 @@ function createMissingError(
   )
 }
 
-function findFilePath(owner: PackageC, relative: string): string uses alloc {
-  if (relative == "") {
-    return owner.directory
+function findCRoot(owner: PackageC): string {
+  // The folder the [c] paths and the files of other packages are relative to.
+  if (owner.upstream != "") {
+    return owner.upstream
   }
-  return Path.join(owner.directory, relative)
+  return owner.directory
+}
+
+function joinPath(root: string, relative: string): string uses alloc {
+  if (relative == "") {
+    return root
+  }
+  return Path.join(root, relative)
+}
+
+function findFilePath(owner: PackageC, relative: string): string uses alloc {
+  return joinPath(findCRoot(owner), relative)
 }
 
 function matchesWildcard(name: string, pattern: string): bool uses alloc {
@@ -271,7 +286,7 @@ export function listSources(
       }
     }
   }
-  const escaping = findEscapingLink(owner, linked)
+  const escaping = findEscapingLink(findCRoot(owner), linked)
   if (escaping != "") {
     return Err(createOutsideError(owner, escaping, manifestFile, 1, 1))
   }
@@ -299,8 +314,9 @@ function removeMatches(files: Array<string>, pattern: string): Array<string> use
   return kept
 }
 
-function findExternPaths(ast: File): Array<ExternPath> uses alloc {
-  // The `from "./file.c"` paths of the extern blocks, once per block.
+function findExternPaths(ast: File, isPackageForm: bool): Array<ExternPath> uses alloc {
+  // The `from "./file.c"` paths of the extern blocks, or the `from "<package>/<path>"` ones, once
+  // per block.
   let paths: Array<ExternPath> = []
   for (const declaration of Arrays.values(ast.declarations)) {
     if (declaration is Decl.Func(funcDecl)) {
@@ -310,7 +326,11 @@ function findExternPaths(ast: File): Array<ExternPath> uses alloc {
           known =
             known || (path.line == block.libraryPos.line && path.column == block.libraryPos.column)
         }
-        if (!known && isCFilePath(block.library)) {
+        let matches = isCFilePath(block.library)
+        if (isPackageForm) {
+          matches = isPackageFilePath(block.library)
+        }
+        if (!known && matches) {
           Arrays.push(mutable paths, ExternPath {
             path: block.library,
             line: block.libraryPos.line,
@@ -357,19 +377,19 @@ export function checkExternFiles(
 ): Array<LoadError> uses io, alloc {
   // A `from "./file.c"` path stays inside the package and names a file that exists.
   let errors: Array<LoadError> = []
-  for (const written of Arrays.values(findExternPaths(ast))) {
+  for (const written of Arrays.values(findExternPaths(ast, false))) {
     let inside = ""
     if (resolveExternPath(folder, written.path) is Some(relative)) {
       inside = relative
     }
-    if (inside == "" || findEscapingLink(owner, [inside]) != "") {
+    if (inside == "" || findEscapingLink(owner.directory, [inside]) != "") {
       Arrays.push(
         mutable errors,
         createOutsideError(owner, written.path, file, written.line, written.column),
       )
       continue
     }
-    const path = findFilePath(owner, inside)
+    const path = joinPath(owner.directory, inside)
     if (!Fs.exists(path) || Fs.isDir(path)) {
       Arrays.push(
         mutable errors,
@@ -380,16 +400,105 @@ export function checkExternFiles(
   return errors
 }
 
+function splitPackageFile(written: string): #[string, string] uses alloc {
+  // The package name and the path inside it of a `from "<package>/<path>"`.
+  const slash = Str.indexOf(written, "/")
+  if (slash is None) {
+    return #[written, ""]
+  }
+  return #[substring(written, 0, slash.value), Str.sliceFrom(written, slash.value + 1)]
+}
+
+function createUndeclaredError(
+  ownerName: string,
+  written: ExternPath,
+  targetName: string,
+  file: string,
+): LoadError uses alloc {
+  return createLoadError(
+    "E1663",
+    file,
+    written.line,
+    written.column,
+    `package ${ownerName} binds ${written.path}, but its narra.toml has no [dependencies] entry for ${targetName}`,
+  )
+}
+
+export function checkPackageFiles(
+  owners: Array<PackageC>,
+  ownerName: string,
+  file: string,
+  ast: File,
+): Array<LoadError> uses io, alloc {
+  // A `from "<package>/<path>"` names a file of a C package the binding package depends on.
+  let errors: Array<LoadError> = []
+  for (const written of Arrays.values(findExternPaths(ast, true))) {
+    const #[targetName, inside] = splitPackageFile(written.path)
+    let binder = PackageC { name: ownerName, directory: "", tables: [] }
+    for (const candidate of Arrays.values(owners)) {
+      if (candidate.name == ownerName) {
+        binder = copy(candidate)
+      }
+    }
+    const target = findOwner(owners, targetName)
+    const isDeclared = targetName != ownerName && hasPath(binder.declared, targetName)
+    if (target is None) {
+      Arrays.push(mutable errors, createUndeclaredError(ownerName, written, targetName, file))
+      continue
+    }
+    if (!isDeclared) {
+      Arrays.push(mutable errors, createUndeclaredError(ownerName, written, targetName, file))
+      continue
+    }
+    if (Arrays.length(target.value.tables) == 0) {
+      Arrays.push(
+        mutable errors,
+        createLoadError(
+          "E1664",
+          file,
+          written.line,
+          written.column,
+          `package ${targetName} has no [c] table, so ${written.path} names no C file of it`,
+        ),
+      )
+      continue
+    }
+    const normalized = normalizeInside(inside)
+    if (normalized is None) {
+      Arrays.push(
+        mutable errors,
+        createOutsideError(target.value, inside, file, written.line, written.column),
+      )
+      continue
+    }
+    if (findEscapingLink(findCRoot(target.value), [normalized.value]) != "") {
+      Arrays.push(
+        mutable errors,
+        createOutsideError(target.value, inside, file, written.line, written.column),
+      )
+      continue
+    }
+    const path = findFilePath(target.value, normalized.value)
+    if (!Fs.exists(path) || Fs.isDir(path)) {
+      Arrays.push(
+        mutable errors,
+        createMissingError(target.value, inside, file, written.line, written.column),
+      )
+    }
+  }
+  return errors
+}
+
 // Prints the real path of the first argument, a folder, then of each other path; an empty line for
 // a path that cannot be resolved. A link is followed, a folder link through `pwd -P`.
 const REAL_PATHS_SCRIPT = "resolve() { p=\"$1\"; n=0; while [ -L \"$p\" ] && [ $n -lt 40 ]; do l=$(readlink \"$p\"); case \"$l\" in /*) p=\"$l\";; *) p=\"$(dirname \"$p\")/$l\";; esac; n=$((n+1)); done; if [ -d \"$p\" ]; then (cd \"$p\" && pwd -P); else d=$(cd \"$(dirname \"$p\")\" && pwd -P) && printf '%s/%s\\n' \"$d\" \"$(basename \"$p\")\"; fi; }; for p in \"$@\"; do resolve \"$p\" 2>/dev/null || echo; done"
 
-function findEscapingLink(owner: PackageC, relatives: Array<string>): string uses io, alloc {
-  // The first path whose real path, after following symbolic links, is outside the real package
-  // folder, or "". Where the real paths cannot be read (no `sh`), the lexical check stands alone.
-  let arguments: Array<string> = ["-c", REAL_PATHS_SCRIPT, "sh", owner.directory]
+function findEscapingLink(directory: string, relatives: Array<string>): string uses io, alloc {
+  // The first path whose real path, after following symbolic links, is outside the real folder, or
+  // "". Where the real paths cannot be read (no `sh`), the lexical check stands alone.
+  let arguments: Array<string> = ["-c", REAL_PATHS_SCRIPT, "sh", directory]
   for (const relative of Arrays.values(relatives)) {
-    Arrays.push(mutable arguments, findFilePath(owner, relative))
+    Arrays.push(mutable arguments, joinPath(directory, relative))
   }
   const ran = Process.run("sh", arguments)
   if (ran is Err(_)) {
@@ -424,16 +533,40 @@ function findOwner(owners: Array<PackageC>, moduleName: string): Option<PackageC
   return None
 }
 
-function createUnit(owner: PackageC, relative: string, os: string): CUnit uses alloc {
-  // The unit carries the include folders and defines of its own package only.
-  let include: Array<string> = []
-  let defines: Array<string> = []
+function findIncludeFolders(owner: PackageC, os: string): Array<string> uses alloc {
+  let folders: Array<string> = []
   for (const table of Arrays.values(selectTables(owner, os))) {
     for (const folder of Arrays.values(table.include)) {
       if (normalizeInside(folder) is Some(inside)) {
-        Arrays.push(mutable include, findFilePath(owner, inside))
+        Arrays.push(mutable folders, findFilePath(owner, inside))
       }
     }
+  }
+  return folders
+}
+
+function createUnit(
+  owners: Array<PackageC>,
+  owner: PackageC,
+  root: string,
+  relative: string,
+  os: string,
+): CUnit uses alloc {
+  // The unit carries the defines of its own package only, and the include folders of its own
+  // package and of the C packages its package depends on.
+  let include = findIncludeFolders(owner, os)
+  for (const name of Arrays.values(owner.declared)) {
+    if (name == owner.name) {
+      continue
+    }
+    if (findOwner(owners, name) is Some(dependency)) {
+      for (const folder of Arrays.values(findIncludeFolders(dependency, os))) {
+        Arrays.push(mutable include, folder)
+      }
+    }
+  }
+  let defines: Array<string> = []
+  for (const table of Arrays.values(selectTables(owner, os))) {
     for (const define of Arrays.values(table.defines)) {
       Arrays.push(mutable defines, define)
     }
@@ -441,10 +574,19 @@ function createUnit(owner: PackageC, relative: string, os: string): CUnit uses a
   return CUnit {
     package: owner.name,
     relative,
-    path: findFilePath(owner, relative),
+    path: joinPath(root, relative),
     include,
     defines,
   }
+}
+
+function addUnit(mutable units: Array<CUnit>, unit: CUnit) uses alloc {
+  for (const known of Arrays.values(units)) {
+    if (known.path == unit.path) {
+      return
+    }
+  }
+  Arrays.push(mutable units, unit)
 }
 
 export function collectUnits(
@@ -464,19 +606,23 @@ export function collectUnits(
       return Err(error)
     }
     for (const relative of Arrays.values(listed.value)) {
-      Arrays.push(mutable units, createUnit(owner, relative, os))
+      addUnit(mutable units, createUnit(owners, owner, findCRoot(owner), relative, os))
     }
   }
   for (const reached of Arrays.values(used)) {
-    if (findOwner(owners, reached.module) is Some(owner)) {
+    if (isPackageFilePath(reached.path)) {
+      // A C file of a C package that the binding names with `from "<package>/<path>"`.
+      const #[targetName, inside] = splitPackageFile(reached.path)
+      if (findOwner(owners, targetName) is Some(target)) {
+        if (normalizeInside(inside) is Some(relative)) {
+          if (Str.endsWith(relative, ".c")) {
+            addUnit(mutable units, createUnit(owners, target, findCRoot(target), relative, os))
+          }
+        }
+      }
+    } else if (findOwner(owners, reached.module) is Some(owner)) {
       if (resolveExternPath(findSourceFolder(reached.module), reached.path) is Some(relative)) {
-        let known = false
-        for (const unit of Arrays.values(units)) {
-          known = known || (unit.package == owner.name && unit.relative == relative)
-        }
-        if (!known) {
-          Arrays.push(mutable units, createUnit(owner, relative, os))
-        }
+        addUnit(mutable units, createUnit(owners, owner, owner.directory, relative, os))
       }
     }
   }

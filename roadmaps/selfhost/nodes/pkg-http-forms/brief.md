@@ -1,6 +1,6 @@
 ---
 id: pkg-http-forms
-title: "http forms: urlencoded and multipart/form-data bodies"
+title: "http body readers and forms: text, json, urlencoded and multipart"
 status: todo
 priority: could
 type: feature
@@ -28,6 +28,8 @@ owns:
   - packages/http/src/multipart.nra
   - packages/http/src/checkform.nra
 shared:
+  - packages/http/src/body.nra
+  - packages/http/src/response.nra
   - packages/http/narra.toml
   - packages/http/src/checks.nra
   - packages/http/README.md
@@ -39,11 +41,18 @@ depends_on:
     why: reads the Body and Headers types of packages/http
 ---
 
-# http forms: urlencoded and multipart/form-data bodies
+# http body readers and forms: text, json, urlencoded and multipart
 
 ## Goal
 
-A server handler can read an HTML form submission, file uploads included, from a `Request`.
+A handler or client reads a body as text, JSON or a form (file uploads included) in one call, and builds JSON and redirect responses in one call, as the Fetch API's `text()`, `json()`, `formData()`, `Response.json()` and `Response.redirect()` do.
+
+## Body readers and response helpers
+
+Narra has no method calls, so these are functions of the `http/body` and `http/response` modules, called as `Bodies.readText(request.body, maxBytes)`:
+
+- `http/body`: async `readText(body, maxBytes)` (UTF-8, `Malformed` otherwise) and async `readJson(body, maxBytes)` (through `std/json`, `Malformed` on a parse error).
+- `http/response`: `json(status, value)` (sets `Content-Type: application/json`), `redirect(url, status)` (301, 302, 303, 307 or 308, sets `Location`; any other status is an error), `isOk(response)` (status 200 to 299).
 
 ## Context
 
@@ -60,6 +69,7 @@ A server handler can read an HTML form submission, file uploads included, from a
 
 ## Acceptance
 
+- [ ] `readText` and `readJson` read a body the client sent; invalid UTF-8 and invalid JSON give `Malformed`; `json`, `redirect` and `isOk` are checked over the wire.
 - [ ] A form posted by `curl -F name=value -F file=@<path>` is read back: the field value and the file's bytes and filename match. The check skips cleanly without curl.
 - [ ] A urlencoded body (`curl -d`) gives its fields, repeated names kept.
 - [ ] Boundaries split at every byte position across reads are found (a check feeds the body one byte per chunk).

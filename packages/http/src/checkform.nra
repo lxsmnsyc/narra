@@ -1,0 +1,937 @@
+// Checks of the body readers, the response helpers and http/form: the multipart parser on
+// built bodies (split at every byte, cut short, mutated and random), the server and the client
+// over loopback, and curl when it is installed.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Channel from "std/channel"
+import * as Client from "http/client"
+import * as Env from "std/env"
+import * as Errors from "http/error"
+import * as Fields from "http/headers"
+import * as Forms from "http/form"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Json from "std/json"
+import * as Net from "std/net"
+import * as Options from "std/option"
+import * as Path from "std/path"
+import * as Process from "std/process"
+import * as Random from "std/random"
+import * as Ranges from "std/range"
+import * as Requests from "http/request"
+import * as Responses from "http/response"
+import * as Server from "http/server"
+import * as Str from "std/string"
+import * as Thread from "std/thread"
+import * as Time from "std/time"
+import * as Wire from "http/framing"
+import { Body } from "http/body"
+import { Connection, Listener } from "std/net"
+import { FormOptions, FormPart } from "http/form"
+import { HttpError } from "http/error"
+import { Method, Request } from "http/request"
+import { Report, expect, expectContains, expectText } from "http/checkkit"
+import { Response } from "http/response"
+import { Sender } from "std/channel"
+
+const BOUNDARY = "XyZ"
+
+async function* generateChunks(
+  data: bytes,
+  size: int,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  const length = Bytes.length(data)
+  let position = 0
+  while (position < length) {
+    let end = position + size
+    if (end > length) {
+      end = length
+    }
+    const piece = Bytes.slice(data, position, end)
+    if (piece is Some(found)) {
+      yield Ok(found)
+    }
+    position = end
+  }
+}
+
+async function* generateSplit(
+  data: bytes,
+  position: int,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  const first = Bytes.slice(data, 0, position)
+  if (first is Some(found)) {
+    yield Ok(found)
+  }
+  const second = Bytes.slice(data, position, Bytes.length(data))
+  if (second is Some(found)) {
+    yield Ok(found)
+  }
+}
+
+function buildRequest(contentType: string, body: Body): Request from body uses alloc {
+  const created = Requests.create(Method.Post, "/")
+  if (created is Err(error)) {
+    panic(Errors.describe(error))
+  }
+  let request = copy(created.value)
+  Fields.add(mutable request.headers, "Content-Type", contentType)
+  request.body = body
+  return request
+}
+
+function multipartType(): string {
+  return `multipart/form-data; boundary=${BOUNDARY}`
+}
+
+function buildSample(): string uses alloc {
+  const disposition = "Content-Disposition: form-data"
+  const parts = [
+    `${disposition}; name="title"\r\n\r\nhello`,
+    `${disposition}; name="file"; filename="a b\\c.txt"\r\nContent-Type: text/plain\r\n\r\na--${BOUNDARY} b\r\n--Xy c`,
+    `${disposition}; name="empty"\r\n\r\n`,
+    `${disposition};name=bare;filename=plain.bin\r\n\r\nz`,
+  ]
+  const separator = `\r\n--${BOUNDARY}\r\n`
+  const body = Str.join(parts, separator)
+  return `ignored preamble\r\n--${BOUNDARY}\r\n${body}\r\n--${BOUNDARY}--\r\nepilogue`
+}
+
+function sampleSummary(): string uses alloc {
+  const lines = [
+    "title|-|-|hello",
+    `file|a b\\c.txt|text/plain|a--${BOUNDARY} b\r\n--Xy c`,
+    "empty|-|-|",
+    "bare|plain.bin|-|z",
+  ]
+  return Str.join(lines, "\n")
+}
+
+function describePart(part: FormPart, content: bytes, asHex: bool): string uses alloc {
+  const filename = Options.withDefault(part.filename, "-")
+  const contentType = Options.withDefault(part.contentType, "-")
+  let text = Bytes.toHex(content)
+  if (!asHex) {
+    const decoded = Bytes.toString(content)
+    text = "not text"
+    if (decoded is Ok(value)) {
+      text = value
+    }
+  }
+  return `${part.name}|${filename}|${contentType}|${text}`
+}
+
+// Reads every part to its end and describes them, one line each. An error ends the text with a
+// line that starts with "error:".
+async function summarize(
+  request: Request,
+  options: FormOptions,
+  asHex: bool,
+): string uses io, alloc {
+  let lines: Array<string> = []
+  for await (const piece of Forms.parts(request, options)) {
+    if (piece is Err(error)) {
+      Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
+      break
+    }
+    const content = await Bodies.readAll(piece.value.body, 1000000)
+    if (content is Err(error)) {
+      Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
+      break
+    }
+    Arrays.push(mutable lines, describePart(piece.value, content.value, asHex))
+  }
+  return Str.join(lines, "\n")
+}
+
+async function summarizeText(
+  contentType: string,
+  text: string,
+  options: FormOptions,
+): string uses io, alloc {
+  const request = buildRequest(contentType, Bodies.fromText(text))
+  return await summarize(request, options, false)
+}
+
+async function describeFields(request: Request, maxBytes: int): string uses io, alloc {
+  const fields = await Forms.readFields(request, maxBytes)
+  if (fields is Err(error)) {
+    return `error: ${Errors.describe(error)}`
+  }
+  let lines: Array<string> = []
+  for (const field of Arrays.values(fields.value)) {
+    Arrays.push(mutable lines, `${field.name}=${field.value}`)
+  }
+  return Str.join(lines, ",")
+}
+
+export async function runFormChecks(report: Report) uses io, alloc {
+  checkResponseHelpers(report)
+  await checkReaders(report)
+  await checkSplits(report)
+  await checkMalformed(report)
+  await checkFields(report)
+  await checkMutations(report)
+  await checkNet(report)
+  checkCurl(report)
+}
+
+function checkResponseHelpers(report: Report) uses io, alloc {
+  const found = Responses.redirect("/next", 307)
+  if (found is Ok(response)) {
+    expect(report, "response: a redirect has its status", response.status == 307)
+    expectText(
+      report,
+      "response: a redirect has a Location",
+      Options.withDefault(Fields.get(response.headers, "Location"), "none"),
+      "/next",
+    )
+  } else {
+    expect(report, "response: a redirect is built", false)
+  }
+  for (const status of [301, 302, 303, 307, 308]) {
+    expect(
+      report,
+      `response: redirect accepts ${Int.toString(status)}`,
+      Responses.redirect("/", status) is Ok(_),
+    )
+  }
+  for (const status of [200, 300, 304, 305, 306, 309, 404]) {
+    expect(
+      report,
+      `response: redirect refuses ${Int.toString(status)}`,
+      Responses.redirect("/", status) is Err(_),
+    )
+  }
+  for (const url of ["", "/x\r\nSet-Cookie: a=b", "/x\ny", "/x\rb", "/x\0y"]) {
+    expect(
+      report,
+      "response: redirect refuses a bad url",
+      Responses.redirect(url, 302) is Err(HttpError.Malformed(_)),
+    )
+  }
+  expect(report, "response: 199 is not ok", !Responses.isOk(Responses.create(199)))
+  expect(report, "response: 200 is ok", Responses.isOk(Responses.create(200)))
+  expect(report, "response: 299 is ok", Responses.isOk(Responses.create(299)))
+  expect(report, "response: 300 is not ok", !Responses.isOk(Responses.create(300)))
+  const parsed = Json.parse("{\"ok\":true}")
+  if (parsed is Ok(value)) {
+    const response = Responses.json(201, value)
+    expect(report, "response: json has its status", response.status == 201)
+    expectText(
+      report,
+      "response: json has its Content-Type",
+      Options.withDefault(Fields.get(response.headers, "Content-Type"), "none"),
+      "application/json",
+    )
+  }
+}
+
+async function checkReaders(report: Report) uses io, alloc {
+  const text = await Bodies.readText(Bodies.fromText("héllo"), 100)
+  expect(report, "readText: reads text", text is Ok("héllo"))
+  const badBytes = Bytes.fromHex("fffe")
+  if (badBytes is Some(data)) {
+    const bad = await Bodies.readText(Bodies.fromBytes(data), 100)
+    expect(
+      report,
+      "readText: bytes that are not UTF-8 are Malformed",
+      bad is Err(HttpError.Malformed(_)),
+    )
+  }
+  const large = await Bodies.readText(Bodies.fromText("abcdef"), 3)
+  expect(report, "readText: a body over the limit is TooLarge", large is Err(HttpError.TooLarge(_)))
+  const json = await Bodies.readJson(Bodies.fromText("{\"a\":[1,2]}"), 100)
+  if (json is Ok(value)) {
+    expectText(report, "readJson: reads JSON", Json.stringify(value), "{\"a\":[1,2]}")
+  } else {
+    expect(report, "readJson: reads JSON", false)
+  }
+  const invalid = await Bodies.readJson(Bodies.fromText("{\"a\":"), 100)
+  expect(report, "readJson: bad JSON is Malformed", invalid is Err(HttpError.Malformed(_)))
+  const streamed = await Bodies.readText(
+    Bodies.fromStream(generateChunks(Bytes.fromString("one two"), 1)),
+    100,
+  )
+  expect(report, "readText: reads a stream", streamed is Ok("one two"))
+}
+
+async function checkSplits(report: Report) uses io, alloc {
+  const sample = Bytes.fromString(buildSample())
+  const options = Forms.defaultOptions()
+  const whole = await summarizeText(multipartType(), buildSample(), options)
+  expectText(report, "multipart: a built body is read", whole, sampleSummary())
+  const quoted = await summarizeText(
+    `multipart/form-data; charset=utf-8; boundary="${BOUNDARY}"`,
+    buildSample(),
+    options,
+  )
+  expectText(report, "multipart: a quoted boundary", quoted, sampleSummary())
+  const upper = await summarizeText(
+    `Multipart/Form-Data;Boundary=${BOUNDARY}`,
+    buildSample(),
+    options,
+  )
+  expectText(
+    report,
+    "multipart: the type and the parameter are case-insensitive",
+    upper,
+    sampleSummary(),
+  )
+  const oneByte = buildRequest(multipartType(), Bodies.fromStream(generateChunks(sample, 1)))
+  expectText(
+    report,
+    "multipart: one byte per chunk",
+    await summarize(oneByte, options, false),
+    sampleSummary(),
+  )
+  let wrong = 0
+  for (const position of Ranges.between(0, Bytes.length(sample) + 1)) {
+    const request = buildRequest(
+      multipartType(),
+      Bodies.fromStream(generateSplit(sample, position)),
+    )
+    if (await summarize(request, options, false) != sampleSummary()) {
+      wrong += 1
+    }
+  }
+  expect(report, "multipart: a split at every byte position", wrong == 0)
+  let wrongSizes = 0
+  for (const size of Ranges.between(2, 40)) {
+    const request = buildRequest(multipartType(), Bodies.fromStream(generateChunks(sample, size)))
+    if (await summarize(request, options, false) != sampleSummary()) {
+      wrongSizes += 1
+    }
+  }
+  expect(report, "multipart: chunks of 2 to 39 bytes", wrongSizes == 0)
+  // A part that is never read is skipped.
+  const skipping = buildRequest(multipartType(), Bodies.fromStream(generateChunks(sample, 3)))
+  let names: Array<string> = []
+  for await (const piece of Forms.parts(skipping, options)) {
+    if (piece is Ok(part)) {
+      Arrays.push(mutable names, part.name)
+    }
+  }
+  expectText(
+    report,
+    "multipart: unread parts are skipped",
+    Str.join(names, ","),
+    "title,file,empty,bare",
+  )
+}
+
+async function checkMalformed(report: Report) uses io, alloc {
+  const options = Forms.defaultOptions()
+  const head = `Content-Disposition: form-data; name="a"`
+  const closed = `--${BOUNDARY}\r\n${head}\r\n\r\nabc\r\n--${BOUNDARY}--\r\n`
+  expectContains(
+    report,
+    "malformed: no boundary in the type",
+    await summarizeText("multipart/form-data", closed, options),
+    "error: malformed message: no boundary",
+  )
+  expectContains(
+    report,
+    "malformed: an empty boundary",
+    await summarizeText("multipart/form-data; boundary=", closed, options),
+    "error: malformed message",
+  )
+  expectContains(
+    report,
+    "malformed: a boundary over 70 characters",
+    await summarizeText(
+      `multipart/form-data; boundary=${Options.withDefault(Str.repeat("b", 71), "")}`,
+      closed,
+      options,
+    ),
+    "error: malformed message",
+  )
+  expectContains(
+    report,
+    "malformed: a type that is not multipart",
+    await summarizeText("text/plain", closed, options),
+    "error: malformed message",
+  )
+  expectContains(
+    report,
+    "malformed: no boundary in the body",
+    await summarizeText(multipartType(), "just some text", options),
+    "error: malformed message: the body has no boundary",
+  )
+  expectContains(
+    report,
+    "malformed: a part that is not closed",
+    await summarizeText(multipartType(), `--${BOUNDARY}\r\n${head}\r\n\r\nabc`, options),
+    "error: malformed message: a part has no closing boundary",
+  )
+  expectContains(
+    report,
+    "malformed: no closing boundary",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}\r\n${head}\r\n\r\nabc\r\n--${BOUNDARY}\r\n`,
+      options,
+    ),
+    "error: malformed message",
+  )
+  expectContains(
+    report,
+    "malformed: a head that is not finished",
+    await summarizeText(multipartType(), `--${BOUNDARY}\r\n${head}`, options),
+    "error: malformed message: a part head is not finished",
+  )
+  expectContains(
+    report,
+    "malformed: a part with no name",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}\r\nContent-Disposition: form-data\r\n\r\nx\r\n--${BOUNDARY}--`,
+      options,
+    ),
+    "error: malformed message: a part has no name",
+  )
+  expectContains(
+    report,
+    "malformed: a part with no Content-Disposition",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}\r\nContent-Type: text/plain\r\n\r\nx\r\n--${BOUNDARY}--`,
+      options,
+    ),
+    "error: malformed message: a part has no Content-Disposition",
+  )
+  expectContains(
+    report,
+    "malformed: a quoted value that is not closed",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}\r\nContent-Disposition: form-data; name="a\r\n\r\nx\r\n--${BOUNDARY}--`,
+      options,
+    ),
+    "error: malformed message: a quoted parameter value is not closed",
+  )
+  expectContains(
+    report,
+    "malformed: junk after a boundary",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}junk\r\n${head}\r\n\r\nx\r\n--${BOUNDARY}--`,
+      options,
+    ),
+    "error: malformed message: a boundary line does not end with a line break",
+  )
+  const smallHead = FormOptions { maxParts: 10, maxPartHeaderBytes: 20, maxPartBytes: 1000 }
+  expectContains(
+    report,
+    "limits: a part head over the limit",
+    await summarizeText(multipartType(), closed, smallHead),
+    "error: part header too large",
+  )
+  const bigHead = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="a"\r\nX-Padding: ${Options.withDefault(Str.repeat("p", 200), "")}`
+  expectContains(
+    report,
+    "limits: a part head over the limit that never ends",
+    await summarizeText(multipartType(), bigHead, smallHead),
+    "error: part header too large",
+  )
+  const twoParts = `--${BOUNDARY}\r\n${head}\r\n\r\n1\r\n--${BOUNDARY}\r\n${head}\r\n\r\n2\r\n--${BOUNDARY}--`
+  const oneAllowed = FormOptions { maxParts: 1, maxPartHeaderBytes: 1000, maxPartBytes: 1000 }
+  expectText(
+    report,
+    "limits: too many parts",
+    await summarizeText(multipartType(), twoParts, oneAllowed),
+    "a|-|-|1\nerror: parts too large",
+  )
+  const smallPart = FormOptions { maxParts: 10, maxPartHeaderBytes: 1000, maxPartBytes: 3 }
+  expectContains(
+    report,
+    "limits: a part body over the limit",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}\r\n${head}\r\n\r\nabcdef\r\n--${BOUNDARY}--`,
+      smallPart,
+    ),
+    "error: part too large",
+  )
+  expectText(
+    report,
+    "limits: a part body at the limit",
+    await summarizeText(
+      multipartType(),
+      `--${BOUNDARY}\r\n${head}\r\n\r\nabc\r\n--${BOUNDARY}--`,
+      smallPart,
+    ),
+    "a|-|-|abc",
+  )
+}
+
+async function checkParameters(report: Report) uses io, alloc {
+  const options = Forms.defaultOptions()
+  const empty = `--${BOUNDARY}\r\n\r\nbody\r\n--${BOUNDARY}--`
+  expectContains(
+    report,
+    "head: a part with an empty head is Malformed",
+    await summarizeText(multipartType(), empty, options),
+    "error: malformed message: a part has no Content-Disposition",
+  )
+  const raw = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="a"; filename="C:\\dir\\a.txt"\r\n\r\n1\r\n--${BOUNDARY}\r\nContent-Disposition: form-data; name="b"; filename="a\\"\r\n\r\n2\r\n--${BOUNDARY}--`
+  expectText(
+    report,
+    "head: backslashes in a quoted value are kept",
+    await summarizeText(multipartType(), raw, options),
+    "a|C:\\dir\\a.txt|-|1\nb|a\\|-|2",
+  )
+  const failed = Requests.create(Method.Get, "http://127.0.0.1:1/")
+  if (failed is Ok(request)) {
+    let unsafe = copy(request)
+    Fields.add(mutable unsafe.headers, "X-Test", "a\r\nSet-Cookie: b=c")
+    const sent = await Client.send(unsafe, Client.defaultOptions())
+    expect(
+      report,
+      "client: a header value with a line break is Malformed",
+      sent is Err(HttpError.Malformed(_)),
+    )
+  }
+}
+
+async function checkFields(report: Report) uses io, alloc {
+  await checkParameters(report)
+  const names = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="abcd"\r\n\r\n12\r\n--${BOUNDARY}--`
+  const named = buildRequest(multipartType(), Bodies.fromText(names))
+  expectText(
+    report,
+    "fields: a name counts against the limit",
+    await describeFields(named, 5),
+    "error: body too large",
+  )
+  const fitting = buildRequest(multipartType(), Bodies.fromText(names))
+  expectText(
+    report,
+    "fields: a name and a value at the limit",
+    await describeFields(fitting, 6),
+    "abcd=12",
+  )
+  const wide = buildRequest(
+    multipartType(),
+    Bodies.fromText(Str.replace(names, "12", "\u{e9}\u{e9}")),
+  )
+  expectText(
+    report,
+    "fields: bytes are counted, not characters",
+    await describeFields(wide, 7),
+    "error: body too large",
+  )
+  const urlencoded = buildRequest(
+    "application/x-www-form-urlencoded",
+    Bodies.fromText("a=1&b=x+y%21&a=2&c"),
+  )
+  expectText(
+    report,
+    "fields: urlencoded",
+    await describeFields(urlencoded, 1000),
+    "a=1,b=x y!,a=2,c=",
+  )
+  const charset = buildRequest(
+    "application/x-www-form-urlencoded; charset=UTF-8",
+    Bodies.fromText("a=1"),
+  )
+  expectText(
+    report,
+    "fields: urlencoded with a charset",
+    await describeFields(charset, 1000),
+    "a=1",
+  )
+  const bad = buildRequest("application/x-www-form-urlencoded", Bodies.fromText("a=%zz"))
+  expectContains(
+    report,
+    "fields: a bad escape",
+    await describeFields(bad, 1000),
+    "error: malformed message",
+  )
+  const large = buildRequest("application/x-www-form-urlencoded", Bodies.fromText("a=123456"))
+  expectText(
+    report,
+    "fields: urlencoded over the limit",
+    await describeFields(large, 4),
+    "error: body too large",
+  )
+  const text = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n--${BOUNDARY}\r\nContent-Disposition: form-data; name="a"\r\n\r\ntwo\r\n--${BOUNDARY}--`
+  const multipart = buildRequest(
+    multipartType(),
+    Bodies.fromStream(generateChunks(Bytes.fromString(text), 5)),
+  )
+  expectText(
+    report,
+    "fields: multipart text parts",
+    await describeFields(multipart, 1000),
+    "a=1,a=two",
+  )
+  const limited = buildRequest(multipartType(), Bodies.fromText(text))
+  expectContains(
+    report,
+    "fields: multipart over the limit",
+    await describeFields(limited, 3),
+    "too large",
+  )
+  const withFile = buildRequest(multipartType(), Bodies.fromText(buildSample()))
+  expectContains(
+    report,
+    "fields: a file part is refused",
+    await describeFields(withFile, 1000),
+    "error: malformed message: a file part",
+  )
+  const other = buildRequest("application/json", Bodies.fromText("{}"))
+  expectContains(
+    report,
+    "fields: another type is refused",
+    await describeFields(other, 1000),
+    "error: malformed message",
+  )
+  const created = Requests.create(Method.Post, "/")
+  if (created is Ok(request)) {
+    expectContains(
+      report,
+      "fields: no type is refused",
+      await describeFields(request, 1000),
+      "error: malformed message",
+    )
+  }
+}
+
+async function checkMutations(report: Report) uses io, alloc {
+  const sample = Bytes.fromString(buildSample())
+  const length = Bytes.length(sample)
+  const options = Forms.defaultOptions()
+  let random = Random.seeded(21)
+  // Every prefix that stops before the end of the closing boundary is an error.
+  const closing = `\r\n--${BOUNDARY}--`
+  const closeEnd = Options.withDefault(Str.indexOf(buildSample(), closing), 0) + Str.length(closing)
+  let accepted = 0
+  for (const cut of Ranges.between(0, closeEnd)) {
+    const prefix = Options.withDefault(Bytes.slice(sample, 0, cut), sample)
+    const request = buildRequest(multipartType(), Bodies.fromStream(generateChunks(prefix, 7)))
+    if (!Str.contains(await summarize(request, options, true), "error:")) {
+      accepted += 1
+    }
+  }
+  expect(report, "fuzz: a body cut before its closing boundary is an error", accepted == 0)
+  // The body with a few bytes changed: the read ends, and most changes show in the result.
+  const original = await hexSummary()
+  let mutated = 0
+  let differing = 0
+  for (const _round of Ranges.between(0, 150)) {
+    let data = sample
+    for (const _change of Ranges.between(
+      0,
+      Options.withDefault(Random.nextInt(mutable random, 1, 4), 1),
+    )) {
+      const position = Options.withDefault(Random.nextInt(mutable random, 0, length), 0)
+      const value = Options.withDefault(Random.nextInt(mutable random, 0, 256), 0)
+      const before = Options.withDefault(Bytes.slice(data, 0, position), data)
+      const after = Options.withDefault(
+        Bytes.slice(data, position + 1, Bytes.length(data)),
+        Bytes.fromString(""),
+      )
+      const changed = Options.withDefault(
+        Bytes.fromHex(Str.padStart(Int.toHex(value), 2, '0')),
+        Bytes.fromString(""),
+      )
+      data = Bytes.concat(Bytes.concat(before, changed), after)
+    }
+    const request = buildRequest(multipartType(), Bodies.fromStream(generateChunks(data, 11)))
+    const summary = await summarize(request, options, true)
+    mutated += 1
+    if (summary != original) {
+      differing += 1
+    }
+  }
+  expect(report, "fuzz: bodies with changed bytes are all read", mutated == 150)
+  expect(report, "fuzz: most changed bytes change the result", differing > 100)
+  // Random bytes that do not start with the boundary are an error.
+  let noisy = 0
+  for (const _round of Ranges.between(0, 150)) {
+    let hex = ""
+    for (const _byte of Ranges.between(
+      0,
+      Options.withDefault(Random.nextInt(mutable random, 0, 300), 0),
+    )) {
+      hex = `${hex}${Str.padStart(Int.toHex(Options.withDefault(Random.nextInt(mutable random, 0, 256), 0)), 2, '0')}`
+    }
+    const data = Options.withDefault(Bytes.fromHex(hex), Bytes.fromString(""))
+    const request = buildRequest(multipartType(), Bodies.fromStream(generateChunks(data, 13)))
+    if (!Str.contains(await summarize(request, options, true), "error:")) {
+      noisy += 1
+    }
+  }
+  expect(report, "fuzz: random bytes are an error", noisy == 0)
+  // Random bytes behind a real opening boundary reach the part head parser, and are an error.
+  let headed = 0
+  for (const _round of Ranges.between(0, 150)) {
+    let hex = ""
+    for (const _byte of Ranges.between(
+      0,
+      Options.withDefault(Random.nextInt(mutable random, 0, 120), 0),
+    )) {
+      hex = `${hex}${Str.padStart(Int.toHex(Options.withDefault(Random.nextInt(mutable random, 0, 256), 0)), 2, '0')}`
+    }
+    const noise = Options.withDefault(Bytes.fromHex(hex), Bytes.fromString(""))
+    const data = Bytes.concat(Bytes.fromString(`--${BOUNDARY}\r\n`), noise)
+    const request = buildRequest(multipartType(), Bodies.fromStream(generateChunks(data, 9)))
+    if (!Str.contains(await summarize(request, options, true), "error:")) {
+      headed += 1
+    }
+  }
+  expect(report, "fuzz: random bytes after a boundary are an error", headed == 0)
+}
+
+async function routeForms(request: Request): Response uses io, alloc {
+  const path = request.url.path
+  if (path == "/text") {
+    const text = await Bodies.readText(request.body, 1000)
+    if (text is Err(error)) {
+      return Responses.text(400, Errors.describe(error))
+    }
+    return Responses.text(200, `text:${text.value}`)
+  }
+  if (path == "/json") {
+    const json = await Bodies.readJson(request.body, 1000)
+    if (json is Err(error)) {
+      return Responses.text(400, Errors.describe(error))
+    }
+    return Responses.json(200, json.value)
+  }
+  if (path == "/redirect") {
+    const redirect = Responses.redirect("/target", 303)
+    if (redirect is Ok(response)) {
+      return response
+    }
+    return Responses.text(500, "no redirect")
+  }
+  if (path == "/fields") {
+    const text = await describeFields(request, 100000)
+    if (Str.startsWith(text, "error:")) {
+      return Responses.text(400, text)
+    }
+    return Responses.text(200, text)
+  }
+  if (path == "/parts") {
+    const text = await summarize(request, Forms.defaultOptions(), true)
+    return Responses.text(200, text)
+  }
+  return Responses.text(404, "no such route")
+}
+
+async function post(
+  port: int,
+  path: string,
+  contentType: string,
+  content: bytes,
+): Result<Response, HttpError> uses io, alloc {
+  const created = Requests.create(Method.Post, `http://127.0.0.1:${Int.toString(port)}${path}`)
+  if (created is Err(error)) {
+    return Err(error)
+  }
+  let request = copy(created.value)
+  Fields.add(mutable request.headers, "Content-Type", contentType)
+  request.body = Bodies.fromBytes(content)
+  return await Client.send(request, Client.defaultOptions())
+}
+
+async function readReply(result: Result<Response, HttpError>): string uses io, alloc {
+  if (result is Err(error)) {
+    return `error: ${Errors.describe(error)}`
+  }
+  const text = await Bodies.readText(result.value.body, 100000)
+  if (text is Ok(value)) {
+    return `${Int.toString(result.value.status)} ${value}`
+  }
+  return "not text"
+}
+
+async function checkNet(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "forms: the test server listens", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  const server = Server.serve(listener.value, Server.defaultOptions(), routeForms)
+  const plain = "text/plain"
+  expectText(
+    report,
+    "wire: readText",
+    await readReply(await post(port, "/text", plain, Bytes.fromString("héllo"))),
+    "200 text:héllo",
+  )
+  const notText = Options.withDefault(Bytes.fromHex("fffe"), Bytes.fromString(""))
+  expectContains(
+    report,
+    "wire: readText refuses bytes that are not UTF-8",
+    await readReply(await post(port, "/text", plain, notText)),
+    "400 malformed message: body is not UTF-8",
+  )
+  expectText(
+    report,
+    "wire: readJson",
+    await readReply(
+      await post(port, "/json", "application/json", Bytes.fromString("{\"a\":[1,2]}")),
+    ),
+    "200 {\"a\":[1,2]}",
+  )
+  expectContains(
+    report,
+    "wire: readJson refuses bad JSON",
+    await readReply(await post(port, "/json", "application/json", Bytes.fromString("{\"a\":"))),
+    "400 malformed message: body is not JSON",
+  )
+  const json = await post(port, "/json", "application/json", Bytes.fromString("[true]"))
+  if (json is Ok(response)) {
+    expectText(
+      report,
+      "wire: json sets the Content-Type",
+      Options.withDefault(Fields.get(response.headers, "Content-Type"), "none"),
+      "application/json",
+    )
+    expect(report, "wire: isOk on a 200", Responses.isOk(response))
+  } else {
+    expect(report, "wire: json answers", false)
+  }
+  const redirected = await post(port, "/redirect", plain, Bytes.fromString(""))
+  if (redirected is Ok(response)) {
+    expect(report, "wire: redirect gives 303", response.status == 303)
+    expectText(
+      report,
+      "wire: redirect sets Location",
+      Options.withDefault(Fields.get(response.headers, "Location"), "none"),
+      "/target",
+    )
+    expect(report, "wire: isOk on a 303", !Responses.isOk(response))
+  } else {
+    expect(report, "wire: redirect answers", false)
+  }
+  expectText(
+    report,
+    "wire: urlencoded with repeated names",
+    await readReply(
+      await post(
+        port,
+        "/fields",
+        "application/x-www-form-urlencoded",
+        Bytes.fromString("a=1&b=2&a=3"),
+      ),
+    ),
+    "200 a=1,b=2,a=3",
+  )
+  const sample = Bytes.fromString(buildSample())
+  expectText(
+    report,
+    "wire: multipart parts",
+    await readReply(await post(port, "/parts", multipartType(), sample)),
+    `200 ${await hexSummary()}`,
+  )
+  expectContains(
+    report,
+    "wire: a multipart body with no boundary is a result",
+    await readReply(await post(port, "/parts", multipartType(), Bytes.fromString("nothing"))),
+    "error: malformed message",
+  )
+  expectText(
+    report,
+    "wire: the server survives",
+    await readReply(await post(port, "/text", plain, Bytes.fromString("x"))),
+    "200 text:x",
+  )
+  Async.cancel(server)
+}
+
+// The summary of the sample with the contents in hex, as the server writes it.
+async function hexSummary(): string uses io, alloc {
+  const request = buildRequest(multipartType(), Bodies.fromText(buildSample()))
+  return await summarize(request, Forms.defaultOptions(), true)
+}
+
+async function acceptTask(listener: Listener): Result<Connection, HttpError> uses io, alloc {
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(error)) {
+    return Err(HttpError.Io(error))
+  }
+  return Ok(accepted.value)
+}
+
+async function serveOneConnection(ports: Sender<int>): int uses io, alloc {
+  // Listens, tells the port, and serves the first connection until curl closes it. It gives up
+  // when no connection comes in 20 seconds, so a failed curl cannot hang the check.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    const _told = Channel.send(ports, 0)
+    return -1
+  }
+  const _told = Channel.send(ports, Net.localPort(listener.value))
+  const accepted = await Wire.within(Some(Time.seconds(20)), acceptTask(listener.value))
+  if (accepted is Err(_)) {
+    return -1
+  }
+  await Server.serveConnection(accepted.value, Server.defaultOptions(), routeForms)
+  return 0
+}
+
+// Runs a server on a thread of its own and curl against it, and gives what curl printed.
+function runCurl(arguments: Array<string>, path: string): string uses io, alloc {
+  const #[sender, receiver] = Channel.create<int>(1)
+  return Thread.scope((scope) => {
+    const server = Thread.startAsync(scope, async () => await serveOneConnection(sender))
+    const port = Channel.receive(receiver)
+    let text = "no port"
+    if (port is Some(number)) {
+      const address = `http://127.0.0.1:${Int.toString(number)}${path}`
+      let command = ["-s", "--max-time", "20"]
+      for (const argument of Arrays.values(arguments)) {
+        Arrays.push(mutable command, argument)
+      }
+      Arrays.push(mutable command, address)
+      const fetched = Process.run("curl", command)
+      text = "curl failed"
+      if (fetched is Ok(result)) {
+        text = result[1]
+      }
+    }
+    const _joined = Thread.join(server)
+    return text
+  })
+}
+
+function checkCurl(report: Report) uses io, alloc {
+  const probe = Process.run("curl", ["--version"])
+  if (probe is Err(_)) {
+    print("skip - curl is not installed")
+    return
+  }
+  if (probe.value[0] != 0) {
+    print("skip - curl does not run")
+    return
+  }
+  const folder = Options.withDefault(Env.get("TMPDIR"), "/tmp")
+  let random = Random.seeded(Time.asNanoseconds(Time.elapsed(Time.now())))
+  const suffix = Options.withDefault(Random.nextInt(mutable random, 0, 1000000000), 0)
+  const file = Path.join(folder, `narra-http-form-${Int.toString(suffix)}.bin`)
+  const content = Options.withDefault(Bytes.fromHex("00ff0d0a2d2d0ac8"), Bytes.fromString(""))
+  if (Fs.writeBytes(file, content) is Err(_)) {
+    expect(report, "curl: the upload file is written", false)
+    return
+  }
+  const fields = runCurl(
+    ["-F", "name=value", "-F", `file=@${file};type=application/octet-stream`],
+    "/parts",
+  )
+  const _removed = Fs.removeFile(file)
+  const lines = [
+    `name|-|-|${Bytes.toHex(Bytes.fromString("value"))}`,
+    `file|${Path.basename(file)}|application/octet-stream|${Bytes.toHex(content)}`,
+  ]
+  expectText(report, "curl: -F gives the field and the file", fields, Str.join(lines, "\n"))
+  const encoded = runCurl(["-d", "a=1&b=x+y&a=2"], "/fields")
+  expectText(report, "curl: -d gives its fields with repeated names", encoded, "a=1,b=x y,a=2")
+}

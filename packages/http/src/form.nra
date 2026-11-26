@@ -1,0 +1,164 @@
+// http/form: the fields and files of a submitted form.
+
+import * as Arrays from "std/array"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Fields from "http/headers"
+import * as Multipart from "http/multipart"
+import * as Str from "std/string"
+import * as Unicode from "std/unicode"
+import * as Urls from "std/url"
+import { Body } from "http/body"
+import { HttpError } from "http/error"
+import { Request } from "http/request"
+
+/// One text field of a form.
+export struct FormField {
+  name: string
+  value: string
+}
+
+/// One part of a multipart form. filename is set for a file input, and contentType is what the
+/// part says about its content. The body is a stream that reads the request, so read it before
+/// the next part; a part that is not read is skipped.
+export struct FormPart {
+  name: string
+  filename: Option<string>
+  contentType: Option<string>
+  body: Body
+}
+
+/// The limits of a multipart read: how many parts, how many bytes in the head of one part, and
+/// how many bytes in the body of one part.
+export struct FormOptions {
+  maxParts: int
+  maxPartHeaderBytes: int
+  maxPartBytes: int
+}
+
+/// 1000 parts, 16 KiB of head per part and 16 MiB of body per part.
+export function defaultOptions(): FormOptions {
+  return FormOptions { maxParts: 1000, maxPartHeaderBytes: 16384, maxPartBytes: 16777216 }
+}
+
+/// The parts of a multipart/form-data request, one at a time and in order. Each part has a
+/// stream as its body, so a large upload is never held whole. An Err ends the stream: Malformed
+/// for a missing boundary, a bad part head or a body with no closing boundary, and TooLarge
+/// for a limit of the options.
+export async function* parts(
+  request: Request,
+  options: FormOptions,
+): AsyncGenerator<Result<FormPart, HttpError>> uses (io, alloc) {
+  const boundary = Multipart.findBoundary(request.headers)
+  if (boundary is Err(error)) {
+    yield Err(error)
+    return
+  }
+  const reader = Multipart.createReader(request.body, boundary.value)
+  let count = 0
+  while (true) {
+    const head = await Multipart.nextPart(reader, options.maxPartHeaderBytes)
+    if (head is Err(error)) {
+      yield Err(error)
+      return
+    }
+    const next = head.value
+    if (next is None) {
+      return
+    }
+    count += 1
+    if (count > options.maxParts) {
+      yield Err(HttpError.TooLarge("parts"))
+      return
+    }
+    const found = next.value
+    const stream = Multipart.streamPartBody(reader, options.maxPartBytes)
+    yield Ok(FormPart {
+      name: found.name,
+      filename: found.filename,
+      contentType: found.contentType,
+      body: Bodies.fromStream(stream),
+    })
+  }
+}
+
+/// The text fields of a form request, in order and with repeated names kept. The Content-Type
+/// picks the format: application/x-www-form-urlencoded or multipart/form-data. In a multipart
+/// form every part must be text without a filename, and the fields together may hold at most
+/// maxBytes bytes. A file part, a body that is not UTF-8 and any other Content-Type give
+/// Malformed.
+export async function readFields(
+  request: Request,
+  maxBytes: int,
+): Result<Array<FormField>, HttpError> uses io, alloc {
+  const contentType = Fields.get(request.headers, "Content-Type")
+  if (contentType is None) {
+    return Err(HttpError.Malformed("no Content-Type"))
+  }
+  const mediaType = findMediaType(contentType.value)
+  if (mediaType == "application/x-www-form-urlencoded") {
+    return await readUrlEncoded(request, maxBytes)
+  }
+  if (mediaType == "multipart/form-data") {
+    return await readMultipart(request, maxBytes)
+  }
+  return Err(HttpError.Malformed("Content-Type is not a form"))
+}
+
+function findMediaType(contentType: string): string uses alloc {
+  // The type and subtype in lower case, without the parameters.
+  const pieces = Str.split(contentType, ";")
+  if (pieces is Some(found)) {
+    return Unicode.toLowerCase(Str.trim(found[0]))
+  }
+  return ""
+}
+
+async function readUrlEncoded(
+  request: Request,
+  maxBytes: int,
+): Result<Array<FormField>, HttpError> uses io, alloc {
+  const text = await Bodies.readText(request.body, maxBytes)
+  if (text is Err(error)) {
+    return Err(error)
+  }
+  const pairs = Urls.parseQuery(text.value)
+  if (pairs is Err(message)) {
+    return Err(HttpError.Malformed(`form: ${message}`))
+  }
+  let fields: Array<FormField> = []
+  for (const pair of Arrays.values(pairs.value)) {
+    Arrays.push(mutable fields, FormField { name: pair.name, value: pair.value })
+  }
+  return Ok(fields)
+}
+
+async function readMultipart(
+  request: Request,
+  maxBytes: int,
+): Result<Array<FormField>, HttpError> uses io, alloc {
+  const options = FormOptions {
+    maxParts: defaultOptions().maxParts,
+    maxPartHeaderBytes: defaultOptions().maxPartHeaderBytes,
+    maxPartBytes: maxBytes,
+  }
+  let fields: Array<FormField> = []
+  let remaining = maxBytes
+  for await (const piece of parts(request, options)) {
+    if (piece is Err(error)) {
+      return Err(error)
+    }
+    if (piece.value.filename is Some(_)) {
+      return Err(HttpError.Malformed("a file part in a text form"))
+    }
+    // A field counts its name and its value in bytes.
+    remaining -= Bytes.length(Bytes.fromString(piece.value.name))
+    const text = await Bodies.readText(piece.value.body, remaining)
+    if (text is Err(error)) {
+      return Err(error)
+    }
+    remaining -= Bytes.length(Bytes.fromString(text.value))
+    Arrays.push(mutable fields, FormField { name: piece.value.name, value: text.value })
+  }
+  return Ok(fields)
+}

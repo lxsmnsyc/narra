@@ -1,7 +1,7 @@
 ---
 id: pkg-http-forms
 title: "http body readers and forms: text, json, urlencoded and multipart"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-25
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-26
-spent:
+spent: 263000
 owns:
   - roadmaps/selfhost/nodes/pkg-http-forms/**
   - packages/http/src/form.nra

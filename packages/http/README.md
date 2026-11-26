@@ -17,7 +17,7 @@ import { Request } from "http/request"
 import { Response } from "http/response"
 ```
 
-The package exposes these modules: `http/headers`, `http/error`, `http/body`, `http/request`, `http/response`, `http/server`, `http/client` and `http/cookie`. Its parsing and framing code is private.
+The package exposes these modules: `http/headers`, `http/error`, `http/body`, `http/request`, `http/response`, `http/form`, `http/cookie`, `http/server` and `http/client`. Its parsing and framing code is private.
 
 ## A server
 
@@ -155,6 +155,74 @@ async function handleLogin(request: Request): Response uses io, alloc {
 - **Lifetime.** A `maxAge` below zero is written as `Max-Age=0`. `expires` is written as an HTTP date, such as `Sun, 06 Nov 1994 08:49:37 GMT`.
 - **Removing.** `remove(mutable response, name, path)` adds a cookie with an empty value that expired in 1970. The path must be the one the cookie was set with, or the client keeps it.
 
+## Reading bodies and building responses
+
+Narra has no methods, so these are functions of the modules, called as `Bodies.readText(request.body, maxBytes)`. Every reader takes a limit and gives `TooLarge` when the body is longer.
+
+- `Bodies.readText(body, maxBytes)` gives the body as UTF-8 text, and `Malformed` when the bytes are not UTF-8.
+- `Bodies.readJson(body, maxBytes)` gives a `std/shape` `Value`, and `Malformed` when the text is not JSON.
+- `Responses.json(status, value)` is a response with the JSON text of a `Value` and `Content-Type: application/json`.
+- `Responses.redirect(url, status)` is a response with a `Location` header. The status must be 301, 302, 303, 307 or 308; any other status, an empty url, and a url with a line break or a NUL give `Err(Malformed)`.
+- `Responses.isOk(response)` is true for a status from 200 to 299.
+
+```narra fragment
+async function handleJson(request: Request): Response uses io, alloc {
+  const value = await Bodies.readJson(request.body, 100000)
+  if (value is Err(error)) {
+    return Responses.text(400, Errors.describe(error))
+  }
+  return Responses.json(200, value.value)
+}
+```
+
+## Forms
+
+`http/form` reads the body of a form submission, with files, in the two formats that browsers and `curl` send: `application/x-www-form-urlencoded` and `multipart/form-data`.
+
+```narra fragment
+import * as Forms from "http/form"
+```
+
+`Forms.readFields(request, maxBytes)` gives every text field as `FormField { name, value }`, in order and with repeated names kept. The `Content-Type` of the request picks the format. In a multipart form every part must be text without a filename, and the fields together may hold `maxBytes` bytes at most. A file part, bytes that are not UTF-8 and any other `Content-Type` give `Malformed`.
+
+```narra fragment
+async function handleForm(request: Request): Response uses io, alloc {
+  const fields = await Forms.readFields(request, 100000)
+  if (fields is Err(error)) {
+    return Responses.text(400, Errors.describe(error))
+  }
+  return Responses.text(200, `${Int.toString(Arrays.length(fields.value))} fields`)
+}
+```
+
+`Forms.parts(request, options)` is for uploads. It is an async stream of `Result<FormPart, HttpError>`, one value for each part of a multipart request. A `FormPart` has `name`, `filename` (set for a file input), `contentType` (what the part says about its content) and `body`, a stream. The body reads the request as it arrives, so a large file is never held whole.
+
+```narra fragment
+async function handleUpload(request: Request): Response uses io, alloc {
+  let received = 0
+  for await (const piece of Forms.parts(request, Forms.defaultOptions())) {
+    if (piece is Err(error)) {
+      return Responses.text(400, Errors.describe(error))
+    }
+    if (piece.value.filename is Some(_)) {
+      for await (const chunk of Bodies.chunks(piece.value.body)) {
+        if (chunk is Ok(bytes)) {
+          received += Bytes.length(bytes)
+        }
+      }
+    }
+  }
+  return Responses.text(200, `${Int.toString(received)} bytes`)
+}
+```
+
+- **Read a part before the next one.** The parts share the request body. A part that is not read is skipped when the stream goes on, and it cannot be read afterwards.
+- **Limits.** `FormOptions { maxParts, maxPartHeaderBytes, maxPartBytes }` bounds the number of parts, the head of one part and the body of one part. `Forms.defaultOptions()` gives 1000 parts, 16 KiB of head and 16 MiB of body. A request that passes one gives `TooLarge("parts")`, `TooLarge("part header")` or `TooLarge("part")`.
+- **No total limit.** `parts` has no limit on the size of the whole body. On a server, `maxBodyBytes` bounds it. A client that reads parts of a response must bound the body itself.
+- **Errors.** A missing or bad boundary, a part head that is not valid or not finished, a part with no `name`, and a body that ends before its closing boundary give `Malformed`. The stream ends with that error.
+- **The format.** The boundary comes from the `Content-Type`, bare or in quotes, 1 to 70 characters. The text before the first boundary and after the closing one is ignored. A part needs `Content-Disposition: form-data; name="..."`, with an optional `filename="..."`, and may have its own `Content-Type`. A quoted value ends at the next quote and keeps its backslashes, so a Windows path stays as sent. A boundary may be split across any two pieces of the body.
+- **No other encoding.** Part headers must be UTF-8, `filename*` is not read, and `Content-Transfer-Encoding` is ignored.
+
 ## Types
 
 - `Headers` is a list of `Header { name, value }` that keeps the order. Names match without regard to case. `get` gives the first value, `getAll` all of them, `set` replaces every field of the name with one, `add` appends and `remove` deletes.
@@ -178,4 +246,4 @@ async function handleLogin(request: Request): Response uses io, alloc {
 
 ## Tests
 
-`narrac run -sanitize packages/http` builds the test program of the package and runs it. It checks the parsers (with a fuzz run of random text), a server and a client over loopback (keep-alive, chunked bodies both ways, the 400, 408, 413, 431, 501 and 505 answers, redirects, an upgrade, timeouts), the cookie code (reading, writing, refusals, a fuzz run, and a cookie jar of `curl` that sets, sends back and removes cookies), and a server against `curl` when `curl` is installed. `sh scripts/test.sh` runs it in a full run.
+`narrac run -sanitize packages/http` builds the test program of the package and runs it. It checks the parsers (with a fuzz run of random text), a server and a client over loopback (keep-alive, chunked bodies both ways, the 400, 408, 413, 431, 501 and 505 answers, redirects, an upgrade, timeouts), the body readers and forms (multipart bodies split at every byte, cut short, changed and random, over loopback), the cookie code (reading, writing, refusals, a fuzz run, and a cookie jar of `curl` that sets, sends back and removes cookies), and a server against `curl` when `curl` is installed, including `curl -F` and `curl -d` forms. `sh scripts/test.sh` runs it in a full run.

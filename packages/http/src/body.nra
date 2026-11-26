@@ -1,7 +1,9 @@
 // http/body: the content of a request or a response.
 
 import * as Bytes from "std/bytes"
+import * as Json from "std/json"
 import { HttpError } from "http/error"
+import { Value } from "std/shape"
 
 /// The pieces of a body: each Ok value is one piece, and an Err ends the message with that
 /// error. The type carries the effects of reading a connection.
@@ -55,6 +57,36 @@ export async function readAll(body: Body, maxBytes: int): Result<bytes, HttpErro
     }
   }
   return Ok(content)
+}
+
+/// The body as text. It reads like readAll, and gives Malformed when the bytes are not UTF-8.
+export async function readText(
+  body: Body,
+  maxBytes: int,
+): Result<string, HttpError> uses io, alloc {
+  const content = await readAll(body, maxBytes)
+  if (content is Err(error)) {
+    return Err(error)
+  }
+  const text = Bytes.toString(content.value)
+  if (text is Err(message)) {
+    return Err(HttpError.Malformed(`body is not UTF-8: ${message}`))
+  }
+  return Ok(text.value)
+}
+
+/// The body as a JSON value. It reads like readText, and gives Malformed when the text is not
+/// JSON.
+export async function readJson(body: Body, maxBytes: int): Result<Value, HttpError> uses io, alloc {
+  const text = await readText(body, maxBytes)
+  if (text is Err(error)) {
+    return Err(error)
+  }
+  const value = Json.parse(text.value)
+  if (value is Err(message)) {
+    return Err(HttpError.Malformed(`body is not JSON: ${message}`))
+  }
+  return Ok(value.value)
 }
 
 /// The body as one stream: its data first when it has any, then the pieces of its stream.

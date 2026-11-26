@@ -2,9 +2,14 @@
 
 import * as Bodies from "http/body"
 import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Json from "std/json"
+import * as Str from "std/string"
 import { Body } from "http/body"
-import { Headers } from "http/headers"
 import { Connection } from "std/net"
+import { Headers } from "http/headers"
+import { HttpError } from "http/error"
+import { Value } from "std/shape"
 
 /// What a server does with the connection once the 101 head of a response is written: run gets
 /// the connection and the bytes that the client sent after its request. The connection closes
@@ -52,6 +57,39 @@ export function text(status: int, content: string): Response uses alloc {
     upgrade: None,
     upgraded: None,
   }
+}
+
+/// A response of a JSON value, with a Content-Type of application/json.
+export function json(status: int, value: Value): Response uses alloc {
+  let headers = Fields.empty()
+  Fields.add(mutable headers, "Content-Type", "application/json")
+  return Response {
+    status,
+    headers,
+    body: Bodies.fromText(Json.stringify(value)),
+    upgrade: None,
+    upgraded: None,
+  }
+}
+
+/// A response that sends the client to the url, with the Location header set. The status must
+/// be 301, 302, 303, 307 or 308, and the url must not be empty or hold a line break or a NUL;
+/// otherwise the result is Malformed.
+export function redirect(url: string, status: int): Result<Response, HttpError> uses alloc {
+  if (status != 301 && status != 302 && status != 303 && status != 307 && status != 308) {
+    return Err(HttpError.Malformed(`not a redirect status: ${Int.toString(status)}`))
+  }
+  if (url == "" || Str.contains(url, "\r") || Str.contains(url, "\n") || Str.contains(url, "\0")) {
+    return Err(HttpError.Malformed("the redirect url is empty or has a control character"))
+  }
+  let response = create(status)
+  Fields.add(mutable response.headers, "Location", url)
+  return Ok(response)
+}
+
+/// Whether the status of the response is from 200 to 299.
+export function isOk(response: Response): bool {
+  return response.status >= 200 && response.status <= 299
 }
 
 /// The standard reason phrase of a status, or an empty text for a status with none.

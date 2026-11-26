@@ -1,6 +1,6 @@
 ---
 id: fix-async-arrow-capture
-title: "fix: async arrows with struct parameters or captures emit invalid C"
+title: "fix: async codegen bugs found by the websocket package"
 status: todo
 priority: should
 type: fix
@@ -25,6 +25,7 @@ spent:
 owns:
   - roadmaps/selfhost/nodes/fix-async-arrow-capture/**
   - testdata/async-arrow-struct*
+  - testdata/async-generator-alias*
 shared:
   - selfhost/src/emit/*.nra
   - selfhost/src/check/*.nra
@@ -33,19 +34,20 @@ provides: []
 depends_on: []
 ---
 
-# fix: async arrows with struct parameters or captures emit invalid C
+# fix: async codegen bugs found by the websocket package
 
 ## Goal
 
-An async arrow whose parameter or capture is a struct compiles to valid C and runs correctly.
+Two async forms that the websocket package had to work around compile to valid C and run correctly.
 
 ## Context
 
-- Found by `pkg-websocket` (2026-11-26, see its `outcome.md` and `log.md`): such an arrow emits `f->v_x = *v_x` in the C, which does not compile. The package works around it with plain arrows that call named async functions.
-- Prove it first: a sample under `testdata/` that fails on the current branch. Then fix the emitter and keep the sample.
-- After the fix, the websocket workaround may stay; a follow-up can simplify it.
+- Found by `pkg-websocket` (2026-11-26, see its `outcome.md` and `log.md`). The package works around both; after the fix the workarounds may stay, and a follow-up can simplify them.
+- Bug 1: an async arrow whose parameter or capture is a struct emits `f->v_x = *v_x` in the C, which does not compile.
+- Bug 2: a top-level `const` alias of an async generator function (`export const messages = Session.messages`) gives a C name clash.
+- Prove each first: a sample under `testdata/` that fails on the current branch. Then fix and keep the samples.
 
 ## Acceptance
 
-- [ ] A sample with an async arrow taking a struct parameter, and one capturing a struct, fails to compile on the base and passes on the branch, clean under AddressSanitizer and the leak check.
+- [ ] Samples for an async arrow taking a struct parameter, one capturing a struct, and a const alias of an async generator, each failing on the base and passing on the branch, clean under AddressSanitizer and the leak check.
 - [ ] `sh scripts/test.sh` passes and `sh selfhost/bootstrap.sh` reaches the fixed point.

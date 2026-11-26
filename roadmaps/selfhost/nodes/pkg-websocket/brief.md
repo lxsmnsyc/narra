@@ -1,7 +1,7 @@
 ---
 id: pkg-websocket
 title: "websocket package over http"
-status: active
+status: done
 priority: could
 type: feature
 story: batch-25
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 715000
 owns:
   - roadmaps/selfhost/nodes/pkg-websocket/**
   - packages/websocket/**

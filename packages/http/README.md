@@ -70,11 +70,11 @@ async function* countdown(): AsyncGenerator<Result<bytes, HttpError>> uses (io, 
 }
 
 async function handleStream(request: Request): Response uses io, alloc {
-  let response = Responses.create(200)
-  response.body = Bodies.fromStream(countdown())
-  return response
+  return Responses.stream(200, countdown())
 }
 ```
+
+`Responses.withBody(status, body)` takes any `Body`, built with `Bodies.fromText`, `Bodies.fromBytes` or `Bodies.fromStream`.
 
 ### Taking over the connection
 
@@ -115,7 +115,7 @@ if (response is Ok(found)) {
 
 - **One connection per request.** `send` opens a connection, writes the request with `Connection: close` and reads the response. There is no pooling. A request that carries `Connection: Upgrade` keeps its own `Connection` header, so a server can switch protocols. The client sets `Content-Length` or `Transfer-Encoding` from the body and drops any that the caller gave. It skips up to ten interim `1xx` responses before the answer.
 - **The body is a stream.** `send` returns as soon as the head of the response has arrived. Read the body with `Bodies.readAll(body, maxBytes)` or step through `Bodies.chunks(body)`. The connection stays open until the body is read to its end or dropped.
-- **Request bodies.** Build one with `Bodies.fromText`, `Bodies.fromBytes` or `Bodies.fromStream`. A stream is sent chunked.
+- **Request bodies.** Build one with `Bodies.fromText`, `Bodies.fromBytes` or `Bodies.fromStream`, and pass it to `Requests.createWithBody(method, url, body)`. A stream is sent chunked.
 - **Redirects.** `ClientOptions.maxRedirects` is 0 by default, so a redirect is returned as it is. With a higher number, the client follows 301, 302, 303, 307 and 308. A 303, and a 301 or 302 after a `POST`, continue as a `GET`. A redirect that would need a stream body sent again is returned as it is. `Authorization` and `Cookie` are dropped when the redirect goes to another host or port.
 - **Timeout.** `ClientOptions.timeout` is the longest wait for the server in one step: connecting, writing, or reading. `None` waits as long as the server does.
 - **Upgrades.** When the server answers `101`, `response.upgraded` holds the connection and the bytes that arrived after the head. The body is empty.
@@ -161,6 +161,7 @@ Narra has no methods, so these are functions of the modules, called as `Bodies.r
 
 - `Bodies.readText(body, maxBytes)` gives the body as UTF-8 text, and `Malformed` when the bytes are not UTF-8.
 - `Bodies.readJson(body, maxBytes)` gives a `std/shape` `Value`, and `Malformed` when the text is not JSON.
+- `Responses.stream(status, pieces)` sends each piece of an async generator as it comes, chunked. `Responses.binary(status, data)` is a response of bytes with `Content-Type: application/octet-stream`. `Responses.withBody(status, body)` takes any `Body`.
 - `Responses.json(status, value)` is a response with the JSON text of a `Value` and `Content-Type: application/json`.
 - `Responses.redirect(url, status)` is a response with a `Location` header. The status must be 301, 302, 303, 307 or 308; any other status, an empty url, and a url with a line break or a NUL give `Err(Malformed)`.
 - `Responses.isOk(response)` is true for a status from 200 to 299.

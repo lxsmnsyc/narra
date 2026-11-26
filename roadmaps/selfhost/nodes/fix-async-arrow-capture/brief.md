@@ -1,10 +1,10 @@
 ---
 id: fix-async-arrow-capture
 title: "fix: async codegen bugs found by the websocket package"
-status: todo
+status: active
 priority: should
 type: fix
-story:
+story: batch-26
 early: false
 outline: false
 milestone: p4-packages

@@ -4,7 +4,7 @@ title: "changesets package: version bumps, changelogs and member tags"
 status: todo
 priority: could
 type: feature
-story:
+story: batch-26
 early: false
 outline: false
 milestone: p4-packages

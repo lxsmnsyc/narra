@@ -1,10 +1,10 @@
 ---
 id: pkg-yaml
 title: "yaml package"
-status: todo
+status: active
 priority: could
 type: feature
-story:
+story: batch-26
 early: false
 outline: false
 milestone: p4-packages

@@ -79,6 +79,10 @@ import { checkConstants } from "narrac/check/consteval"
 import { explainCode, writeCodeListJson, writeDiagnosticJson } from "narrac/driver/diagnostics"
 import { Fix, applyFix } from "narrac/driver/fixes"
 import { emitProgram } from "narrac/emit/emit"
+import { CFileUse } from "narrac/emit/emitexterns"
+import { buildObjects } from "narrac/driver/cobjects"
+import { collectUnits } from "narrac/driver/csources"
+import { findCacheRoot } from "narrac/driver/depcache"
 import { findEntry, exitWithoutRelease } from "narrac/emit/emitter"
 import * as Sets from "std/set"
 import { Set } from "std/set"
@@ -637,6 +641,7 @@ function compareDiagnostics(left: Diagnostic, right: Diagnostic): Ordering {
 struct CompiledProgram {
   text: string
   libraries: Array<string>
+  cFiles: Array<CFileUse>
   search: Array<string>
   package: Package
   checker: Checker
@@ -674,6 +679,7 @@ function compileToC(
   return Ok(CompiledProgram {
     text: result.text,
     libraries: result.libraries,
+    cFiles: result.cFiles,
     search: findSearchDirectories(package),
     package,
     checker,
@@ -806,12 +812,8 @@ function cCompilerName(): string uses io, alloc {
   return "cc"
 }
 
-function cCompilerArguments(
-  options: DriverOptions,
-  cPath: string,
-  output: string,
-  compiled: CompiledProgram,
-): Array<string> uses io, alloc {
+function cBaseArguments(options: DriverOptions): Array<string> uses io, alloc {
+  // The flags of every C file of a build: the emitted C and the C files of packages.
   let arguments: Array<string> = []
   // A target other than the host goes first, so the C compiler knows it before the other flags.
   if (findCrossTarget(options.targetName) is Some(row)) {
@@ -834,6 +836,17 @@ function cCompilerArguments(
     Arrays.push(mutable arguments, "-fsanitize=address,undefined")
     Arrays.push(mutable arguments, "-fno-omit-frame-pointer")
   }
+  return arguments
+}
+
+function cCompilerArguments(
+  options: DriverOptions,
+  cPath: string,
+  output: string,
+  compiled: CompiledProgram,
+  objects: Array<string>,
+): Array<string> uses io, alloc {
+  let arguments = cBaseArguments(options)
   // Thread mode and the name lookup of std/net link the POSIX threads library.
   let linksThreads = false
   for (const path of Arrays.values(compiled.checker.used)) {
@@ -857,6 +870,10 @@ function cCompilerArguments(
     Arrays.push(mutable arguments, `-L${directory}`)
   }
   Arrays.push(mutable arguments, cPath)
+  // The compiled C files of packages come after the emitted C.
+  for (const object of Arrays.values(objects)) {
+    Arrays.push(mutable arguments, object)
+  }
   // The libraries go after the C file that uses them; libm is always linked.
   for (const library of Arrays.values(compiled.libraries)) {
     if (library != "m") {
@@ -892,14 +909,35 @@ function buildExecutable(
   }
   const written = Fs.writeText(cPath, compiled.value.text)
   if (written is Err(message)) {
-    removeTempDirectory(directory.value, options.emitC == "")
+    removeTempDirectory(directory.value)
     return Err(message)
+  }
+  // The C files of the packages compile first, into objects of the build cache.
+  const units = collectUnits(
+    compiled.value.package.cPackages,
+    findTargetOs(options.targetName),
+    compiled.value.cFiles,
+  )
+  if (units is Err(error)) {
+    removeTempDirectory(directory.value)
+    return Err(formatDiagnostics(convertLoadErrors([error])))
+  }
+  const objects = buildObjects(
+    cCompilerName(),
+    cBaseArguments(options),
+    units.value,
+    findCacheRoot(),
+    directory.value,
+  )
+  if (objects is Err(error)) {
+    removeTempDirectory(directory.value)
+    return Err(formatDiagnostics(convertLoadErrors([error])))
   }
   const ran = Process.run(
     cCompilerName(),
-    cCompilerArguments(options, cPath, output, compiled.value),
+    cCompilerArguments(options, cPath, output, compiled.value, objects.value),
   )
-  removeTempDirectory(directory.value, options.emitC == "")
+  removeTempDirectory(directory.value)
   if (ran is Err(message)) {
     return Err(message)
   }
@@ -913,11 +951,9 @@ function buildExecutable(
   return compiled
 }
 
-function removeTempDirectory(directory: string, removeC: bool) uses io, alloc {
-  if (removeC) {
-    const _ = Fs.removeFile(Path.join(directory, "out.c"))
-  }
-  const _ = Fs.removeDir(directory)
+function removeTempDirectory(directory: string) uses io, alloc {
+  // The folder holds the emitted C and the objects of a build with no cache folder.
+  const _ = Fs.removeDirAll(directory)
 }
 
 // --- build ------------------------------------------------------------------

@@ -51,6 +51,18 @@ export function collectCases(context: Context): Array<TestCase> uses io, alloc {
       })
     }
   }
+  // The packages with C files: each folder is a commands case with its own build cache.
+  const cSourcesFolder = Path.join(Path.join(context.testdata, "packages"), "c-sources")
+  for (const path of Arrays.values(Files.listPaths(cSourcesFolder, ""))) {
+    if (Fs.isDir(path)) {
+      Arrays.push(mutable cases, TestCase {
+        suite: "packages",
+        name: `c-sources/${Path.basename(path)}`,
+        path: path,
+        variant: "commands",
+      })
+    }
+  }
   Arrays.push(mutable cases, TestCase {
     suite: "packages",
     name: "repository/workspace",
@@ -67,7 +79,7 @@ const REPOSITORY_STEPS = `0 :: check . ::
 export function runCase(context: Context, testCase: TestCase): Result<bool, string> uses io, alloc {
   if (testCase.variant == "repository") {
     // The repository root is a workspace of the compiler and the test runner.
-    return runCommandSteps(context, testCase.path, REPOSITORY_STEPS)
+    return runCommandSteps(context, testCase.path, [], REPOSITORY_STEPS)
   }
   if (testCase.variant == "load") {
     return runLoadCase(context, testCase)
@@ -284,6 +296,7 @@ function checkStepOutput(
 function runCommandStep(
   context: Context,
   rootFolder: string,
+  environment: Array<string>,
   parts: Array<string>,
 ): Result<bool, string> uses io, alloc {
   if (parts[0] == "exists") {
@@ -305,7 +318,7 @@ function runCommandStep(
       Arrays.push(mutable arguments, argument)
     }
   }
-  const result = Common.runNarracWith(context, rootFolder, [], arguments)
+  const result = Common.runNarracWith(context, rootFolder, environment, arguments)
   if (result.code != wantCode.value) {
     return Err(`want exit code ${parts[0]}, got ${Common.describeRun(result)}`)
   }
@@ -315,6 +328,7 @@ function runCommandStep(
 function runCommandSteps(
   context: Context,
   rootFolder: string,
+  environment: Array<string>,
   steps: string,
 ): Result<bool, string> uses io, alloc {
   let number = 0
@@ -331,7 +345,7 @@ function runCommandSteps(
     while (Arrays.length(parts) < 3) {
       Arrays.push(mutable parts, "")
     }
-    const ran = runCommandStep(context, rootFolder, parts)
+    const ran = runCommandStep(context, rootFolder, environment, parts)
     if (ran is Err(message)) {
       return Err(`step ${Int.toString(number)} (${line}): ${message}`)
     }
@@ -346,7 +360,8 @@ function runCommandsCase(
   // A commands case is a workspace in `root/` and a `steps` file. Each step line is `EXIT :: ARGS ::
   // WANTS` (a run of narrac from `root/`, whose output must hold each want joined by ` && `, or
   // not hold one that starts with `!`), `exists :: PATH` or `write :: PATH :: TEXT`. The case runs
-  // in a copy.
+  // in a copy with its own build cache next to `root/`, and a build prints a line `compiled
+  // <package>/<file>` for each C file it compiles.
   const made = makeScratch()
   if (made is Err(message)) {
     return Err(message)
@@ -362,7 +377,9 @@ function runCommandsCase(
     if (steps is Err(message)) {
       outcome = Err(message)
     } else {
-      outcome = runCommandSteps(context, Path.join(caseFolder, "root"), steps.value)
+      // NARRA_C_LOG makes a build print a line for each C file it compiles.
+      const environment = [`NARRA_CACHE=${Path.join(caseFolder, "cache")}`, "NARRA_C_LOG=1"]
+      outcome = runCommandSteps(context, Path.join(caseFolder, "root"), environment, steps.value)
     }
   }
   removeScratch(scratch)

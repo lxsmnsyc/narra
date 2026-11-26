@@ -13,6 +13,7 @@ import { hashModule } from "narrac/driver/hash"
 import { findUndeclaredImports, prepareDependencies } from "narrac/driver/depload"
 import { ExportTable, checkExportFiles, rewriteImports } from "narrac/driver/exports"
 import { Binary, LoadError, parseManifest } from "narrac/driver/manifest"
+import { PackageC, checkExternFiles, checkSources, findSourceFolder } from "narrac/driver/csources"
 import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import { stdSourceFor } from "narrac/std/stdtext"
@@ -40,6 +41,7 @@ export struct Package {
   nextId: int // the next free node id after all files (one sequence)
   single: bool // loaded from one .nra file, without narra.toml
   dependencyNames: Array<string> // the packages fetched for this build; their C names carry the package name
+  cPackages: Array<PackageC> = [] // this package first, then each dependency, with their [c] tables
 }
 
 function plain(message: string): Array<LoadError> {
@@ -207,9 +209,15 @@ function loadFile(
   const source = parsed.value
   const module = newModule(stem, base, path, source.ast, source.firstId, source.endId)
   // The loaded std modules stay in `load`, so the push below does not copy the array.
+  const fileC = PackageC { name: stem, directory: dirName(path), tables: [] }
+  const fileErrors = checkExternFiles(fileC, base, source.ast, "")
+  if (Arrays.length(fileErrors) > 0) {
+    return Err(fileErrors)
+  }
   let load = loadStdModules([module], mutable cache)
   Arrays.push(mutable load.modules, module)
   return Ok(Package {
+    cPackages: [fileC],
     name: stem,
     directory: dirName(path),
     modules: load.modules,
@@ -286,7 +294,17 @@ function loadPackage(
   )) {
     Arrays.push(mutable errors, problem)
   }
+  const ownC = PackageC { name: config.name, directory, tables: config.cTables }
+  let cPackages: Array<PackageC> = [copy(ownC)]
+  for (const problem of Arrays.values(checkSources(ownC, "narra.toml"))) {
+    Arrays.push(mutable errors, problem)
+  }
   for (const module of Arrays.values(own.value)) {
+    for (const problem of Arrays.values(
+      checkExternFiles(ownC, module.file, module.ast, findSourceFolder(module.path)),
+    )) {
+      Arrays.push(mutable errors, problem)
+    }
     const undeclared = findUndeclaredImports(
       module.file,
       module.ast.imports,
@@ -327,7 +345,21 @@ function loadPackage(
     )) {
       Arrays.push(mutable errors, problem)
     }
+    const dependencyC = PackageC {
+      name: dependency.name,
+      directory: dependency.directory,
+      tables: dependency.cTables,
+    }
+    Arrays.push(mutable cPackages, copy(dependencyC))
+    for (const problem of Arrays.values(checkSources(dependencyC, manifestFile))) {
+      Arrays.push(mutable errors, problem)
+    }
     for (const module of Arrays.values(loaded.value)) {
+      for (const problem of Arrays.values(
+        checkExternFiles(dependencyC, module.file, module.ast, findSourceFolder(module.path)),
+      )) {
+        Arrays.push(mutable errors, problem)
+      }
       const undeclared = findUndeclaredImports(
         module.file,
         module.ast.imports,
@@ -365,6 +397,7 @@ function loadPackage(
     nextId: cache.nextId,
     single: false,
     dependencyNames,
+    cPackages,
   })
 }
 

@@ -1,0 +1,371 @@
+// The object files of the C files of packages. Each file compiles with the same C compiler and
+// flags as the emitted C, with the include folders and defines of its own package, and the link
+// takes the objects after the emitted C file. An object is kept in the build cache under a key
+// made of the compiler, the flags and the text of the file, then of the headers the first
+// compile found it includes (the `.deps` file) and the listing of the folders a header could
+// come from. An unchanged rebuild compiles nothing; an edited or added header compiles the files
+// it reaches and no other. A header that cannot be read is a miss, never a hit. With
+// NARRA_C_LOG set, each compile prints `compiled <package>/<file>` to stderr.
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Digest from "std/digest"
+import * as Env from "std/env"
+import * as Fs from "std/fs"
+import * as Io from "std/io"
+import * as Path from "std/path"
+import * as Process from "std/process"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import { CUnit } from "narrac/driver/csources"
+import { LoadError } from "narrac/driver/manifest"
+import { splitString, substring } from "narrac/driver/textops"
+
+struct ObjectSettings {
+  compiler: string
+  identity: string // the first line of `cc --version`
+  baseFlags: Array<string>
+  folder: string // the object cache folder
+  scratch: string
+  logsCompiles: bool
+}
+
+export function buildObjects(
+  compiler: string,
+  baseFlags: Array<string>,
+  units: Array<CUnit>,
+  cacheRoot: string,
+  scratch: string,
+): Result<Array<string>, LoadError> uses io, alloc {
+  // Without a cache folder the objects live in the scratch folder for this build only.
+  let folder = Path.join(scratch, "objects")
+  if (cacheRoot != "") {
+    folder = Path.join(cacheRoot, "objects")
+  }
+  const created = Fs.createDirAll(folder)
+  if (created is Err(message)) {
+    return Err(createCompileError("", "", message))
+  }
+  let logsCompiles = false
+  if (Env.get("NARRA_C_LOG") is Some(setting)) {
+    logsCompiles = setting != ""
+  }
+  // A changed compiler gives other objects, so its name and version are part of every key.
+  const settings = ObjectSettings {
+    compiler,
+    identity: findCompilerIdentity(compiler, Arrays.length(units)),
+    baseFlags,
+    folder,
+    scratch,
+    logsCompiles,
+  }
+  let objects: Array<string> = []
+  for (const unit of Arrays.values(units)) {
+    const object = buildObject(settings, unit)
+    if (object is Err(error)) {
+      return Err(error)
+    }
+    Arrays.push(mutable objects, object.value)
+  }
+  return Ok(objects)
+}
+
+function findCompilerIdentity(compiler: string, unitCount: int): string uses io, alloc {
+  // The version is read once per build, and only when a C file is to compile.
+  if (unitCount == 0) {
+    return ""
+  }
+  const ran = Process.run(compiler, ["--version"])
+  if (ran is Ok(result)) {
+    const #[_, standardOutput, _] = result
+    return splitString(standardOutput, "\n")[0]
+  }
+  return "unknown"
+}
+
+function createCompileError(package: string, file: string, message: string): LoadError uses alloc {
+  return LoadError {
+    code: "E1662",
+    file: "",
+    line: 0,
+    column: 1,
+    message: `the C file ${file} of package ${package} does not compile: ${message}`,
+  }
+}
+
+function hashText(text: string): string uses alloc {
+  return Bytes.toHex(Digest.sha256(Bytes.fromString(text)))
+}
+
+function collectFlags(baseFlags: Array<string>, unit: CUnit): Array<string> uses alloc {
+  let flags: Array<string> = []
+  for (const flag of Arrays.values(baseFlags)) {
+    Arrays.push(mutable flags, flag)
+  }
+  for (const folder of Arrays.values(unit.include)) {
+    Arrays.push(mutable flags, `-I${folder}`)
+  }
+  for (const define of Arrays.values(unit.defines)) {
+    Arrays.push(mutable flags, `-D${define}`)
+  }
+  return flags
+}
+
+function buildObject(
+  settings: ObjectSettings,
+  unit: CUnit,
+): Result<string, LoadError> uses io, alloc {
+  const flags = collectFlags(settings.baseFlags, unit)
+  const text = Fs.readText(unit.path)
+  if (text is Err(_)) {
+    return Err(LoadError {
+      code: "E1660",
+      file: "",
+      line: 0,
+      column: 1,
+      message: `the C file ${unit.relative} of package ${unit.package} does not exist`,
+    })
+  }
+  // The first key names the file, the compiler and the flags; the headers refine it.
+  const firstKey = hashText(
+    `${settings.compiler}\n${settings.identity}\n${Str.join(flags, "\n")}\n${unit.package}/${unit.relative}\n${text.value}`,
+  )
+  const known = Fs.readText(Path.join(settings.folder, `${firstKey}.deps`))
+  if (known is Ok(listed)) {
+    const secondKey = hashHeaders(firstKey, unit, splitLines(listed))
+    if (secondKey != "") {
+      const hit = Path.join(settings.folder, `${secondKey}.o`)
+      if (Fs.exists(hit)) {
+        return Ok(hit)
+      }
+    }
+  }
+  return compileObject(settings, flags, unit, firstKey)
+}
+
+function splitLines(text: string): Array<string> uses alloc {
+  let lines: Array<string> = []
+  for (const line of Arrays.values(splitString(text, "\n"))) {
+    if (line != "") {
+      Arrays.push(mutable lines, line)
+    }
+  }
+  return lines
+}
+
+function describeFolder(folder: string): string uses io, alloc {
+  // The names in a folder: a header added to it changes what an include can find.
+  const listed = Fs.listDir(folder)
+  if (listed is Err(_)) {
+    return "<none>"
+  }
+  let names = copy(listed.value)
+  Arrays.sort(mutable names)
+  return Str.join(names, "\n")
+}
+
+function hashHeaders(firstKey: string, unit: CUnit, headers: Array<string>): string uses io, alloc {
+  // "" when a header cannot be read, so the caller compiles again instead of trusting the object.
+  let builder = Str.builder()
+  Str.append(mutable builder, firstKey)
+  // The folders a header could come from: the include folders, and the folder of the file and of
+  // each header, where a quoted include looks first.
+  let folders: Array<string> = []
+  for (const folder of Arrays.values(unit.include)) {
+    Arrays.push(mutable folders, folder)
+  }
+  Arrays.push(mutable folders, Path.dirname(unit.path))
+  for (const header of Arrays.values(headers)) {
+    Arrays.push(mutable folders, Path.dirname(header))
+  }
+  let seen: Array<string> = []
+  for (const folder of Arrays.values(folders)) {
+    if (!hasName(seen, folder)) {
+      Arrays.push(mutable seen, folder)
+      Str.append(mutable builder, `\nfolder ${folder}\n${describeFolder(folder)}`)
+    }
+  }
+  for (const header of Arrays.values(headers)) {
+    const content = Fs.readText(header)
+    if (content is Err(_)) {
+      return ""
+    }
+    Str.append(mutable builder, `\nheader ${header}\n${content.value}`)
+  }
+  return hashText(Str.build(builder))
+}
+
+function hasName(names: Array<string>, name: string): bool {
+  for (const known of Arrays.values(names)) {
+    if (known == name) {
+      return true
+    }
+  }
+  return false
+}
+
+function compileObject(
+  settings: ObjectSettings,
+  flags: Array<string>,
+  unit: CUnit,
+  firstKey: string,
+): Result<string, LoadError> uses io, alloc {
+  const object = Path.join(settings.scratch, `${firstKey}.o`)
+  const depsFile = Path.join(settings.scratch, `${firstKey}.d`)
+  let arguments: Array<string> = []
+  for (const flag of Arrays.values(flags)) {
+    Arrays.push(mutable arguments, flag)
+  }
+  for (const flag of Arrays.values(["-MMD", "-MF", depsFile, "-c", unit.path, "-o", object])) {
+    Arrays.push(mutable arguments, flag)
+  }
+  if (settings.logsCompiles) {
+    Io.writeError(`compiled ${unit.package}/${unit.relative}\n`)
+  }
+  const ran = Process.run(settings.compiler, arguments)
+  if (ran is Err(message)) {
+    return Err(createCompileError(unit.package, unit.relative, message))
+  }
+  const #[code, _, standardError] = ran.value
+  if (code != 0) {
+    return Err(createCompileError(unit.package, unit.relative, findFirstError(standardError)))
+  }
+  // The headers the compile found, from the dependency rule the compiler wrote. A rule that
+  // cannot be read, or a header that cannot be read afterwards, keeps the object out of the cache.
+  const rule = Fs.readText(depsFile)
+  if (rule is Err(_)) {
+    return Ok(object)
+  }
+  const headers = parseDependencyRule(rule.value)
+  if (headers is None) {
+    return Ok(object)
+  }
+  const secondKey = hashHeaders(firstKey, unit, headers.value)
+  if (secondKey == "") {
+    return Ok(object)
+  }
+  const finalPath = Path.join(settings.folder, `${secondKey}.o`)
+  const stored = storeFile(object, finalPath, settings.scratch)
+  if (stored is Err(message)) {
+    return Err(createCompileError(unit.package, unit.relative, message))
+  }
+  // The list of headers is written last, so a reader that finds it finds the object too.
+  const listPath = Path.join(settings.scratch, `${firstKey}.list`)
+  const listWritten = Fs.writeText(listPath, Str.join(headers.value, "\n"))
+  if (listWritten is Err(message)) {
+    return Err(createCompileError(unit.package, unit.relative, message))
+  }
+  const listStored = storeFile(
+    listPath,
+    Path.join(settings.folder, `${firstKey}.deps`),
+    settings.scratch,
+  )
+  if (listStored is Err(message)) {
+    return Err(createCompileError(unit.package, unit.relative, message))
+  }
+  return Ok(finalPath)
+}
+
+function storeFile(
+  source: string,
+  target: string,
+  scratch: string,
+): Result<bool, string> uses io, alloc {
+  // Copied under a staging name and renamed, so a reader never sees half a file.
+  const staged = `${target}.${Path.basename(scratch)}`
+  const copied = Fs.copyFile(source, staged)
+  if (copied is Err(message)) {
+    return Err(message)
+  }
+  return Fs.rename(staged, target)
+}
+
+function parseDependencyRule(rule: string): Option<Array<string>> uses alloc {
+  // `object: source header header \` over several lines. The tokens split on unescaped white
+  // space; `\ ` and `\#` are the character itself, `$$` is `$` and a backslash before a newline
+  // continues the line. The first token ending in `:` is the object, the next one the source.
+  const tokens = splitRule(rule)
+  for (const index of Ranges.between(0, Arrays.length(tokens))) {
+    if (Str.endsWith(tokens[index], ":")) {
+      let headers: Array<string> = []
+      for (const position of Ranges.between(index + 2, Arrays.length(tokens))) {
+        Arrays.push(mutable headers, tokens[position])
+      }
+      return Some(headers)
+    }
+  }
+  return None
+}
+
+function splitRule(rule: string): Array<string> uses alloc {
+  let tokens: Array<string> = []
+  let current = ""
+  let runStart = 0
+  let index = 0
+  const length = Str.length(rule)
+  while (index < length) {
+    const byte = Str.byteAt(rule, index)
+    if (byte == 92 && index + 1 < length) {
+      const escaped = Str.byteAt(rule, index + 1)
+      if (escaped == 32 || escaped == 35) {
+        // A space or `#` of a path.
+        current = `${current}${substring(rule, runStart, index)}${substring(rule, index + 1, index + 2)}`
+        index += 2
+        runStart = index
+        continue
+      }
+      if (
+        escaped == 10 || (escaped == 13 && index + 2 < length && Str.byteAt(rule, index + 2) == 10)
+      ) {
+        // A continued line separates tokens.
+        current = `${current}${substring(rule, runStart, index)}`
+        if (current != "") {
+          Arrays.push(mutable tokens, current)
+        }
+        current = ""
+        if (escaped == 10) {
+          index += 2
+        } else {
+          index += 3
+        }
+        runStart = index
+        continue
+      }
+    }
+    if (byte == 36 && index + 1 < length && Str.byteAt(rule, index + 1) == 36) {
+      current = `${current}${substring(rule, runStart, index)}$`
+      index += 2
+      runStart = index
+      continue
+    }
+    if (byte == 32 || byte == 9 || byte == 10 || byte == 13) {
+      current = `${current}${substring(rule, runStart, index)}`
+      if (current != "") {
+        Arrays.push(mutable tokens, current)
+      }
+      current = ""
+      index++
+      runStart = index
+      continue
+    }
+    index++
+  }
+  current = `${current}${substring(rule, runStart, length)}`
+  if (current != "") {
+    Arrays.push(mutable tokens, current)
+  }
+  return tokens
+}
+
+function findFirstError(output: string): string uses alloc {
+  // The first line that says error, else the first line.
+  let first = ""
+  for (const line of Arrays.values(splitString(output, "\n"))) {
+    if (first == "" && Str.trim(line) != "") {
+      first = Str.trim(line)
+    }
+    if (Str.contains(line, "error")) {
+      return Str.trim(line)
+    }
+  }
+  return first
+}

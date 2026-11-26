@@ -1,0 +1,188 @@
+// The yaml-test-suite checks. The data sits under packages/yaml/suite, one folder per case: `in.yaml`
+// is the input, `in.json` the expected values when the input is valid, and an `error` file marks an
+// input that must fail. `skips.txt` lists the cases that the reader leaves out, each with its
+// reason; a skipped case that passes is a failure, so the list stays true.
+
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Json from "std/json"
+import * as Path from "std/path"
+import * as Str from "std/string"
+import * as Yaml from "yaml/yaml"
+import { Report, expect, sameValue } from "yaml/checkkit"
+
+/// How the cases of the suite went.
+export struct SuiteCounts {
+  passed: int
+  skipped: int
+  failed: int
+}
+
+function readSkips(directory: string): Map<string, string> uses io, alloc {
+  let skips: Map<string, string> = Map {}
+  const file = Fs.readText(Path.join(directory, "skips.txt"))
+  if (file is Err(_)) {
+    return skips
+  }
+  const lines = Str.split(file.value, "\n")
+  if (lines is None) {
+    return skips
+  }
+  for (const line of Arrays.values(lines.value)) {
+    if (Str.length(line) == 0 || Str.startsWith(line, "#")) {
+      continue
+    }
+    if (Str.indexOf(line, " ") is Some(space)) {
+      if (Str.slice(line, 0, space) is Some(id)) {
+        skips[id] = Str.sliceFrom(line, space + 1)
+      }
+    }
+  }
+  return skips
+}
+
+function listCases(directory: string): Array<string> uses io, alloc {
+  let cases: Array<string> = []
+  const listed = Fs.listDir(directory)
+  if (listed is Err(_)) {
+    return cases
+  }
+  let names = copy(listed.value)
+  Arrays.sort(mutable names)
+  for (const name of Arrays.values(names)) {
+    const folder = Path.join(directory, name)
+    if (!Fs.isDir(folder)) {
+      continue
+    }
+    if (Fs.exists(Path.join(folder, "in.yaml"))) {
+      Arrays.push(mutable cases, name)
+      continue
+    }
+    const inner = Fs.listDir(folder)
+    if (inner is Ok(parts)) {
+      let sorted = copy(parts)
+      Arrays.sort(mutable sorted)
+      for (const part of Arrays.values(sorted)) {
+        if (Fs.exists(Path.join(Path.join(folder, part), "in.yaml"))) {
+          Arrays.push(mutable cases, `${name}/${part}`)
+        }
+      }
+    }
+  }
+  return cases
+}
+
+function splitJson(text: string): Array<string> uses alloc {
+  let values: Array<string> = []
+  const length = Str.length(text)
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == 32 || byte == 9 || byte == 10 || byte == 13) {
+      index += 1
+      continue
+    }
+    const start = index
+    let depth = 0
+    let inString = false
+    while (index < length) {
+      const current = Str.byteAt(text, index)
+      index += 1
+      if (inString) {
+        if (current == 92) {
+          index += 1
+        } else if (current == 34) {
+          inString = false
+          if (depth == 0) {
+            break
+          }
+        }
+        continue
+      }
+      if (current == 34) {
+        inString = true
+      } else if (current == 91 || current == 123) {
+        depth += 1
+      } else if (current == 93 || current == 125) {
+        depth -= 1
+        if (depth == 0) {
+          break
+        }
+      } else if (depth == 0 && index < length) {
+        const next = Str.byteAt(text, index)
+        if (next == 32 || next == 9 || next == 10 || next == 13) {
+          break
+        }
+      }
+    }
+    if (Str.slice(text, start, index) is Some(piece)) {
+      Arrays.push(mutable values, piece)
+    }
+  }
+  return values
+}
+
+function judgeCase(folder: string): string uses io, alloc {
+  const input = Fs.readText(Path.join(folder, "in.yaml"))
+  if (input is Err(message)) {
+    return `cannot read the input: ${message}`
+  }
+  const parsed = Yaml.parseAll(input.value)
+  if (Fs.exists(Path.join(folder, "error"))) {
+    if (parsed is Ok(_)) {
+      return "the input is invalid but was read"
+    }
+    return ""
+  }
+  if (parsed is Err(error)) {
+    return `the input is valid but failed: ${Yaml.formatError(error)}`
+  }
+  const expected = Fs.readText(Path.join(folder, "in.json"))
+  if (expected is Err(_)) {
+    return ""
+  }
+  const documents = splitJson(expected.value)
+  if (Arrays.length(documents) != Arrays.length(parsed.value)) {
+    return `expected ${Int.toString(Arrays.length(documents))} documents, got ${Int.toString(Arrays.length(parsed.value))}`
+  }
+  for (const #[index, document] of Arrays.entries(documents)) {
+    const wanted = Json.parse(document)
+    if (wanted is Err(message)) {
+      return `the expected JSON does not parse: ${message}`
+    }
+    if (!sameValue(wanted.value, parsed.value[index])) {
+      return `document ${Int.toString(index)} differs: expected ${Json.stringify(wanted.value)}, got ${Json.stringify(parsed.value[index])}`
+    }
+  }
+  return ""
+}
+
+/// Runs every case of the suite in a folder and counts them as passed, skipped or failed. A failed
+/// case prints its id and the reason.
+export function runSuite(report: Report, directory: string): SuiteCounts uses io, alloc {
+  const skips = readSkips(directory)
+  let passed = 0
+  let skipped = 0
+  let failed = 0
+  for (const id of Arrays.values(listCases(directory))) {
+    const problem = judgeCase(Path.join(directory, id))
+    if (skips[id] is Some(reason)) {
+      if (problem == "") {
+        expect(report, `suite ${id}: skipped for "${reason}" but it passes now`, false)
+        failed += 1
+      } else {
+        skipped += 1
+      }
+      continue
+    }
+    expect(report, `suite ${id}`, problem == "")
+    if (problem == "") {
+      passed += 1
+    } else {
+      failed += 1
+      print(`  ${problem}`)
+    }
+  }
+  return SuiteCounts { passed, skipped, failed }
+}

@@ -1,0 +1,124 @@
+// changesets/release: which members get a new version, and what their changelogs say.
+
+import * as Arrays from "std/array"
+import * as Semver from "std/semver"
+import { Changeset, Level, levelRank } from "changesets/changeset"
+import { Member } from "changesets/workspace"
+
+/// One line of a changelog and the level section it belongs to.
+export struct Note {
+  level: Level
+  text: string
+}
+
+/// A member that gets a new version. `level` is the highest level of its changesets, or `patch`
+/// for a member that only follows a dependency.
+export struct Release {
+  member: string
+  folder: string
+  oldVersion: string
+  newVersion: string
+  level: Level
+  notes: Array<Note>
+}
+
+/// Works out the releases that the changesets cause. The highest level of a member wins. A member
+/// that depends on a released member through the workspace gets a patch release, and that repeats
+/// along chains. A member with a version that is not MAJOR.MINOR.PATCH is an error.
+export function planReleases(
+  members: Array<Member>,
+  changesets: Array<Changeset>,
+): Result<Array<Release>, string> uses alloc {
+  let levels: Map<string, Level> = Map {}
+  let notes: Map<string, Array<Note>> = Map {}
+  // Collect what the changesets ask for
+  for (const changeset of changesets) {
+    for (const entry of changeset.entries) {
+      const current = levels[entry.member]
+      if (current is Some(existing)) {
+        if (levelRank(entry.level) > levelRank(existing)) {
+          levels[entry.member] = entry.level
+        }
+      } else {
+        levels[entry.member] = entry.level
+      }
+      let memberNotes: Array<Note> = []
+      const previous = notes[entry.member]
+      if (previous is Some(earlier)) {
+        memberNotes = copy(earlier)
+      }
+      Arrays.push(mutable memberNotes, Note { level: entry.level, text: changeset.summary })
+      notes[entry.member] = memberNotes
+    }
+  }
+  // Release the members that depend on a released member, until nothing changes
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const member of members) {
+      if (levels[member.name] is None) {
+        for (const dependency of member.dependencies) {
+          if (levels[dependency] is Some(_)) {
+            levels[member.name] = Level.Patch
+            changed = true
+          }
+        }
+      }
+    }
+  }
+  // Compute the new versions
+  let newVersions: Map<string, string> = Map {}
+  for (const member of members) {
+    const level = levels[member.name]
+    if (level is Some(memberLevel)) {
+      const parsed = Semver.parse(member.version)
+      if (parsed is None) {
+        return Err(
+          `member ${member.name} has the version ${member.version}, which is not MAJOR.MINOR.PATCH`,
+        )
+      }
+      newVersions[member.name] = Semver.toString(Semver.bump(parsed.value, selectPart(memberLevel)))
+    }
+  }
+  // Build the releases in member order
+  let releases: Array<Release> = []
+  for (const member of members) {
+    const level = levels[member.name]
+    const newVersion = newVersions[member.name]
+    if (level is Some(memberLevel)) {
+      if (newVersion is Some(version)) {
+        let releaseNotes: Array<Note> = []
+        const own = notes[member.name]
+        if (own is Some(ownNotes)) {
+          releaseNotes = copy(ownNotes)
+        }
+        for (const dependency of member.dependencies) {
+          const dependencyVersion = newVersions[dependency]
+          if (dependencyVersion is Some(updated)) {
+            Arrays.push(mutable releaseNotes, Note {
+              level: Level.Patch,
+              text: `Updated dependency ${dependency} to ${updated}`,
+            })
+          }
+        }
+        Arrays.push(mutable releases, Release {
+          member: member.name,
+          folder: member.folder,
+          oldVersion: member.version,
+          newVersion: version,
+          level: memberLevel,
+          notes: releaseNotes,
+        })
+      }
+    }
+  }
+  return Ok(releases)
+}
+
+function selectPart(level: Level): Semver.Part {
+  return match (level) {
+    Level.Patch => Semver.Part.Patch
+    Level.Minor => Semver.Part.Minor
+    Level.Major => Semver.Part.Major
+  }
+}

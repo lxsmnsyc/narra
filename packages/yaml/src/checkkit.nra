@@ -1,0 +1,206 @@
+// The counters and helpers that the checks of the package share.
+
+import * as Arrays from "std/array"
+import * as Cells from "std/cell"
+import * as Float from "std/float"
+import * as Int from "std/int"
+import * as Maps from "std/map"
+import * as Str from "std/string"
+import { Cell } from "std/cell"
+import { ReadOptions } from "yaml/yaml"
+import { Value } from "std/shape"
+import * as Yaml from "yaml/yaml"
+
+/// How many checks ran and how many failed. Copies share the counts.
+export struct Report {
+  checked: Cell<int>
+  failed: Cell<int>
+}
+
+export function createReport(): Report uses alloc {
+  return Report { checked: Cells.create(0), failed: Cells.create(0) }
+}
+
+/// Counts one check. A failed check prints its line; a passed one prints nothing.
+export function expect(report: Report, name: string, condition: bool) uses io, alloc {
+  Cells.set(report.checked, Cells.get(report.checked) + 1)
+  if (!condition) {
+    Cells.set(report.failed, Cells.get(report.failed) + 1)
+    print(`FAIL - ${name}`)
+  }
+}
+
+/// A check that two texts are equal. A failure prints both.
+export function expectText(
+  report: Report,
+  name: string,
+  actual: string,
+  expected: string,
+) uses io, alloc {
+  expect(report, name, actual == expected)
+  if (actual != expected) {
+    print(`  expected: ${expected}`)
+    print(`  actual:   ${actual}`)
+  }
+}
+
+/// Whether two values are the same: lists in order, records by key, floats by their text so that a
+/// NaN equals a NaN and 0.0 differs from -0.0.
+export function sameValue(first: Value, second: Value): bool uses alloc {
+  if (first is Value.Null) {
+    return second is Value.Null
+  }
+  if (first is Value.Bool(left)) {
+    if (second is Value.Bool(right)) {
+      return left == right
+    }
+    return false
+  }
+  if (first is Value.Int(left)) {
+    if (second is Value.Int(right)) {
+      return left == right
+    }
+    return false
+  }
+  if (first is Value.Float(left)) {
+    if (second is Value.Float(right)) {
+      return Float.toString(left) == Float.toString(right)
+    }
+    return false
+  }
+  if (first is Value.Text(left)) {
+    if (second is Value.Text(right)) {
+      return left == right
+    }
+    return false
+  }
+  if (first is Value.List(left)) {
+    if (second is Value.List(right)) {
+      return sameItems(left, right)
+    }
+    return false
+  }
+  if (first is Value.Record(left)) {
+    if (second is Value.Record(right)) {
+      return sameFields(left, right)
+    }
+    return false
+  }
+  return false
+}
+
+function sameItems(left: Array<Value>, right: Array<Value>): bool uses alloc {
+  if (Arrays.length(left) != Arrays.length(right)) {
+    return false
+  }
+  for (const #[index, item] of Arrays.entries(left)) {
+    if (!sameValue(item, right[index])) {
+      return false
+    }
+  }
+  return true
+}
+
+function sameFields(left: Map<string, Value>, right: Map<string, Value>): bool uses alloc {
+  if (Maps.size(left) != Maps.size(right)) {
+    return false
+  }
+  for (const pair of Maps.entries(left)) {
+    const #[key, item] = pair
+    if (right[key] is Some(other)) {
+      if (!sameValue(item, other)) {
+        return false
+      }
+    } else {
+      return false
+    }
+  }
+  return true
+}
+
+/// A record of the pairs, in order.
+export function makeRecord(pairs: Array<#[string, Value]>): Value uses alloc {
+  let fields: Map<string, Value> = Map {}
+  for (const pair of Arrays.values(pairs)) {
+    const #[key, item] = pair
+    fields[key] = item
+  }
+  return Value.Record(fields)
+}
+
+/// A list of texts.
+export function makeTexts(items: Array<string>): Value uses alloc {
+  let values: Array<Value> = []
+  for (const item of Arrays.values(items)) {
+    Arrays.push(mutable values, Value.Text(item))
+  }
+  return Value.List(values)
+}
+
+/// A list of integers.
+export function makeInts(items: Array<int>): Value uses alloc {
+  let values: Array<Value> = []
+  for (const item of Arrays.values(items)) {
+    Arrays.push(mutable values, Value.Int(item))
+  }
+  return Value.List(values)
+}
+
+/// A check that a text reads as a value.
+export function expectValue(
+  report: Report,
+  name: string,
+  text: string,
+  expected: Value,
+) uses io, alloc {
+  const parsed = Yaml.parse(text)
+  if (parsed is Err(error)) {
+    expect(report, name, false)
+    print(`  error: ${Yaml.formatError(error)}`)
+    return
+  }
+  expect(report, name, sameValue(parsed.value, expected))
+  if (!sameValue(parsed.value, expected)) {
+    print(`  expected: ${Yaml.stringify(expected)}`)
+    print(`  actual:   ${Yaml.stringify(parsed.value)}`)
+  }
+}
+
+/// A check that a text fails to read, with the reason holding the part.
+export function expectFailure(
+  report: Report,
+  name: string,
+  text: string,
+  part: string,
+) uses io, alloc {
+  expectFailureWith(report, name, text, Yaml.defaultOptions(), part)
+}
+
+/// expectFailure with the options of the reader.
+export function expectFailureWith(
+  report: Report,
+  name: string,
+  text: string,
+  options: ReadOptions,
+  part: string,
+) uses io, alloc {
+  const parsed = Yaml.parseWith(text, options)
+  if (parsed is Ok(_)) {
+    expect(report, name, false)
+    print("  expected an error, but the text was read")
+    return
+  }
+  if (parsed is Err(error)) {
+    expect(report, name, Str.contains(error.reason, part))
+    if (!Str.contains(error.reason, part)) {
+      print(`  wanted: ${part}`)
+      print(`  error:  ${Yaml.formatError(error)}`)
+    }
+  }
+}
+
+export function describeCount(report: Report): string uses alloc {
+  const checked = Int.toString(Cells.get(report.checked))
+  const failed = Int.toString(Cells.get(report.failed))
+  return `${checked} checks, ${failed} failed`
+}

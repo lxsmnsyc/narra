@@ -1,0 +1,561 @@
+// Checks of http/cookie: reading, writing, refusals, a fuzz run, a server over loopback, and curl
+// with a cookie jar when curl is installed.
+
+import * as Arrays from "std/array"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Channel from "std/channel"
+import * as Client from "http/client"
+import * as Cookies from "http/cookie"
+import * as Env from "std/env"
+import * as Fields from "http/headers"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Net from "std/net"
+import * as Options from "std/option"
+import * as Process from "std/process"
+import * as Random from "std/random"
+import * as Ranges from "std/range"
+import * as Requests from "http/request"
+import * as Responses from "http/response"
+import * as Results from "std/result"
+import * as Server from "http/server"
+import * as Str from "std/string"
+import * as Thread from "std/thread"
+import * as Time from "std/time"
+import * as Wire from "http/framing"
+import * as Async from "std/async"
+import { Connection, Listener } from "std/net"
+import { Cookie, SameSite, SetCookie } from "http/cookie"
+import { HttpError } from "http/error"
+import { Method, Request } from "http/request"
+import { Report, exchange, expect, expectContains, expectText } from "http/checkkit"
+import { Response } from "http/response"
+import { Sender } from "std/channel"
+
+function requestWithCookies(lines: Array<string>): Request uses alloc {
+  const created = Requests.create(Method.Get, "/")
+  if (created is Err(_)) {
+    panic("the test url does not parse")
+  }
+  let request = copy(created.value)
+  for (const line of Arrays.values(lines)) {
+    Fields.add(mutable request.headers, "Cookie", line)
+  }
+  return request
+}
+
+function describeCookies(cookies: Array<Cookie>): string uses alloc {
+  let text = ""
+  for (const cookie of Arrays.values(cookies)) {
+    text = `${text}[${cookie.name}=${cookie.value}]`
+  }
+  return text
+}
+
+function formatOrRefused(cookie: SetCookie): string uses alloc {
+  const result = Cookies.format(cookie)
+  if (result is Ok(text)) {
+    return text
+  }
+  return "refused"
+}
+
+function checkReading(report: Report) uses io, alloc {
+  expectText(
+    report,
+    "cookie: pairs of one header",
+    describeCookies(Cookies.read(requestWithCookies(["a=1; b=2;c=3"]))),
+    "[a=1][b=2][c=3]",
+  )
+  expectText(
+    report,
+    "cookie: pairs of every header, in order",
+    describeCookies(Cookies.read(requestWithCookies(["a=1", "b=2; a=3"]))),
+    "[a=1][b=2][a=3]",
+  )
+  expectText(
+    report,
+    "cookie: a quoted value loses its quotes",
+    describeCookies(Cookies.read(requestWithCookies(["a=\"x y\"; b=\"\""]))),
+    "[a=x y][b=]",
+  )
+  expectText(
+    report,
+    "cookie: an empty value and a value with an equals sign",
+    describeCookies(Cookies.read(requestWithCookies(["a=; b=x=y"]))),
+    "[a=][b=x=y]",
+  )
+  expectText(
+    report,
+    "cookie: malformed pairs are skipped",
+    describeCookies(Cookies.read(requestWithCookies(["junk; =x; a b=1; ok=1;; ;c=\"; d=2"]))),
+    "[ok=1][c=\"][d=2]",
+  )
+  expectText(
+    report,
+    "cookie: no header, no cookies",
+    describeCookies(Cookies.read(requestWithCookies([]))),
+    "",
+  )
+  expectText(
+    report,
+    "cookie: get gives the first value",
+    Options.withDefault(Cookies.get(requestWithCookies(["a=1; a=2"]), "a"), "none"),
+    "1",
+  )
+  expectText(
+    report,
+    "cookie: get without the name",
+    Options.withDefault(Cookies.get(requestWithCookies(["a=1"]), "b"), "none"),
+    "none",
+  )
+  expectText(
+    report,
+    "cookie: a control character skips the pair",
+    describeCookies(Cookies.read(requestWithCookies(["a=1\u{1}2; b=2"]))),
+    "[b=2]",
+  )
+}
+
+function checkWriting(report: Report) uses io, alloc {
+  expectText(report, "cookie: a bare cookie", formatOrRefused(Cookies.create("id", "42")), "id=42")
+  let full = Cookies.create("session", "abc")
+  full.path = Some("/app")
+  full.domain = Some("example.com")
+  full.maxAge = Some(Time.seconds(3600))
+  full.expires = Some(784111777)
+  full.secure = true
+  full.httpOnly = true
+  full.sameSite = Some(SameSite.None)
+  expectText(
+    report,
+    "cookie: every attribute",
+    formatOrRefused(full),
+    "session=abc; Expires=Sun, 06 Nov 1994 08:49:37 GMT; Max-Age=3600; Domain=example.com; Path=/app; Secure; HttpOnly; SameSite=None",
+  )
+  let lax = Cookies.create("a", "\"quoted\"")
+  lax.sameSite = Some(SameSite.Lax)
+  expectText(
+    report,
+    "cookie: lax and a quoted value",
+    formatOrRefused(lax),
+    "a=\"quoted\"; SameSite=Lax",
+  )
+  let strict = Cookies.create("a", "")
+  strict.sameSite = Some(SameSite.Strict)
+  expectText(
+    report,
+    "cookie: strict and an empty value",
+    formatOrRefused(strict),
+    "a=; SameSite=Strict",
+  )
+  let past = Cookies.create("a", "b")
+  past.maxAge = Some(Time.seconds(-5))
+  expectText(report, "cookie: a negative lifetime is zero", formatOrRefused(past), "a=b; Max-Age=0")
+  expectText(
+    report,
+    "cookie: a leap day",
+    Options.withDefault(Cookies.formatDate(951782400), "none"),
+    "Tue, 29 Feb 2000 00:00:00 GMT",
+  )
+  expectText(
+    report,
+    "cookie: the epoch",
+    Options.withDefault(Cookies.formatDate(0), "none"),
+    "Thu, 01 Jan 1970 00:00:00 GMT",
+  )
+  expectText(
+    report,
+    "cookie: a late date",
+    Options.withDefault(Cookies.formatDate(4102444799), "none"),
+    "Thu, 31 Dec 2099 23:59:59 GMT",
+  )
+  let response = Responses.create(200)
+  const first = Cookies.set(mutable response, Cookies.create("a", "1"))
+  const second = Cookies.set(mutable response, Cookies.create("b", "2"))
+  expect(report, "cookie: set accepts a good cookie", first is None && second is None)
+  const headers = Fields.getAll(response.headers, "Set-Cookie")
+  expect(report, "cookie: one header for each cookie", Arrays.length(headers) == 2)
+  expectText(report, "cookie: the first header", headers[0], "a=1")
+  expectText(report, "cookie: the second header", headers[1], "b=2")
+  const removed = Cookies.remove(mutable response, "a", "/")
+  const dropped = Fields.getAll(response.headers, "Set-Cookie")
+  expect(report, "cookie: remove adds a header", removed is None && Arrays.length(dropped) == 3)
+  expectText(
+    report,
+    "cookie: remove expires the cookie",
+    dropped[2],
+    "a=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/",
+  )
+  let secured = Responses.create(200)
+  const prefixed = Cookies.remove(mutable secured, "__Host-id", "/")
+  expect(report, "cookie: a prefixed cookie can be removed", prefixed is None)
+  expectContains(
+    report,
+    "cookie: the removal of a prefixed cookie is secure",
+    Options.withDefault(Fields.get(secured.headers, "Set-Cookie"), ""),
+    "; Secure",
+  )
+}
+
+function expectRefused(report: Report, name: string, cookie: SetCookie) uses io, alloc {
+  let response = Responses.create(200)
+  const problem = Cookies.set(mutable response, cookie)
+  expect(report, `cookie: refused, ${name}`, problem is Some(_))
+  expect(
+    report,
+    `cookie: refused, ${name}, adds no header`,
+    Arrays.length(response.headers.entries) == 0,
+  )
+}
+
+function checkRefusals(report: Report) uses io, alloc {
+  expectRefused(report, "a name with a space", Cookies.create("a b", "1"))
+  expectRefused(report, "an empty name", Cookies.create("", "1"))
+  expectRefused(report, "a name with an equals sign", Cookies.create("a=b", "1"))
+  expectRefused(report, "a name with a line break", Cookies.create("a\r\nX-Evil: 1", "1"))
+  expectRefused(report, "a value with a line break", Cookies.create("a", "x\r\nX-Evil: 1"))
+  expectRefused(report, "a value with a bare line feed", Cookies.create("a", "x\ny"))
+  expectRefused(report, "a value with a semicolon", Cookies.create("a", "x; Secure"))
+  expectRefused(report, "a value with a comma", Cookies.create("a", "x,y"))
+  expectRefused(report, "a value with a space", Cookies.create("a", "x y"))
+  expectRefused(report, "a value with a backslash", Cookies.create("a", "x\\y"))
+  expectRefused(report, "a value with a quote inside", Cookies.create("a", "x\"y"))
+  expectRefused(report, "a value with a lone quote", Cookies.create("a", "\""))
+  expectRefused(report, "a value that is not ASCII", Cookies.create("a", "é"))
+  let badPath = Cookies.create("a", "1")
+  badPath.path = Some("/x\r\nX-Evil: 1")
+  expectRefused(report, "a path with a line break", badPath)
+  badPath.path = Some("/x;y")
+  expectRefused(report, "a path with a semicolon", badPath)
+  badPath.path = Some("x")
+  expectRefused(report, "a path that does not start with a slash", badPath)
+  let badDomain = Cookies.create("a", "1")
+  badDomain.domain = Some("example.com\r\nX-Evil: 1")
+  expectRefused(report, "a domain with a line break", badDomain)
+  badDomain.domain = Some("a;b")
+  expectRefused(report, "a domain with a semicolon", badDomain)
+  badDomain.domain = Some("")
+  expectRefused(report, "an empty domain", badDomain)
+  let none = Cookies.create("a", "1")
+  none.sameSite = Some(SameSite.None)
+  expectRefused(report, "SameSite=None without Secure", none)
+  none.secure = true
+  expect(report, "cookie: SameSite=None with Secure is fine", formatOrRefused(none) != "refused")
+  let host = Cookies.create("__Host-a", "1")
+  host.secure = true
+  host.path = Some("/")
+  expect(report, "cookie: a correct __Host- cookie", formatOrRefused(host) != "refused")
+  host.domain = Some("example.com")
+  expectRefused(report, "a __Host- cookie with a domain", host)
+  host.domain = None
+  host.path = Some("/x")
+  expectRefused(report, "a __Host- cookie with another path", host)
+  expectRefused(report, "a __Secure- cookie without Secure", Cookies.create("__Secure-a", "1"))
+  let early = Cookies.create("a", "1")
+  early.expires = Some(-1)
+  expectRefused(report, "an expiry before 1970", early)
+  expect(report, "cookie: a date before 1970 has no text", Cookies.formatDate(-1) is None)
+}
+
+const FUZZ_PIECES = [
+  "a",
+  "b",
+  "session",
+  "=",
+  "==",
+  ";",
+  ";;",
+  " ",
+  "\"",
+  ",",
+  "\\",
+  "\r",
+  "\n",
+  "\r\n",
+  "\t",
+  "é",
+  "%",
+  "__Host-",
+  "__Secure-",
+  "1",
+  "/",
+  ".",
+  "-",
+  "Secure",
+  "x=1",
+]
+
+function randomText(mutable random: Random.Random): string uses alloc {
+  const count = Options.withDefault(Random.nextInt(mutable random, 0, 12), 1)
+  let text = ""
+  for (const _step of Ranges.between(0, count)) {
+    const choice = Options.withDefault(
+      Random.nextInt(mutable random, 0, Arrays.length(FUZZ_PIECES)),
+      0,
+    )
+    text = `${text}${FUZZ_PIECES[choice]}`
+  }
+  return text
+}
+
+function hasLineBreak(text: string): bool {
+  for (const index of Ranges.between(0, Str.length(text))) {
+    const byte = Str.byteAt(text, index)
+    if (byte < 32 || byte == 127) {
+      return true
+    }
+  }
+  return false
+}
+
+function checkFuzz(report: Report) uses io, alloc {
+  let random = Random.seeded(20261126)
+  let wrote = 0
+  let leaked = 0
+  let misread = 0
+  for (const round of Ranges.between(0, 4000)) {
+    // Reading never panics, and every cookie it gives has a token name.
+    const firstLine = randomText(mutable random)
+    const secondLine = randomText(mutable random)
+    const request = requestWithCookies([firstLine, secondLine])
+    for (const cookie of Arrays.values(Cookies.read(request))) {
+      if (
+        Str.length(cookie.name) == 0 ||
+          Str.contains(cookie.name, "=") ||
+          Str.contains(cookie.name, ";")
+      ) {
+        misread += 1
+      }
+    }
+    // Writing refuses or gives a header value with no control character and no extra attribute.
+    const name = randomText(mutable random)
+    const value = randomText(mutable random)
+    const path = randomText(mutable random)
+    const domain = randomText(mutable random)
+    let cookie = Cookies.create(name, value)
+    cookie.path = Some(`/${path}`)
+    if (round % 2 == 0) {
+      cookie.domain = Some(domain)
+    }
+    const header = Cookies.format(cookie)
+    if (header is Ok(text)) {
+      wrote += 1
+      if (hasLineBreak(text)) {
+        leaked += 1
+      }
+      const noParts: Array<string> = []
+      const parts = Options.withDefault(Str.split(text, "; "), noParts)
+      for (const part of Arrays.values(parts)) {
+        const isAllowed =
+          Str.startsWith(part, "Path=") ||
+            Str.startsWith(part, "Domain=") ||
+            Str.contains(part, "=")
+        if (!isAllowed) {
+          leaked += 1
+        }
+      }
+    }
+  }
+  expect(report, "cookie fuzz: no header carries a control character", leaked == 0)
+  expect(report, "cookie fuzz: every name read is a token", misread == 0)
+  expect(report, "cookie fuzz: some random cookies were written", wrote > 0)
+}
+
+async function routeCookies(request: Request): Response uses io, alloc {
+  const path = request.url.path
+  if (path == "/set") {
+    let response = Responses.text(200, "set")
+    let session = Cookies.create("session", "abc123")
+    session.path = Some("/")
+    session.httpOnly = true
+    session.sameSite = Some(SameSite.Lax)
+    let theme = Cookies.create("theme", "dark")
+    theme.path = Some("/")
+    theme.maxAge = Some(Time.seconds(3600))
+    const _first = Cookies.set(mutable response, session)
+    const _second = Cookies.set(mutable response, theme)
+    return response
+  }
+  if (path == "/clear") {
+    let response = Responses.text(200, "cleared")
+    const _removed = Cookies.remove(mutable response, "session", "/")
+    return response
+  }
+  if (path == "/read") {
+    const session = Options.withDefault(Cookies.get(request, "session"), "none")
+    const theme = Options.withDefault(Cookies.get(request, "theme"), "none")
+    return Responses.text(200, `seen:session=${session},theme=${theme}`)
+  }
+  if (path == "/inject") {
+    // A hostile value is refused, so the answer carries no Set-Cookie header.
+    let response = Responses.text(200, "inject")
+    const problem = Cookies.set(mutable response, Cookies.create("a", "x\r\nX-Evil: 1"))
+    if (problem is Some(_)) {
+      return Responses.text(200, "refused")
+    }
+    return response
+  }
+  return Responses.text(404, "no such route")
+}
+
+async function readText(body: Bodies.Body): string uses io, alloc {
+  const content = await Bodies.readAll(body, 100000)
+  if (content is Ok(found)) {
+    return Results.withDefault(Bytes.toString(found), "not text")
+  }
+  return "unreadable"
+}
+
+async function checkLoopback(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "cookie: the test server listens", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  const server = Server.serve(listener.value, Server.defaultOptions(), routeCookies)
+  const base = `http://127.0.0.1:${Int.toString(port)}`
+  const setUrl = await Client.get(`${base}/set`)
+  if (setUrl is Ok(answer)) {
+    const headers = Fields.getAll(answer.headers, "Set-Cookie")
+    expect(report, "cookie: the server sends two Set-Cookie headers", Arrays.length(headers) == 2)
+    if (Arrays.length(headers) == 2) {
+      expectText(
+        report,
+        "cookie: the session header",
+        headers[0],
+        "session=abc123; Path=/; HttpOnly; SameSite=Lax",
+      )
+    }
+  } else {
+    expect(report, "cookie: the client reads /set", false)
+  }
+  const created = Requests.create(Method.Get, `${base}/read`)
+  if (created is Ok(request)) {
+    let withCookies = copy(request)
+    Fields.add(mutable withCookies.headers, "Cookie", "session=xyz; other=1")
+    Fields.add(mutable withCookies.headers, "Cookie", "theme=light")
+    const answered = await Client.send(withCookies, Client.defaultOptions())
+    if (answered is Ok(response)) {
+      expectText(
+        report,
+        "cookie: the handler reads the cookies",
+        await readText(response.body),
+        "seen:session=xyz,theme=light",
+      )
+    } else {
+      expect(report, "cookie: the client reads /read", false)
+    }
+  }
+  const raw = await exchange(
+    port,
+    Bytes.fromString("GET /inject HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+  )
+  expectContains(report, "cookie: the hostile cookie is answered", raw, "refused")
+  expect(report, "cookie: a line break never reaches the wire", !Str.contains(raw, "X-Evil"))
+  expect(report, "cookie: no Set-Cookie for a refused cookie", !Str.contains(raw, "Set-Cookie"))
+  Async.cancel(server)
+}
+
+async function acceptTask(listener: Listener): Result<Connection, HttpError> uses io, alloc {
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(error)) {
+    return Err(HttpError.Io(error))
+  }
+  return Ok(accepted.value)
+}
+
+async function serveOneConnection(ports: Sender<int>): int uses io, alloc {
+  // Listens, tells the port, and serves the first connection until curl closes it. It gives up
+  // when no connection comes in 20 seconds, so a failed curl cannot hang the check.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    const _told = Channel.send(ports, 0)
+    return -1
+  }
+  const _told = Channel.send(ports, Net.localPort(listener.value))
+  const accepted = await Wire.within(Some(Time.seconds(20)), acceptTask(listener.value))
+  if (accepted is Err(_)) {
+    return -1
+  }
+  await Server.serveConnection(accepted.value, Server.defaultOptions(), routeCookies)
+  return 0
+}
+
+function runCookieCurlChecks(report: Report) uses io, alloc {
+  const probe = Process.run("curl", ["--version"])
+  if (probe is Err(_)) {
+    print("skip - curl is not installed")
+    return
+  }
+  if (probe.value[0] != 0) {
+    print("skip - curl does not run")
+    return
+  }
+  const directory = Options.withDefault(Env.get("TMPDIR"), "/tmp")
+  const jar = `${directory}/narra-http-cookie-jar-${Int.toString(Time.unixMillis())}`
+  const #[sender, receiver] = Channel.create<int>(1)
+  const output = Thread.scope((scope) => {
+    const server = Thread.startAsync(scope, async () => await serveOneConnection(sender))
+    const port = Channel.receive(receiver)
+    let text = "no port"
+    if (port is Some(number)) {
+      const base = `http://127.0.0.1:${Int.toString(number)}`
+      const arguments = [
+        "-s",
+        "-i",
+        "--max-time",
+        "20",
+        "-c",
+        jar,
+        "-b",
+        jar,
+        "-w",
+        "[%{num_connects}]\n",
+        `${base}/set`,
+        `${base}/read`,
+        `${base}/clear`,
+        `${base}/read`,
+      ]
+      const fetched = Process.run("curl", arguments)
+      if (fetched is Ok(result)) {
+        text = result[1]
+      } else {
+        text = "curl failed"
+      }
+    }
+    const _joined = Thread.join(server)
+    return text
+  })
+  const _removed = Fs.removeFile(jar)
+  expectContains(
+    report,
+    "curl cookies: the Set-Cookie header",
+    output,
+    "Set-Cookie: session=abc123; Path=/; HttpOnly; SameSite=Lax",
+  )
+  expectContains(
+    report,
+    "curl cookies: the handler reads what curl sends back",
+    output,
+    "seen:session=abc123,theme=dark",
+  )
+  expectContains(
+    report,
+    "curl cookies: a removed cookie is not sent again",
+    output,
+    "seen:session=none,theme=dark",
+  )
+}
+
+/// Runs every check of http/cookie.
+export async function runCookieChecks(report: Report) uses io, alloc {
+  checkReading(report)
+  checkWriting(report)
+  checkRefusals(report)
+  checkFuzz(report)
+  await checkLoopback(report)
+  runCookieCurlChecks(report)
+}

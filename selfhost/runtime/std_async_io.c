@@ -15,8 +15,21 @@
 #include <windows.h>
 #else
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/socket.h>
+#endif
+
+// Name lookup runs getaddrinfo on a helper thread, which needs POSIX threads
+// and a pipe. Windows and WASI have no lookup: a name there gives a failure.
+#if !defined(_WIN32) && !defined(__wasi__)
+#define NARRA_LOOKUP 1
+#endif
+#ifdef __linux__
+// Hidden under _POSIX_C_SOURCE on glibc.
+extern int pipe2(int descriptors[2], int flags);
 #endif
 
 // Sockets on Windows are Winsock handles that the C runtime cannot read,
@@ -80,13 +93,22 @@ static int narra_net_prepare(int descriptor) {
 #define narra_net_send(descriptor, buffer, length) send((descriptor), (buffer), (length), MSG_NOSIGNAL)
 #endif
 
+struct narra_lookup;
+
 typedef struct narra_handle {
   int64_t rc;
   int descriptor;
+  // The lookup a lookup handle waits for, or NULL. The descriptor of such a
+  // handle is the read end of the lookup's pipe, which the lookup closes.
+  struct narra_lookup* lookup;
 } narra_handle;
 
 // Not an errno value: the host is not a numeric IPv4 or IPv6 address.
 #define NARRA_IO_BAD_ADDRESS (-2)
+// Not an errno value: a lookup that found no address. Its text is the result.
+#define NARRA_IO_LOOKUP_FAILED (-3)
+// Not an errno value: this platform has no name lookup.
+#define NARRA_IO_NO_LOOKUP (-4)
 
 static _Thread_local int narra_io_error = 0;
 
@@ -94,8 +116,11 @@ static narra_handle* narra_handle_new(int descriptor) {
   narra_handle* handle = narra_alloc(sizeof(narra_handle));
   handle->rc = 1;
   handle->descriptor = descriptor;
+  handle->lookup = NULL;
   return handle;
 }
+
+static void narra_lookup_release(struct narra_lookup* lookup);
 
 static void narra_handle_retain(narra_handle* handle) {
   handle->rc++;
@@ -103,7 +128,11 @@ static void narra_handle_retain(narra_handle* handle) {
 
 static void narra_handle_release(narra_handle* handle) {
   if (--handle->rc == 0) {
-    if (handle->descriptor >= 0) narra_net_close(handle->descriptor);
+    if (handle->lookup) {
+      narra_lookup_release(handle->lookup);
+    } else if (handle->descriptor >= 0) {
+      narra_net_close(handle->descriptor);
+    }
     narra_free(handle);
   }
 }
@@ -320,6 +349,7 @@ static bool narra_handle_retry(int64_t error) {
 
 static lstr* narra_handle_message(int64_t error) {
   if (error == NARRA_IO_BAD_ADDRESS) return lstr_from_cstr("not a numeric IPv4 or IPv6 address and port");
+  if (error == NARRA_IO_NO_LOOKUP) return lstr_from_cstr("name lookup is not supported on this platform");
 #ifdef _WIN32
   if (error == ECONNREFUSED) return lstr_from_cstr("Connection refused");
   if (error == ECONNRESET) return lstr_from_cstr("Connection reset by peer");
@@ -340,3 +370,207 @@ static int64_t narra_handle_error(void) {
 static bool narra_handle_pending(int64_t error) {
   return error == EINPROGRESS;
 }
+
+// Whether host is a numeric IPv4 or IPv6 address, which needs no lookup.
+static bool narra_handle_is_numeric(lstr* host) {
+  struct in_addr ipv4;
+  struct in6_addr ipv6;
+  return inet_pton(AF_INET, host->data, &ipv4) == 1 || inet_pton(AF_INET6, host->data, &ipv6) == 1;
+}
+
+#ifdef NARRA_LOOKUP
+// A name lookup. getaddrinfo blocks, so a helper thread runs it and then
+// writes one byte to a pipe, which the loop waits on like any descriptor. The
+// thread and the handle each hold one reference, and the last release frees
+// the lookup and closes both ends of the pipe. A cancelled wait therefore
+// leaves the thread to finish and free the result, and the pipe is never
+// closed under a writer. The lookup uses plain malloc: the thread has no heap.
+typedef struct narra_lookup {
+  int references;
+  int reader;
+  int writer;
+  char* host;
+  // The addresses one per line, or the failure text when failed is set.
+  char* result;
+  bool failed;
+} narra_lookup;
+
+static void narra_lookup_release(narra_lookup* lookup) {
+  if (__atomic_fetch_sub(&lookup->references, 1, __ATOMIC_ACQ_REL) != 1) return;
+  close(lookup->reader);
+  close(lookup->writer);
+  free(lookup->host);
+  free(lookup->result);
+  free(lookup);
+}
+
+static char* narra_lookup_text(const char* text, size_t length) {
+  char* copy = malloc(length + 1);
+  if (!copy) return NULL;
+  memcpy(copy, text, length);
+  copy[length] = '\0';
+  return copy;
+}
+
+static void narra_lookup_fail(narra_lookup* lookup, const char* message) {
+  lookup->failed = true;
+  lookup->result = narra_lookup_text(message, strlen(message));
+}
+
+// Whether text has a line equal to the address.
+static bool narra_lookup_has_line(const char* text, const char* address) {
+  size_t count = strlen(address);
+  for (const char* line = text; *line;) {
+    const char* end = strchr(line, '\n');
+    size_t size = end ? (size_t)(end - line) : strlen(line);
+    if (size == count && memcmp(line, address, count) == 0) return true;
+    line += size + (end ? 1 : 0);
+  }
+  return false;
+}
+
+// Runs getaddrinfo and keeps every distinct address in the system's order.
+static void narra_lookup_resolve(narra_lookup* lookup) {
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo* found = NULL;
+  int status = getaddrinfo(lookup->host, NULL, &hints, &found);
+  if (status != 0) {
+    narra_lookup_fail(lookup, gai_strerror(status));
+    return;
+  }
+  size_t capacity = 64;
+  size_t length = 0;
+  char* text = malloc(capacity);
+  if (!text) {
+    freeaddrinfo(found);
+    narra_lookup_fail(lookup, "out of memory");
+    return;
+  }
+  text[0] = '\0';
+  for (struct addrinfo* entry = found; entry; entry = entry->ai_next) {
+    char address[INET6_ADDRSTRLEN];
+    const void* source = NULL;
+    if (entry->ai_family == AF_INET) source = &((struct sockaddr_in*)entry->ai_addr)->sin_addr;
+    if (entry->ai_family == AF_INET6) source = &((struct sockaddr_in6*)entry->ai_addr)->sin6_addr;
+    if (!source || !inet_ntop(entry->ai_family, source, address, sizeof(address))) continue;
+    if (narra_lookup_has_line(text, address)) continue;
+    size_t count = strlen(address);
+    if (length + count + 2 > capacity) {
+      while (length + count + 2 > capacity) capacity *= 2;
+      char* grown = realloc(text, capacity);
+      if (!grown) {
+        free(text);
+        freeaddrinfo(found);
+        narra_lookup_fail(lookup, "out of memory");
+        return;
+      }
+      text = grown;
+    }
+    if (length > 0) text[length++] = '\n';
+    memcpy(text + length, address, count);
+    length += count;
+    text[length] = '\0';
+  }
+  freeaddrinfo(found);
+  if (length == 0) {
+    free(text);
+    narra_lookup_fail(lookup, "no address found");
+    return;
+  }
+  lookup->result = text;
+}
+
+static void* narra_lookup_main(void* argument) {
+  narra_lookup* lookup = argument;
+  narra_lookup_resolve(lookup);
+  // Wakes the loop: one byte goes into an empty pipe, so the write never blocks.
+  char byte = 1;
+  ssize_t written = write(lookup->writer, &byte, 1);
+  (void)written;
+  narra_lookup_release(lookup);
+  return NULL;
+}
+
+// A handle that becomes readable once the lookup of host is done; read the
+// result with narra_handle_lookup_result. A failed start sets narra_io_error.
+static narra_handle* narra_handle_lookup(lstr* host) {
+  narra_io_error = 0;
+  int ends[2];
+#ifdef __linux__
+  // Both ends close on exec from the start, so a concurrent fork and exec never inherits them.
+  if (pipe2(ends, O_CLOEXEC) < 0) return narra_handle_failed(-1, errno);
+#else
+  if (pipe(ends) < 0) return narra_handle_failed(-1, errno);
+  fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+  fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+#endif
+  narra_lookup* lookup = malloc(sizeof(narra_lookup));
+  if (!lookup) {
+    close(ends[0]);
+    close(ends[1]);
+    return narra_handle_failed(-1, ENOMEM);
+  }
+  memset(lookup, 0, sizeof(*lookup));
+  lookup->references = 2;
+  lookup->reader = ends[0];
+  lookup->writer = ends[1];
+  lookup->host = narra_lookup_text(host->data, (size_t)host->len);
+  if (!lookup->host) {
+    lookup->references = 1;
+    narra_lookup_release(lookup);
+    return narra_handle_failed(-1, ENOMEM);
+  }
+  pthread_attr_t attributes;
+  pthread_attr_init(&attributes);
+  pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+  pthread_t thread;
+  // The helper runs with every signal blocked, so a signal for the process
+  // lands on a thread that can handle it and getaddrinfo never sees EINTR.
+  sigset_t everything;
+  sigset_t previous;
+  sigfillset(&everything);
+  pthread_sigmask(SIG_SETMASK, &everything, &previous);
+  int failure = pthread_create(&thread, &attributes, narra_lookup_main, lookup);
+  pthread_sigmask(SIG_SETMASK, &previous, NULL);
+  pthread_attr_destroy(&attributes);
+  if (failure != 0) {
+    lookup->references = 1;
+    narra_lookup_release(lookup);
+    return narra_handle_failed(-1, failure);
+  }
+  narra_handle* handle = narra_handle_new(ends[0]);
+  handle->lookup = lookup;
+  return handle;
+}
+
+// The addresses of a finished lookup, one per line. When it failed the result
+// is the failure text and narra_io_error is NARRA_IO_LOOKUP_FAILED.
+static lstr* narra_handle_lookup_result(narra_handle* handle) {
+  narra_io_error = 0;
+  narra_lookup* lookup = handle->lookup;
+  if (!lookup || !lookup->result) {
+    narra_io_error = NARRA_IO_LOOKUP_FAILED;
+    return lstr_from_cstr("lookup did not finish");
+  }
+  if (lookup->failed) narra_io_error = NARRA_IO_LOOKUP_FAILED;
+  return lstr_from_cstr(lookup->result);
+}
+#else
+static void narra_lookup_release(struct narra_lookup* lookup) {
+  (void)lookup;
+}
+
+static narra_handle* narra_handle_lookup(lstr* host) {
+  (void)host;
+  return narra_handle_failed(-1, NARRA_IO_NO_LOOKUP);
+}
+
+static lstr* narra_handle_lookup_result(narra_handle* handle) {
+  (void)handle;
+  narra_io_error = NARRA_IO_LOOKUP_FAILED;
+  return lstr_from_cstr("name lookup is not supported on this platform");
+}
+#endif

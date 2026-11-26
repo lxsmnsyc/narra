@@ -5,7 +5,13 @@
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Ranges from "std/range"
-import { Dependency, LoadError, Manifest, parseManifest } from "narrac/driver/manifest"
+import {
+  Dependency,
+  LoadError,
+  Manifest,
+  findUpstream,
+  parseManifest,
+} from "narrac/driver/manifest"
 import { Member, Workspace, listMembers } from "narrac/driver/workspace"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
 import {
@@ -381,13 +387,30 @@ export function resolveDependencies(
     if (pushed is Err(error)) {
       return Err(error)
     }
-    const entry = LockEntry {
+    // A C package also fetches its upstream checkout, which the lock records beside the package.
+    let entry = LockEntry {
       name: requirement.name,
       git,
       version,
       tag: found.value.tag,
       commit: found.value.fetched.commit,
       content: found.value.fetched.tree,
+    }
+    const upstream = findUpstream(read.value.manifest.cTables)
+    if (upstream.git != "") {
+      const upstreamFetched = fetchVersion(upstream.git, upstream.tag)
+      if (upstreamFetched is Err(error)) {
+        return Err(
+          createResolveError(
+            error.code,
+            `the C source of ${requirement.name} ${version}: ${error.message}`,
+          ),
+        )
+      }
+      entry.cGit = upstream.git
+      entry.cTag = upstream.tag
+      entry.cCommit = upstreamFetched.value.commit
+      entry.cContent = upstreamFetched.value.tree
     }
     if (selected[requirement.name] is Some(current)) {
       if (isVersionBefore(current.version, version)) {
@@ -436,6 +459,20 @@ export function checkAgainstLock(
           createResolveError(
             "E0452",
             `narra.lock records commit ${old.commit} and tree ${old.content} for ${entry.name} ${entry.version}, but the repository has commit ${entry.commit} and tree ${entry.content}`,
+          ),
+        )
+      }
+      // The upstream is the same checkout when the manifest still names the same repository and tag.
+      if (
+        old.cGit != "" &&
+          old.cGit == entry.cGit &&
+          old.cTag == entry.cTag &&
+          (old.cCommit != entry.cCommit || old.cContent != entry.cContent)
+      ) {
+        return Err(
+          createResolveError(
+            "E0452",
+            `narra.lock records commit ${old.cCommit} and tree ${old.cContent} for the C source of ${entry.name} ${entry.version} (tag ${entry.cTag} of ${entry.cGit}), but the repository has commit ${entry.cCommit} and tree ${entry.cContent}`,
           ),
         )
       }

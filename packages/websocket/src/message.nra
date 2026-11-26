@@ -1,0 +1,83 @@
+// websocket/message: the messages, errors and options of a WebSocket.
+
+import * as Time from "std/time"
+import * as Errors from "http/error"
+import * as Int from "std/int"
+import { AsyncError } from "std/async"
+import { Duration } from "std/time"
+import { HttpError } from "http/error"
+
+/// A whole message: text that is valid UTF-8, or binary data.
+export enum Message {
+  Text(text: string)
+  Binary(data: bytes)
+}
+
+/// What a close frame carried: the status code and the reason text. 1005 means the peer sent no
+/// code, and 1006 means the connection ended with no close frame.
+export struct CloseInfo {
+  code: int
+  reason: string
+}
+
+/// Why an operation failed. Http is a failed handshake, Io a failed socket, Protocol a peer that
+/// broke the protocol (the code is the close code that was sent), TooLarge a message or frame
+/// over the limit, and Closed a socket that has ended, with what the close carried.
+export enum WebSocketError {
+  Http(error: HttpError)
+  Io(error: AsyncError)
+  Protocol(code: int, message: string)
+  TooLarge
+  Closed(info: CloseInfo)
+}
+
+/// The limits and settings of a socket. maxMessageBytes and maxFrameBytes cap what is received;
+/// a larger one closes the socket with 1009. maxQueuedMessages is how many whole messages wait
+/// for `receive` before the socket stops reading. pingInterval, when set, sends a ping that
+/// often and ends the socket when no pong answers before the next one. closeTimeout is how long
+/// `close` waits for the reply of the peer. protocols are the sub-protocols the server accepts,
+/// or the client offers, in order of preference.
+export struct Options {
+  maxMessageBytes: int
+  maxFrameBytes: int
+  maxQueuedMessages: int
+  pingInterval: Option<Duration>
+  closeTimeout: Duration
+  protocols: Array<string>
+}
+
+/// 16 MiB per message and per frame, 16 queued messages, no pings, 5 seconds to close and no
+/// sub-protocols.
+export function defaultOptions(): Options uses alloc {
+  return Options {
+    maxMessageBytes: 16777216,
+    maxFrameBytes: 16777216,
+    maxQueuedMessages: 16,
+    pingInterval: None,
+    closeTimeout: Time.seconds(5),
+    protocols: [],
+  }
+}
+
+/// The error as one line of text.
+export function describe(error: WebSocketError): string uses alloc {
+  if (error is WebSocketError.Http(inner)) {
+    return Errors.describe(inner)
+  }
+  if (error is WebSocketError.Io(AsyncError.Failed(message))) {
+    return `i/o error: ${message}`
+  }
+  if (error is WebSocketError.Io(AsyncError.Cancelled)) {
+    return "cancelled"
+  }
+  if (error is WebSocketError.Protocol(code, message)) {
+    return `protocol error ${Int.toString(code)}: ${message}`
+  }
+  if (error is WebSocketError.TooLarge) {
+    return "message too large"
+  }
+  if (error is WebSocketError.Closed(info)) {
+    return `closed with ${Int.toString(info.code)}: ${info.reason}`
+  }
+  return "unknown"
+}

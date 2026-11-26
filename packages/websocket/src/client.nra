@@ -1,0 +1,119 @@
+// websocket/client: opens a WebSocket to a ws:// url.
+
+import * as Arrays from "std/array"
+import * as Client from "http/client"
+import * as Fields from "http/headers"
+import * as Handshake from "websocket/handshake"
+import * as Optionals from "std/option"
+import * as Requests from "http/request"
+import * as Responses from "http/response"
+import * as Sessions from "websocket/session"
+import * as Str from "std/string"
+import * as Unicode from "std/unicode"
+import * as Urls from "std/url"
+import { HttpError } from "http/error"
+import { Method } from "http/request"
+import { Options, WebSocketError } from "websocket/message"
+import { Response } from "http/response"
+import { Socket } from "websocket/socket"
+
+function failHandshake(message: string): WebSocketError uses alloc {
+  return WebSocketError.Http(HttpError.Malformed(message))
+}
+
+function checkAnswer(
+  response: Response,
+  key: string,
+  options: Options,
+): Option<WebSocketError> uses alloc {
+  // The rules of RFC 6455 section 4.1 for the answer of the server.
+  if (response.status != 101) {
+    return Some(failHandshake(`the server answered ${Responses.reasonPhrase(response.status)}`))
+  }
+  if (!Handshake.hasToken(response.headers, "Upgrade", "websocket")) {
+    return Some(failHandshake("the answer has no Upgrade: websocket"))
+  }
+  if (!Handshake.hasToken(response.headers, "Connection", "upgrade")) {
+    return Some(failHandshake("the answer has no Connection: Upgrade"))
+  }
+  const accepted = Fields.get(response.headers, "Sec-WebSocket-Accept")
+  if (accepted is None) {
+    return Some(failHandshake("the answer has no Sec-WebSocket-Accept"))
+  }
+  if (accepted.value != Handshake.findAccept(key)) {
+    return Some(failHandshake("the Sec-WebSocket-Accept does not match the key"))
+  }
+  if (Fields.get(response.headers, "Sec-WebSocket-Extensions") is Some(_)) {
+    return Some(failHandshake("the server chose an extension that was not offered"))
+  }
+  const chosen = Fields.get(response.headers, "Sec-WebSocket-Protocol")
+  if (chosen is Some(protocol)) {
+    if (!Arrays.contains(options.protocols, protocol)) {
+      return Some(failHandshake("the server chose a sub-protocol that was not offered"))
+    }
+  }
+  return None
+}
+
+/// Opens a WebSocket to a ws:// url: it connects, sends the handshake with the options'
+/// protocols, checks the answer, and gives the socket. A wss:// url is an error until the
+/// package has TLS. The client masks every frame it sends, as the protocol requires.
+export async function connect(
+  url: string,
+  options: Options,
+): Result<Socket, WebSocketError> uses io, alloc {
+  const parsed = Urls.parse(url)
+  if (parsed is Err(message)) {
+    return Err(failHandshake(`url: ${message}`))
+  }
+  if (parsed.value.scheme is None) {
+    return Err(failHandshake("the url needs the scheme ws"))
+  }
+  const scheme = Unicode.toLowerCase(Optionals.withDefault(parsed.value.scheme, ""))
+  if (scheme == "wss") {
+    return Err(failHandshake("wss is not supported: the package has no TLS"))
+  }
+  if (scheme != "ws") {
+    return Err(failHandshake(`the scheme ${scheme} is not a WebSocket scheme`))
+  }
+  // The http client does the handshake request, so the url goes out with the scheme http.
+  const request = Requests.create(Method.Get, `http${Str.sliceFrom(url, 2)}`)
+  if (request is Err(error)) {
+    return Err(WebSocketError.Http(error))
+  }
+  const key = Handshake.makeKey()
+  let upgrading = copy(request.value)
+  Fields.add(mutable upgrading.headers, "Upgrade", "websocket")
+  Fields.add(mutable upgrading.headers, "Connection", "Upgrade")
+  Fields.add(mutable upgrading.headers, "Sec-WebSocket-Key", key)
+  Fields.add(mutable upgrading.headers, "Sec-WebSocket-Version", "13")
+  if (Arrays.length(options.protocols) > 0) {
+    Fields.add(
+      mutable upgrading.headers,
+      "Sec-WebSocket-Protocol",
+      Str.join(options.protocols, ", "),
+    )
+  }
+  const answered = await Client.send(upgrading, Client.defaultOptions())
+  if (answered is Err(error)) {
+    return Err(WebSocketError.Http(error))
+  }
+  const response = answered.value
+  const problem = checkAnswer(response, key, options)
+  if (problem is Some(error)) {
+    return Err(error)
+  }
+  const upgraded = response.upgraded
+  if (upgraded is None) {
+    return Err(failHandshake("the answer carries no connection"))
+  }
+  return Ok(
+    Sessions.open(
+      upgraded.value.connection,
+      upgraded.value.leftover,
+      true,
+      options,
+      Fields.get(response.headers, "Sec-WebSocket-Protocol"),
+    ),
+  )
+}

@@ -32,6 +32,24 @@ export struct ExportEntry {
   line: int // narra.toml line, for diagnostics
 }
 
+// One [c] table, or one [c.os.<name>] table when os is set: the C files, include folders and
+// defines of a package. The paths are as written, relative to the package folder.
+export struct CTable {
+  os: string // "" for [c], else the Os variant of [c.os.<name>]
+  sources: Array<string>
+  include: Array<string>
+  defines: Array<string>
+  git: string // [c] only: the upstream repository the paths are relative to; "" for the package folder
+  tag: string // [c] only: the tag of the upstream repository
+  line: int // narra.toml line of the table header, for diagnostics
+}
+
+// The upstream repository and tag of a C package, both empty when its C files are in the package.
+export struct Upstream {
+  git: string
+  tag: string
+}
+
 export struct Manifest {
   name: string
   version: string
@@ -40,6 +58,7 @@ export struct Manifest {
   dependencies: Array<Dependency>
   overrides: Array<Dependency> // [overrides]: read for every manifest, allowed in the root of a build only
   exports: Array<ExportEntry> // [exports]: empty when the package exposes every module
+  cTables: Array<CTable> // [c] and [c.os.*], in file order
   isWorkspace: bool // the manifest has a [workspace] table
   members: Array<string> // [workspace] members: the entries as written, `!` entries included
 }
@@ -85,6 +104,7 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   let members: Array<string> = []
   let binaries: Array<Binary> = []
   let search: Array<string> = []
+  let cTables: Array<CTable> = []
   let table = ""
   let inBinary = false
   let binaryName = ""
@@ -120,6 +140,13 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         inBinary = false
       }
       table = Str.trim(substring(line, 1, Str.length(line) - 1))
+      if (table == "c" || Str.startsWith(table, "c.os.")) {
+        const created = createCTable(table, lineNumber)
+        if (created is Err(error)) {
+          return Err(error)
+        }
+        Arrays.push(mutable cTables, created.value)
+      }
       if (table == "workspace") {
         isWorkspace = true
       }
@@ -134,6 +161,8 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
         table == "dependencies" ||
         table == "overrides" ||
         table == "exports" ||
+        table == "c" ||
+        Str.startsWith(table, "c.os.") ||
         table == "workspace" ||
         table == "[[binary]]"
     const equalsIndex = Str.indexOf(line, "=")
@@ -272,6 +301,33 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
       }
       return Err(createError(lineNumber, "E0413", `${key} must be an array of strings`))
     }
+    if (table == "c" || Str.startsWith(table, "c.os.")) {
+      const last = Arrays.length(cTables) - 1
+      if (key == "git" || key == "tag") {
+        const upstream = readUpstreamKey(table, key, value, lineNumber)
+        if (upstream is Err(error)) {
+          return Err(error)
+        }
+        if (key == "git") {
+          cTables[last].git = upstream.value
+        } else {
+          cTables[last].tag = upstream.value
+        }
+        continue
+      }
+      const items = readCList(table, key, value, lineNumber)
+      if (items is Err(error)) {
+        return Err(error)
+      }
+      if (key == "sources") {
+        cTables[last].sources = items.value
+      } else if (key == "include") {
+        cTables[last].include = items.value
+      } else {
+        cTables[last].defines = items.value
+      }
+      continue
+    }
     // The libraries come from the `from` of extern blocks, so [link] holds only search.
     if (table == "link") {
       return Err(
@@ -312,6 +368,10 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
   if (checkedExports is Err(error)) {
     return Err(error)
   }
+  const checkedUpstreams = checkUpstreams(cTables)
+  if (checkedUpstreams is Err(error)) {
+    return Err(error)
+  }
   return Ok(Manifest {
     name,
     version,
@@ -320,9 +380,92 @@ export function parseManifest(text: string): Result<Manifest, LoadError> uses al
     dependencies,
     overrides,
     exports,
+    cTables,
     isWorkspace,
     members,
   })
+}
+
+const C_SYSTEMS = ["MacOS", "Linux", "Windows", "Wasi"]
+
+function createCTable(table: string, line: int): Result<CTable, LoadError> uses alloc {
+  let os = ""
+  if (table != "c") {
+    os = Str.sliceFrom(table, 5)
+    let known = false
+    for (const system of Arrays.values(C_SYSTEMS)) {
+      known = known || system == os
+    }
+    if (!known) {
+      return Err(
+        createError(
+          line,
+          "E1000",
+          `unknown system ${quoteGo(os)} in [${table}]; the systems are ${Str.join(C_SYSTEMS, ", ")}`,
+        ),
+      )
+    }
+  }
+  return Ok(CTable { os, sources: [], include: [], defines: [], git: "", tag: "", line })
+}
+
+function readUpstreamKey(
+  table: string,
+  key: string,
+  value: Value,
+  line: int,
+): Result<string, LoadError> uses alloc {
+  if (table != "c") {
+    return Err(
+      createError(line, "E1000", `[${table}] has no key ${key}; only [c] names an upstream`),
+    )
+  }
+  if (value is Value.VStr(text)) {
+    if (text != "") {
+      return Ok(text)
+    }
+  }
+  return Err(createError(line, "E0412", `${key} must be a non-empty string`))
+}
+
+function checkUpstreams(tables: Array<CTable>): Result<bool, LoadError> uses alloc {
+  // `git` and `tag` come as a pair.
+  for (const table of Arrays.values(tables)) {
+    if ((table.git == "") != (table.tag == "")) {
+      return Err(createError(table.line, "E1000", "[c] needs both git and tag, or neither of them"))
+    }
+  }
+  return Ok(true)
+}
+
+export function findUpstream(tables: Array<CTable>): Upstream uses alloc {
+  for (const table of Arrays.values(tables)) {
+    if (table.git != "") {
+      return Upstream { git: table.git, tag: table.tag }
+    }
+  }
+  return Upstream { git: "", tag: "" }
+}
+
+function readCList(
+  table: string,
+  key: string,
+  value: Value,
+  line: int,
+): Result<Array<string>, LoadError> uses alloc {
+  if (key != "sources" && key != "include" && key != "defines") {
+    return Err(
+      createError(
+        line,
+        "E1000",
+        `unknown key ${key} in [${table}]; [${table}] takes sources, include, defines`,
+      ),
+    )
+  }
+  if (value is Value.VList(items)) {
+    return Ok(copy(items))
+  }
+  return Err(createError(line, "E0413", `${key} must be an array of strings`))
 }
 
 function readExport(

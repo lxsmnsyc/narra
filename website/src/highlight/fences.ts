@@ -8,6 +8,9 @@ const FILE_LANGUAGES: Record<string, string> = {
   nra: 'narra',
   toml: 'toml',
   json: 'json',
+  // The site has no C highlighting, so a C file of a package is plain text.
+  c: 'text',
+  h: 'text',
 };
 
 /**

@@ -1,10 +1,10 @@
 ---
 id: pkg-http
 title: "First package: http (HTTP/1.1 client and server)"
-status: todo
+status: done
 priority: could
 type: feature
-story:
+story: batch-25
 early: false
 outline: false
 milestone: p4-packages
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 464000
 owns:
   - roadmaps/selfhost/nodes/pkg-http/**
   - packages/http/**
@@ -48,6 +48,24 @@ depends_on:
 - No TLS: it waits for a `tls` package, which needs `package-c-sources`. Servers sit behind a TLS proxy until then.
 - Server: request parsing with limits (header size, body size), keep-alive, chunked bodies both ways, a handler per request, and a way to hand the raw connection to a protocol upgrade (`pkg-websocket` needs it). Client: `get`/`request` with redirects off by default.
 - Write the package's own docs page under `packages/http/README.md`.
+
+## API (maintainer approved, 2026-11-26)
+
+One `Request` and one `Response` type serve both sides, as in the Fetch API. `Body` is the same in both directions: an incoming message gets a stream that reads the connection, an outgoing one holds bytes or a stream. Names below are the approved shape; small signature details (effects, helper names) are the worker's call, recorded in the outcome.
+
+Modules, through `[exports]` (parser and framing modules stay private):
+
+- `http/headers`: `Header { name, value }`, `Headers { entries }` (order kept, names matched case-insensitively); `get`, `getAll`, `set` (replaces), `add` (appends).
+- `http/error`: `enum HttpError { Io(error: AsyncError), Malformed(message), TooLarge(what), Closed, TimedOut }`.
+- `http/body`: `Body { data: bytes, stream: Option<AsyncGenerator<Result<bytes, HttpError>>> }`; `empty`, `fromText`, `fromBytes`, `fromStream` (sent chunked), async `readAll(body, maxBytes)`, `chunks(body)`.
+- `http/request`: `enum Method { Get, Head, Post, Put, Delete, Patch, Options, Other(name) }`, `Request { method, url: Url, headers, body }` (url relative on the server, absolute on the client), `create(method, url: string): Result<Request, HttpError>`.
+- `http/response`: `Response { status, headers, body, upgrade: Option<Upgrade>, upgraded: Option<Upgraded> }`; `Upgrade { run: (connection, leftover: bytes) => Async<void> uses io, alloc }` (server: runs after the 101 head is written); `Upgraded { connection, leftover }` (client: filled by `send` on a 101); `create(status)`, `text(status, content)`, `reasonPhrase(status)`.
+- `http/server`: `ServerOptions { maxHeaderBytes (16 KiB), maxBodyBytes (8 MiB), headerTimeout (10 s), idleTimeout (60 s) }`, `defaultOptions()`, async `serve(listener, options, handler: (request: Request) => Async<Response> uses io, alloc)` (cancel the task to stop), async `serveConnection(connection, options, handler)`. One detached task per connection.
+- `http/client`: `ClientOptions { maxRedirects (0), timeout }`, async `send(request, options): Result<Response, HttpError>`, async `get(url)`. One connection per request; pooling is later and must not change this API.
+
+Server answers: 400 bad request line, header syntax or chunk size; 431 headers over the limit; 413 body over the limit; 501 unknown `Transfer-Encoding`; 505 a version other than 1.0 or 1.1. Keep-alive is the HTTP/1.1 default, `Connection: close` ends it; HTTP/1.0 closes unless it sends `keep-alive`.
+
+Known limits, documented in the README: `std/net` has no name lookup, so the client takes numeric hosts only (a name gives `Malformed`); `https:` is an error until the `tls` package. SPEC says a closure in an enum variant field cannot be called after narrowing; check early that an `AsyncGenerator` inside `Option` (in `Body.stream`) can be stepped after `is Some`, and if not, change the `Body` shape and record it.
 
 ## Acceptance
 

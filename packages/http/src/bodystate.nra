@@ -1,0 +1,147 @@
+// The state of a body and the functions the server, client and framing code use on it. This
+// module is private: http/body shows the public part, and the other modules make and send
+// bodies with the functions here.
+
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import { Cell } from "std/cell"
+import { HttpError } from "http/error"
+
+/// The pieces of a body: each Ok value is one piece, and an Err ends the message with that
+/// error. The type carries the effects of reading a connection.
+export type BodyStream = AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc)
+
+/// Where the content of a body comes from. Held bytes can be read and sent again; a stream is
+/// used up by the first read.
+enum Source {
+  Held(content: bytes)
+  Piped(pieces: BodyStream)
+}
+
+/// The content of a message. Callers see a stream of bytes. Inside the package the body also
+/// knows its length when its source tells it, and whether it can be sent again.
+export opaque struct Body {
+  source: Source
+  length: Option<int>
+  // Set once a piece of an incoming stream has been read, so its length no longer holds.
+  used: Option<Cell<bool>>
+}
+
+/// A body with no content.
+export function empty(): Body {
+  return Body { source: Source.Held(Bytes.fromString("")), length: Some(0), used: None }
+}
+
+/// A body of the UTF-8 bytes of the text.
+export function fromText(text: string): Body {
+  const content = Bytes.fromString(text)
+  return Body { source: Source.Held(content), length: Some(Bytes.length(content)), used: None }
+}
+
+/// A body of the bytes.
+export function fromBytes(content: bytes): Body {
+  return Body { source: Source.Held(content), length: Some(Bytes.length(content)), used: None }
+}
+
+/// A body that the sender reads piece by piece. It has no length and is sent once.
+export function fromStream(pieces: BodyStream): Body from pieces {
+  return Body { source: Source.Piped(pieces), length: None, used: None }
+}
+
+async function* markUsed(
+  pieces: BodyStream,
+  used: Cell<bool>,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  // Passes the pieces on, and notes in the cell that a read has started.
+  for await (const piece of pieces) {
+    Cells.set(used, true)
+    yield piece
+  }
+}
+
+/// A body that arrived on a connection: a stream, with the length that the peer announced. Once
+/// any of the stream has been read, the length is gone: what is left is not what was announced.
+export function fromIncoming(pieces: BodyStream, length: Option<int>): Body from pieces uses alloc {
+  if (length is Some(_)) {
+    const used = Cells.create(false)
+    return Body { source: Source.Piped(markUsed(pieces, used)), length, used: Some(used) }
+  }
+  return Body { source: Source.Piped(pieces), length, used: None }
+}
+
+/// The length of the body in bytes when its source knows it and the body is whole. None means
+/// the length is not known, or an incoming stream has been read, so a sender frames the body as
+/// chunked; a body that was read to its end is then sent empty.
+export function findLength(body: Body): Option<int> {
+  if (body.used is Some(used)) {
+    if (Cells.get(used)) {
+      return None
+    }
+  }
+  return body.length
+}
+
+/// Whether the body can be sent again, as a redirect needs. A body of held bytes can; a stream
+/// is used up by one send.
+export function isReplayable(body: Body): bool {
+  return body.source is Source.Held(_)
+}
+
+/// The bytes of a body that holds them, so a writer can send them with the head. None for a
+/// stream.
+export function findHeldBytes(body: Body): Option<bytes> {
+  if (body.source is Source.Held(content)) {
+    return Some(content)
+  }
+  return None
+}
+
+/// The stream of a body that is a stream. None for a body of held bytes.
+export function findPieces(body: Body): Option<BodyStream> from body {
+  if (body.source is Source.Piped(pieces)) {
+    return Some(pieces)
+  }
+  return None
+}
+
+/// Every byte of the body. It reads the stream to its end, and gives TooLarge("body") as soon as
+/// more than maxBytes bytes have come. A body of bytes can be read again; a stream is used up
+/// afterwards, and a second read of it gives no bytes.
+export async function readAll(body: Body, maxBytes: int): Result<bytes, HttpError> uses io, alloc {
+  if (body.source is Source.Held(content)) {
+    if (Bytes.length(content) > maxBytes) {
+      return Err(HttpError.TooLarge("body"))
+    }
+    return Ok(content)
+  }
+  let content = Bytes.fromString("")
+  if (body.source is Source.Piped(pieces)) {
+    for await (const piece of pieces) {
+      if (piece is Err(error)) {
+        return Err(error)
+      }
+      content = Bytes.concat(content, piece.value)
+      if (Bytes.length(content) > maxBytes) {
+        return Err(HttpError.TooLarge("body"))
+      }
+    }
+  }
+  return Ok(content)
+}
+
+/// The body as one stream of pieces: its bytes when it holds them, otherwise the pieces of its
+/// stream.
+export async function* chunks(
+  body: Body,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  if (body.source is Source.Held(content)) {
+    if (Bytes.length(content) > 0) {
+      yield Ok(content)
+    }
+  }
+  if (body.source is Source.Piped(pieces)) {
+    for await (const piece of pieces) {
+      yield piece
+    }
+  }
+}

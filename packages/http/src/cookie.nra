@@ -1,0 +1,336 @@
+// http/cookie: reads the Cookie header of a request and writes Set-Cookie headers on a response,
+// as RFC 6265 describes.
+
+import * as Arrays from "std/array"
+import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Message from "http/message"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { Duration } from "std/time"
+import { HttpError } from "http/error"
+import { Request } from "http/request"
+import { Response } from "http/response"
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+/// A cookie that a request carries.
+export struct Cookie {
+  name: string
+  value: string
+}
+
+/// The SameSite attribute of a cookie.
+export enum SameSite {
+  Strict
+  Lax
+  None
+}
+
+/// A cookie to send. path and domain are left out of the header when None. maxAge is the
+/// lifetime from now, and expires is a date in seconds since 1970-01-01 UTC; a client that
+/// understands Max-Age prefers it. sameSite None leaves the attribute out.
+export struct SetCookie {
+  name: string
+  value: string
+  path: Option<string>
+  domain: Option<string>
+  maxAge: Option<Duration>
+  expires: Option<int>
+  secure: bool
+  httpOnly: bool
+  sameSite: Option<SameSite>
+}
+
+/// A session cookie with the name and the value and no attributes.
+export function create(name: string, value: string): SetCookie {
+  return SetCookie {
+    name,
+    value,
+    path: None,
+    domain: None,
+    maxAge: None,
+    expires: None,
+    secure: false,
+    httpOnly: false,
+    sameSite: None,
+  }
+}
+
+function isValueByte(byte: int): bool {
+  // The cookie-octet of RFC 6265: printable ASCII except space, double quote, comma, semicolon
+  // and backslash.
+  return (byte == 33 ||
+    (byte >= 35 && byte <= 43) ||
+    (byte >= 45 && byte <= 58) ||
+    (byte >= 60 && byte <= 91) ||
+    (byte >= 93 && byte <= 126))
+}
+
+function stripQuotes(value: string): string {
+  // The quotes are part of the syntax, not of the value.
+  if (Str.length(value) >= 2 && Str.startsWith(value, "\"") && Str.endsWith(value, "\"")) {
+    const inner = Str.slice(value, 1, Str.length(value) - 1)
+    if (inner is Some(unquoted)) {
+      return unquoted
+    }
+  }
+  return value
+}
+
+function isValidValue(value: string): bool {
+  // A value may be wrapped in one pair of double quotes.
+  const inner = stripQuotes(value)
+  for (const index of Ranges.between(0, Str.length(inner))) {
+    if (!isValueByte(Str.byteAt(inner, index))) {
+      return false
+    }
+  }
+  return true
+}
+
+function isValidPath(path: string): bool {
+  if (!Str.startsWith(path, "/")) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(path))) {
+    // Printable ASCII, space included, except the semicolon.
+    const byte = Str.byteAt(path, index)
+    if (byte < 32 || byte > 126 || byte == 59) {
+      return false
+    }
+  }
+  return true
+}
+
+function isValidDomain(domain: string): bool {
+  let name = domain
+  if (Str.startsWith(domain, ".")) {
+    name = Str.sliceFrom(domain, 1)
+  }
+  if (Str.length(name) == 0) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(name))) {
+    // Letters, digits, hyphen and dot.
+    const byte = Str.byteAt(name, index)
+    const isLetter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+    const isDigit = byte >= 48 && byte <= 57
+    if (!isLetter && !isDigit && byte != 45 && byte != 46) {
+      return false
+    }
+  }
+  return true
+}
+
+function padTwo(number: int): string uses alloc {
+  if (number < 10) {
+    return `0${Int.toString(number)}`
+  }
+  return Int.toString(number)
+}
+
+/// The date as HTTP writes it, such as "Sun, 06 Nov 1994 08:49:37 GMT". A negative count of
+/// seconds gives None.
+export function formatDate(seconds: int): Option<string> uses alloc {
+  if (seconds < 0) {
+    return None
+  }
+  const days = seconds / 86400
+  const secondOfDay = seconds - days * 86400
+  // Civil date from the day count, by the days-from-civil algorithm with March as month 0.
+  const shifted = days + 719468
+  const era = shifted / 146097
+  const dayOfEra = shifted - era * 146097
+  const yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+  const dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+  const monthIndex = (5 * dayOfYear + 2) / 153
+  const day = dayOfYear - (153 * monthIndex + 2) / 5 + 1
+  let month = monthIndex + 3
+  if (monthIndex >= 10) {
+    month = monthIndex - 9
+  }
+  let year = yearOfEra + era * 400
+  if (month <= 2) {
+    year += 1
+  }
+  const weekday = WEEKDAYS[(days + 4) % 7]
+  const hour = padTwo(secondOfDay / 3600)
+  const minute = padTwo((secondOfDay % 3600) / 60)
+  const second = padTwo(secondOfDay % 60)
+  const monthName = MONTHS[month - 1]
+  return Some(
+    `${weekday}, ${padTwo(day)} ${monthName} ${Int.toString(year)} ${hour}:${minute}:${second} GMT`,
+  )
+}
+
+function refuse(message: string): HttpError uses alloc {
+  return HttpError.Malformed(`cookie: ${message}`)
+}
+
+/// Checks a cookie against RFC 6265 and the __Host- and __Secure- name prefixes. It gives the
+/// problem, or None for a cookie that can be sent.
+export function validate(cookie: SetCookie): Option<HttpError> uses alloc {
+  if (!Message.isToken(cookie.name)) {
+    return Some(refuse("the name is not a token"))
+  }
+  if (!isValidValue(cookie.value)) {
+    return Some(refuse("the value has a character that is not allowed"))
+  }
+  if (cookie.path is Some(path)) {
+    if (!isValidPath(path)) {
+      return Some(refuse("the path must start with / and hold no control character or ;"))
+    }
+  }
+  if (cookie.domain is Some(domain)) {
+    if (!isValidDomain(domain)) {
+      return Some(refuse("the domain is not a host name"))
+    }
+  }
+  if (cookie.expires is Some(seconds)) {
+    if (seconds < 0) {
+      return Some(refuse("expires is before 1970"))
+    }
+  }
+  if (cookie.sameSite is Some(SameSite.None)) {
+    if (!cookie.secure) {
+      return Some(refuse("SameSite=None needs Secure"))
+    }
+  }
+  if (Str.startsWith(cookie.name, "__Host-")) {
+    if (!cookie.secure || cookie.domain is Some(_) || cookie.path != Some("/")) {
+      return Some(refuse("a __Host- cookie needs Secure, Path=/ and no Domain"))
+    }
+  }
+  if (Str.startsWith(cookie.name, "__Secure-") && !cookie.secure) {
+    return Some(refuse("a __Secure- cookie needs Secure"))
+  }
+  return None
+}
+
+/// The value of the Set-Cookie header for the cookie, or the reason it is refused.
+export function format(cookie: SetCookie): Result<string, HttpError> uses alloc {
+  const problem = validate(cookie)
+  if (problem is Some(error)) {
+    return Err(error)
+  }
+  let text = `${cookie.name}=${cookie.value}`
+  if (cookie.expires is Some(seconds)) {
+    const date = formatDate(seconds)
+    if (date is Some(formatted)) {
+      text = `${text}; Expires=${formatted}`
+    }
+  }
+  if (cookie.maxAge is Some(duration)) {
+    // A zero or negative lifetime expires the cookie at once.
+    let lifetime = Time.asMilliseconds(duration) / 1000
+    if (lifetime < 0) {
+      lifetime = 0
+    }
+    text = `${text}; Max-Age=${Int.toString(lifetime)}`
+  }
+  if (cookie.domain is Some(domain)) {
+    text = `${text}; Domain=${domain}`
+  }
+  if (cookie.path is Some(path)) {
+    text = `${text}; Path=${path}`
+  }
+  if (cookie.secure) {
+    text = `${text}; Secure`
+  }
+  if (cookie.httpOnly) {
+    text = `${text}; HttpOnly`
+  }
+  if (cookie.sameSite is Some(sameSite)) {
+    if (sameSite == SameSite.Strict) {
+      text = `${text}; SameSite=Strict`
+    } else if (sameSite == SameSite.Lax) {
+      text = `${text}; SameSite=Lax`
+    } else {
+      text = `${text}; SameSite=None`
+    }
+  }
+  return Ok(text)
+}
+
+/// Adds a Set-Cookie header for the cookie, next to the ones already there. A cookie that is
+/// refused adds nothing and gives the reason; None means the header was added.
+export function set(mutable response: Response, cookie: SetCookie): Option<HttpError> uses alloc {
+  const formatted = format(cookie)
+  if (formatted is Err(error)) {
+    return Some(error)
+  }
+  Fields.add(mutable response.headers, "Set-Cookie", formatted.value)
+  return None
+}
+
+/// Tells the client to drop the cookie that was set with the name and the path: it adds a
+/// Set-Cookie header with an empty value that expired in 1970. The path must match the path the
+/// cookie was set with. A refused name gives the reason.
+export function remove(
+  mutable response: Response,
+  name: string,
+  path: string,
+): Option<HttpError> uses alloc {
+  let cookie = create(name, "")
+  cookie.path = Some(path)
+  cookie.maxAge = Some(Time.seconds(0))
+  cookie.expires = Some(0)
+  // The prefixes need Secure on every header, the expiring one too.
+  cookie.secure = Str.startsWith(name, "__Host-") || Str.startsWith(name, "__Secure-")
+  return set(mutable response, cookie)
+}
+
+function readPair(pair: string): Option<Cookie> uses alloc {
+  const separator = Str.indexOf(pair, "=")
+  if (separator is None) {
+    return None
+  }
+  const nameText = Str.slice(pair, 0, separator.value)
+  if (nameText is None) {
+    return None
+  }
+  const name = Str.trim(nameText.value)
+  if (!Message.isToken(name)) {
+    return None
+  }
+  const value = stripQuotes(Str.trim(Str.sliceFrom(pair, separator.value + 1)))
+  for (const index of Ranges.between(0, Str.length(value))) {
+    // Real clients send commas and spaces inside values, so only control bytes are refused.
+    const byte = Str.byteAt(value, index)
+    if (byte < 32 || byte == 127) {
+      return None
+    }
+  }
+  return Some(Cookie { name, value })
+}
+
+/// Every cookie of every Cookie header of the request, in the order they were sent. A pair
+/// that is malformed is skipped.
+export function read(request: Request): Array<Cookie> uses alloc {
+  let cookies: Array<Cookie> = []
+  for (const line of Arrays.values(Fields.getAll(request.headers, "Cookie"))) {
+    const pairs = Str.split(line, ";")
+    if (pairs is Some(found)) {
+      for (const pair of Arrays.values(found)) {
+        const cookie = readPair(pair)
+        if (cookie is Some(parsed)) {
+          Arrays.push(mutable cookies, parsed)
+        }
+      }
+    }
+  }
+  return cookies
+}
+
+/// The value of the first cookie with the name, or None.
+export function get(request: Request, name: string): Option<string> uses alloc {
+  for (const cookie of Arrays.values(read(request))) {
+    if (cookie.name == name) {
+      return Some(cookie.value)
+    }
+  }
+  return None
+}

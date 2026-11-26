@@ -97,6 +97,37 @@ while [ "$shard" -le "$jobs" ]; do
   fi
   shard=$((shard + 1))
 done
+# The first-party packages (every folder of packages/ with a narra.toml) carry test programs of
+# their own, since a test block cannot wait for a socket. A full run builds each one with the
+# sanitizers and the leak check, runs it, and prints its last line, or all of its output when
+# it fails. Each package names its test binary `<name>-tests`, which the step selects with -bin.
+if [ "$#" -eq 0 ]; then
+  for package in "$root"/packages/*/; do
+    if [ -f "${package}narra.toml" ]; then
+      name=$(basename "$package")
+      echo "test.sh: the checks of packages/$name"
+      if NARRA_CHECK_LEAKS=1 NARRA_CHECK_COPIES=1 ASAN_OPTIONS=detect_leaks=0 \
+        "$narrac" run -sanitize -bin "$name-tests" "$package" > "$work/package-$name.log" 2>&1; then
+        tail -n 1 "$work/package-$name.log"
+      else
+        cat "$work/package-$name.log"
+        status=1
+      fi
+    fi
+  done
+  # Each example depends on a package as an outside program would, so building it catches a
+  # package that only compiles as the package being built.
+  for example in "$root"/examples/*/; do
+    if [ -f "${example}narra.toml" ]; then
+      name=$(basename "$example")
+      echo "test.sh: build examples/$name"
+      if ! "$narrac" build -o "$work/example-$name" "$example" > "$work/example-$name.log" 2>&1; then
+        cat "$work/example-$name.log"
+        status=1
+      fi
+    fi
+  done
+fi
 # The number of cases that ran, summed over the shards, goes on the final line.
 ran=$(cat "$work"/shard-*.log | awk '/[0-9]+ passed, [0-9]+ failed/ { for (i = 1; i < NF; i++) if ($(i + 1) == "passed,") total += $i } END { print total + 0 }')
 elapsed=$(($(date +%s) - start))

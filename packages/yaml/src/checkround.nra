@@ -1,0 +1,517 @@
+// Checks of the writer, of decoding the same type from YAML, JSON and TOML, and of the reader and
+// writer together: a round trip over random values and a fuzz over random text.
+
+import * as Arrays from "std/array"
+import * as Float from "std/float"
+import * as Int from "std/int"
+import * as Json from "std/json"
+import * as Randoms from "std/random"
+import * as Str from "std/string"
+import * as Toml from "std/toml"
+import * as Yaml from "yaml/yaml"
+import { Report, expect, expectText, makeRecord, makeTexts, sameValue } from "yaml/checkkit"
+import { Random } from "std/random"
+import { Shape, Value } from "std/shape"
+
+struct Server derives Shape {
+  host: string
+  port: int
+}
+
+struct Config derives Shape {
+  name: string
+  ratio: f64
+  debug: bool
+  tags: Array<string>
+  server: Server
+  limits: Map<string, int>
+}
+
+export function runRoundChecks(report: Report) uses io, alloc {
+  checkWriter(report)
+  checkDecode(report)
+  checkRoundTrip(report)
+  checkFuzz(report)
+}
+
+function checkWriter(report: Report) uses io, alloc {
+  const infinity = 1.0e308 * 10.0
+  expectText(
+    report,
+    "write a mapping",
+    Yaml.stringify(
+      makeRecord([
+        #["a", Value.Int(1)],
+        #["b", Value.List([Value.Int(1), Value.Int(2)])],
+        #["c", makeRecord([#["d", Value.Text("x")]])],
+        #["e", Value.List([])],
+        #["f", makeRecord([])],
+        #["g", Value.Null],
+      ]),
+    ),
+    "a: 1\nb:\n  - 1\n  - 2\nc:\n  d: x\ne: []\nf: {}\ng: null\n",
+  )
+  expectText(
+    report,
+    "write a sequence of mappings",
+    Yaml.stringify(
+      Value.List([
+        makeRecord([#["a", Value.Int(1)], #["b", Value.Int(2)]]),
+        makeRecord([#["c", Value.List([Value.Int(3)])]]),
+        Value.List([Value.Int(4), Value.Int(5)]),
+      ]),
+    ),
+    "- a: 1\n  b: 2\n- c:\n    - 3\n- - 4\n  - 5\n",
+  )
+  expectText(report, "write a root scalar", Yaml.stringify(Value.Text("hello")), "hello\n")
+  expectText(report, "write an empty root list", Yaml.stringify(Value.List([])), "[]\n")
+  expectText(
+    report,
+    "write floats",
+    Yaml.stringify(
+      Value.List([
+        Value.Float(1.5),
+        Value.Float(2.0),
+        Value.Float(infinity),
+        Value.Float(-infinity),
+        Value.Float(infinity - infinity),
+        Value.Float(-0.0),
+      ]),
+    ),
+    "- 1.5\n- 2.0\n- .inf\n- -.inf\n- .nan\n- -0.0\n",
+  )
+  expectText(
+    report,
+    "write quoted strings",
+    Yaml.stringify(
+      makeTexts([
+        "true",
+        "123",
+        "",
+        " pad",
+        "a: b",
+        "x #y",
+        "-",
+        "null",
+        "~",
+        "1.5",
+        "-x",
+        "x#y",
+        "caf\u{e9}",
+        "a\tb",
+        "...",
+        "<<",
+        "{a}",
+        "end:",
+      ]),
+    ),
+    "- \"true\"\n- \"123\"\n- \"\"\n- \" pad\"\n- \"a: b\"\n- \"x #y\"\n- \"-\"\n- \"null\"\n- \"~\"\n- \"1.5\"\n- -x\n- x#y\n- caf\u{e9}\n- a\tb\n- \"...\"\n- \"<<\"\n- \"{a}\"\n- \"end:\"\n",
+  )
+  expectText(
+    report,
+    "write a string with line breaks",
+    Yaml.stringify(
+      makeRecord([
+        #["a", Value.Text("one\ntwo")],
+        #["b", Value.Text("kept\n")],
+        #["c", Value.Text("many\n\n")],
+        #["d", Value.Text(" lead\nx")],
+        #["e", Value.List([Value.Text("in\nlist")])],
+      ]),
+    ),
+    "a: |-\n  one\n  two\nb: |\n  kept\nc: |+\n  many\n\nd: \" lead\\nx\"\ne:\n  - |-\n    in\n    list\n",
+  )
+  expectText(
+    report,
+    "write keys",
+    Yaml.stringify(
+      makeRecord([
+        #["a b", Value.Int(1)],
+        #["1", Value.Int(2)],
+        #["", Value.Int(3)],
+        #["<<", Value.Int(4)],
+        #["x\ny", Value.Int(5)],
+      ]),
+    ),
+    "a b: 1\n\"1\": 2\n\"\": 3\n\"<<\": 4\n\"x\\ny\": 5\n",
+  )
+}
+
+function checkDecode(report: Report) uses io, alloc {
+  const yamlText = "name: demo\nratio: 0.5\ndebug: true\ntags: [a, b]\nserver:\n  host: localhost\n  port: 8080\nlimits:\n  cpu: 2\n  memory: 512\n"
+  const jsonText = "{\"name\":\"demo\",\"ratio\":0.5,\"debug\":true,\"tags\":[\"a\",\"b\"],\"server\":{\"host\":\"localhost\",\"port\":8080},\"limits\":{\"cpu\":2,\"memory\":512}}"
+  const tomlText = "name = \"demo\"\nratio = 0.5\ndebug = true\ntags = [\"a\", \"b\"]\n[server]\nhost = \"localhost\"\nport = 8080\n[limits]\ncpu = 2\nmemory = 512\n"
+  const fromYaml = Yaml.decode<Config>(yamlText)
+  const fromJson = Json.decode<Config>(jsonText)
+  const fromToml = Toml.decode<Config>(tomlText)
+  if (fromYaml is Ok(config)) {
+    expect(report, "decode the name", config.name == "demo")
+    expect(report, "decode the port", config.server.port == 8080)
+    expect(report, "decode the tags", Arrays.length(config.tags) == 2)
+    if (fromJson is Ok(other)) {
+      expect(
+        report,
+        "yaml and json decode to the same value",
+        sameValue(Shape.toValue(config), Shape.toValue(other)),
+      )
+    } else {
+      expect(report, "json decodes", false)
+    }
+    if (fromToml is Ok(other)) {
+      expect(
+        report,
+        "yaml and toml decode to the same value",
+        sameValue(Shape.toValue(config), Shape.toValue(other)),
+      )
+    } else {
+      expect(report, "toml decodes", false)
+    }
+    const written = Yaml.encode(config)
+    const again = Yaml.decode<Config>(written)
+    if (again is Ok(other)) {
+      expect(report, "encode then decode", sameValue(Shape.toValue(config), Shape.toValue(other)))
+    } else {
+      expect(report, "encode then decode", false)
+    }
+  } else {
+    expect(report, "decode from yaml", false)
+  }
+  const wrong = Yaml.decode<Config>(
+    "name: demo\nratio: 0.5\ndebug: true\ntags: []\nserver:\n  host: h\n  port: eighty\nlimits: {}\n",
+  )
+  if (wrong is Err(message)) {
+    expect(report, "a shape error names the path", Str.contains(message, ".server.port"))
+  } else {
+    expect(report, "a shape error names the path", false)
+  }
+  const broken = Yaml.decode<Config>("name: [")
+  if (broken is Err(message)) {
+    expect(report, "a read error has a position", Str.contains(message, "1:"))
+  } else {
+    expect(report, "a read error has a position", false)
+  }
+}
+
+// The strings that a round trip needs to get right, and a few that stress the writer's choices.
+const AWKWARD_TEXTS = [
+  "",
+  "a",
+  "hello world",
+  " lead",
+  "trail ",
+  "a: b",
+  "- x",
+  "? q",
+  "null",
+  "true",
+  "~",
+  "123",
+  "0x1F",
+  "1.5",
+  ".inf",
+  "#c",
+  "a #b",
+  "x#y",
+  "\u{e9}",
+  "tab\there",
+  "line\nbreak",
+  "two\n\n",
+  "\nlead",
+  "...",
+  "---",
+  "<<",
+  "'q'",
+  "\"d\"",
+  "{a}",
+  "[b]",
+  "&a",
+  "*a",
+  "!t",
+  "|",
+  ">",
+  "%x",
+  "@",
+  "`",
+  "a\\b",
+  "multi\nline\n",
+  "  indented\nline",
+  "end:",
+  ": start",
+  "a,b",
+  "\u{1f600}",
+  "\r",
+  "\u{7f}",
+  "yes",
+  "-",
+  "-1",
+  "+1",
+  "1e3",
+  "0o7",
+  "a\tb\n",
+  "\n",
+  "\n\n",
+  "a\n \nb",
+  "\u{feff}",
+  "\u{feff}a",
+  "x\n  y\nz",
+]
+
+const SYMBOLS = "ab :-#\n\t'\"[]{},&*!|>%@`?0123."
+
+function pickIndex(mutable random: Random, count: int): int {
+  if (Randoms.nextInt(mutable random, 0, count) is Some(value)) {
+    return value
+  }
+  return 0
+}
+
+function pickText(mutable random: Random): string uses alloc {
+  if (pickIndex(mutable random, 3) > 0) {
+    return AWKWARD_TEXTS[pickIndex(mutable random, Arrays.length(AWKWARD_TEXTS))]
+  }
+  let builder = Str.builder()
+  const length = pickIndex(mutable random, 9)
+  let index = 0
+  while (index < length) {
+    const symbol = pickIndex(mutable random, Str.length(SYMBOLS))
+    if (Str.slice(SYMBOLS, symbol, symbol + 1) is Some(piece)) {
+      Str.append(mutable builder, piece)
+    }
+    index += 1
+  }
+  return Str.build(builder)
+}
+
+function pickFloat(mutable random: Random): f64 uses alloc {
+  const infinity = 1.0e308 * 10.0
+  const choice = pickIndex(mutable random, 9)
+  if (choice == 0) {
+    return infinity
+  }
+  if (choice == 1) {
+    return -infinity
+  }
+  if (choice == 2) {
+    return infinity - infinity
+  }
+  if (choice == 3) {
+    return -0.0
+  }
+  if (choice == 4) {
+    return 1.0e21
+  }
+  if (choice == 5) {
+    return 1.0e-7
+  }
+  if (choice == 6) {
+    return Float.fromInt(pickIndex(mutable random, 2000) - 1000) / 8.0
+  }
+  return (Randoms.nextFloat(mutable random) - 0.5) * 1000000.0
+}
+
+function pickValue(mutable random: Random, depth: int): Value uses alloc {
+  let kinds = 5
+  if (depth > 0) {
+    kinds = 7
+  }
+  const kind = pickIndex(mutable random, kinds)
+  if (kind == 0) {
+    return Value.Null
+  }
+  if (kind == 1) {
+    return Value.Bool(pickIndex(mutable random, 2) == 0)
+  }
+  if (kind == 2) {
+    if (pickIndex(mutable random, 8) == 0) {
+      return Value.Int(-9223372036854775807 - 1)
+    }
+    return Value.Int(pickIndex(mutable random, 2000000) - 1000000)
+  }
+  if (kind == 3) {
+    return Value.Float(pickFloat(mutable random))
+  }
+  if (kind == 4) {
+    return Value.Text(pickText(mutable random))
+  }
+  const count = pickIndex(mutable random, 4)
+  if (kind == 5) {
+    let items: Array<Value> = []
+    let index = 0
+    while (index < count) {
+      Arrays.push(mutable items, pickValue(mutable random, depth - 1))
+      index += 1
+    }
+    return Value.List(items)
+  }
+  let fields: Map<string, Value> = Map {}
+  let index = 0
+  while (index < count) {
+    const key = pickText(mutable random)
+    fields[key] = pickValue(mutable random, depth - 1)
+    index += 1
+  }
+  return Value.Record(fields)
+}
+
+function expectRoundTrip(report: Report, name: string, value: Value) uses io, alloc {
+  const text = Yaml.stringify(value)
+  const parsed = Yaml.parse(text)
+  if (parsed is Err(error)) {
+    expect(report, name, false)
+    print(`  error: ${Yaml.formatError(error)}`)
+    print(`  text:  ${Json.stringify(Value.Text(text))}`)
+    return
+  }
+  const same = sameValue(parsed.value, value)
+  expect(report, name, same)
+  if (!same) {
+    print(`  value: ${Json.stringify(value)}`)
+    print(`  text:  ${Json.stringify(Value.Text(text))}`)
+    print(`  back:  ${Json.stringify(parsed.value)}`)
+  }
+}
+
+function checkRoundTrip(report: Report) uses io, alloc {
+  let random = Randoms.seeded(20261126)
+  let round = 0
+  while (round < 3000) {
+    const value = pickValue(mutable random, 3)
+    expectRoundTrip(report, `round trip ${Int.toString(round)}`, value)
+    round += 1
+  }
+  for (const text of Arrays.values(AWKWARD_TEXTS)) {
+    expectRoundTrip(report, `round trip of ${Json.stringify(Value.Text(text))}`, Value.Text(text))
+    expectRoundTrip(
+      report,
+      `round trip of a list with ${Json.stringify(Value.Text(text))}`,
+      Value.List([Value.Text(text)]),
+    )
+    expectRoundTrip(
+      report,
+      `round trip of a key ${Json.stringify(Value.Text(text))}`,
+      makeRecord([#[text, Value.Int(1)]]),
+    )
+  }
+}
+
+// The pieces that the fuzz glues together into text.
+const PIECES = [
+  "a",
+  "b",
+  "1",
+  "- ",
+  "? ",
+  ": ",
+  ":",
+  "\n",
+  "\n  ",
+  "  ",
+  "[",
+  "]",
+  "{",
+  "}",
+  ",",
+  "'",
+  "\"",
+  "#",
+  " #",
+  "&x ",
+  "*x ",
+  "!!str ",
+  "!",
+  "|",
+  "|-",
+  ">",
+  "---",
+  "...",
+  "%",
+  "\t",
+  "<<",
+  "\\",
+  "\u{e9}",
+  "\r\n",
+  "null",
+  "key: ",
+]
+
+// Documents that the mutations start from.
+const BASES = [
+  "a: 1\nb: [x, y]\nc:\n  - d\n  - e: f\n",
+  "- &a {k: v}\n- *a\n- !!str 5\n- |\n  text\n  more\n- >\n  folded\n  text\n",
+  "m: &m {x: 1}\nn:\n  <<: *m\n  y: 2\n? [k]\n: v\n",
+  "\"quoted \\n\": 'single ''x'''\nplain: multi\n  line\n...\n---\nsecond: doc\n",
+]
+
+function pickPieces(mutable random: Random): string uses alloc {
+  let builder = Str.builder()
+  const count = pickIndex(mutable random, 25)
+  let index = 0
+  while (index < count) {
+    Str.append(mutable builder, PIECES[pickIndex(mutable random, Arrays.length(PIECES))])
+    index += 1
+  }
+  return Str.build(builder)
+}
+
+function mutateText(mutable random: Random, base: string): string uses alloc {
+  let text = base
+  let steps = pickIndex(mutable random, 4) + 1
+  while (steps > 0) {
+    const length = Str.length(text)
+    let at = pickIndex(mutable random, length + 1)
+    while (at > 0 && at < length && Str.byteAt(text, at) >= 128 && Str.byteAt(text, at) < 192) {
+      at -= 1
+    }
+    let before = ""
+    if (Str.slice(text, 0, at) is Some(head)) {
+      before = head
+    }
+    const after = Str.sliceFrom(text, at)
+    const kind = pickIndex(mutable random, 3)
+    if (kind == 0 && Str.length(after) > 0) {
+      text = `${before}${Str.sliceFrom(after, Str.nextChar(after, 0))}`
+    } else {
+      text = `${before}${PIECES[pickIndex(mutable random, Arrays.length(PIECES))]}${after}`
+    }
+    steps -= 1
+  }
+  return text
+}
+
+function checkFuzzText(report: Report, name: string, text: string) uses io, alloc {
+  const parsed = Yaml.parseAll(text)
+  if (parsed is Ok(documents)) {
+    for (const document of Arrays.values(documents)) {
+      const written = Yaml.stringify(document)
+      const again = Yaml.parse(written)
+      if (again is Ok(value)) {
+        const same = sameValue(value, document)
+        expect(report, `${name} writes back`, same)
+        if (!same) {
+          print(`  text: ${Json.stringify(Value.Text(text))}`)
+          print(`  back: ${Json.stringify(value)}`)
+        }
+      } else {
+        expect(report, `${name} writes back`, false)
+        print(`  text: ${Json.stringify(Value.Text(text))}`)
+        print(`  written: ${Json.stringify(Value.Text(written))}`)
+      }
+    }
+  }
+}
+
+function checkFuzz(report: Report) uses io, alloc {
+  let random = Randoms.seeded(77)
+  let round = 0
+  while (round < 3000) {
+    checkFuzzText(report, `fuzz ${Int.toString(round)}`, pickPieces(mutable random))
+    round += 1
+  }
+  round = 0
+  while (round < 3000) {
+    const base = BASES[pickIndex(mutable random, Arrays.length(BASES))]
+    checkFuzzText(report, `mutation ${Int.toString(round)}`, mutateText(mutable random, base))
+    round += 1
+  }
+  expect(report, "fuzz ran", round == 3000)
+}

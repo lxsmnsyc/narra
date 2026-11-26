@@ -1,0 +1,423 @@
+// http/message: reads and writes the head of a message and decides how its body is framed. The
+// functions are pure, so a test can feed them any text.
+
+import * as Arrays from "std/array"
+import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Unicode from "std/unicode"
+import * as Urls from "std/url"
+import { Headers } from "http/headers"
+import { Method } from "http/request"
+import { Url } from "std/url"
+import { methodFromName, methodName } from "http/request"
+import { reasonPhrase } from "http/response"
+
+/// Why a message is refused. The server answers each with a status: 400, 431, 413, 501 or 505.
+export enum Rejection {
+  BadRequest(message: string)
+  HeadersTooLarge
+  BodyTooLarge
+  NotImplemented
+  VersionNotSupported
+}
+
+/// The request line and the header fields of a request. version is the minor version: 0 or 1.
+export struct RequestHead {
+  method: Method
+  url: Url
+  version: int
+  headers: Headers
+}
+
+/// The status line and the header fields of a response.
+export struct ResponseHead {
+  version: int
+  status: int
+  headers: Headers
+}
+
+/// How the bytes after a head make a body.
+export enum Framing {
+  Empty
+  Length(count: int)
+  Chunked
+  UntilClose
+}
+
+/// The status that answers a rejection.
+export function chooseStatus(rejection: Rejection): int {
+  if (rejection is Rejection.HeadersTooLarge) {
+    return 431
+  }
+  if (rejection is Rejection.BodyTooLarge) {
+    return 413
+  }
+  if (rejection is Rejection.NotImplemented) {
+    return 501
+  }
+  if (rejection is Rejection.VersionNotSupported) {
+    return 505
+  }
+  return 400
+}
+
+/// The reason a rejection gives in the body of its answer.
+export function describeRejection(rejection: Rejection): string {
+  if (rejection is Rejection.BadRequest(message)) {
+    return message
+  }
+  if (rejection is Rejection.HeadersTooLarge) {
+    return "the headers are too large"
+  }
+  if (rejection is Rejection.BodyTooLarge) {
+    return "the body is too large"
+  }
+  if (rejection is Rejection.NotImplemented) {
+    return "this transfer encoding is not supported"
+  }
+  return "only HTTP/1.0 and HTTP/1.1 are supported"
+}
+
+function splitText(text: string, separator: string): Array<string> uses alloc {
+  const pieces = Str.split(text, separator)
+  if (pieces is Some(found)) {
+    return found
+  }
+  return [text]
+}
+
+function isTokenByte(byte: int): bool {
+  // Letters and digits, and the punctuation ! # $ % & ' * + - . ^ _ ` | ~
+  if (byte >= 48 && byte <= 57) {
+    return true
+  }
+  if (byte >= 65 && byte <= 90) {
+    return true
+  }
+  if (byte >= 97 && byte <= 122) {
+    return true
+  }
+  if (byte >= 35 && byte <= 39) {
+    return true
+  }
+  return (byte == 33 ||
+    byte == 42 ||
+    byte == 43 ||
+    byte == 45 ||
+    byte == 46 ||
+    byte == 94 ||
+    byte == 95 ||
+    byte == 96 ||
+    byte == 124 ||
+    byte == 126)
+}
+
+/// Tells whether the text is one or more token characters, as a method or a header name is.
+export function isToken(text: string): bool {
+  if (Str.length(text) == 0) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(text))) {
+    if (!isTokenByte(Str.byteAt(text, index))) {
+      return false
+    }
+  }
+  return true
+}
+
+function isValueText(text: string): bool {
+  for (const index of Ranges.between(0, Str.length(text))) {
+    // A value may hold a tab and any byte from space up, except DEL.
+    const byte = Str.byteAt(text, index)
+    if ((byte < 32 && byte != 9) || byte == 127) {
+      return false
+    }
+  }
+  return true
+}
+
+/// The first header that cannot be written to the wire: a name that is not a token, or a value
+/// with a control character such as a line break. It names the header.
+export function findBadHeader(headers: Headers): Option<string> uses alloc {
+  for (const header of Arrays.values(headers.entries)) {
+    if (!isToken(header.name)) {
+      return Some(`header name "${header.name}"`)
+    }
+    if (!isValueText(header.value)) {
+      return Some(`value of the header ${header.name}`)
+    }
+  }
+  return None
+}
+
+function parseHeaderLines(lines: Array<string>): Result<Headers, Rejection> uses alloc {
+  let headers = Fields.empty()
+  // The first line is the request or status line.
+  for (const index of Ranges.between(1, Arrays.length(lines))) {
+    const line = lines[index]
+    if (Str.length(line) == 0) {
+      return Err(Rejection.BadRequest("an empty header line"))
+    }
+    const first = Str.byteAt(line, 0)
+    if (first == 32 || first == 9) {
+      return Err(Rejection.BadRequest("a header line that starts with white space"))
+    }
+    const colon = Str.indexOf(line, ":")
+    if (colon is None) {
+      return Err(Rejection.BadRequest("a header line with no colon"))
+    }
+    const separator = colon.value
+    const name = Str.slice(line, 0, separator)
+    if (name is None) {
+      return Err(Rejection.BadRequest("a header name that is not a token"))
+    }
+    if (!isToken(name.value)) {
+      return Err(Rejection.BadRequest("a header name that is not a token"))
+    }
+    const value = Str.trim(Str.sliceFrom(line, separator + 1))
+    if (!isValueText(value)) {
+      return Err(Rejection.BadRequest("a control character in a header value"))
+    }
+    Fields.add(mutable headers, name.value, value)
+  }
+  return Ok(headers)
+}
+
+function parseVersion(text: string): Result<int, Rejection> {
+  if (text == "HTTP/1.1") {
+    return Ok(1)
+  }
+  if (text == "HTTP/1.0") {
+    return Ok(0)
+  }
+  // A well-formed version is HTTP/ and a digit, a dot and a digit; only those can be unsupported.
+  if (Str.length(text) == 8 && Str.startsWith(text, "HTTP/")) {
+    const major = Str.byteAt(text, 5)
+    const minor = Str.byteAt(text, 7)
+    if (major >= 48 && major <= 57 && Str.byteAt(text, 6) == 46 && minor >= 48 && minor <= 57) {
+      return Err(Rejection.VersionNotSupported)
+    }
+  }
+  return Err(Rejection.BadRequest("the request line has no valid HTTP version"))
+}
+
+/// Reads a request head: the text of the request line and the header lines, with the lines
+/// separated by CR LF and no blank line at the end.
+export function parseRequestHead(text: string): Result<RequestHead, Rejection> uses alloc {
+  const lines = splitText(text, "\r\n")
+  const parts = splitText(lines[0], " ")
+  if (Arrays.length(parts) != 3) {
+    return Err(Rejection.BadRequest("a request line must be a method, a target and a version"))
+  }
+  if (!isToken(parts[0])) {
+    return Err(Rejection.BadRequest("the method is not a token"))
+  }
+  if (Str.length(parts[1]) == 0) {
+    return Err(Rejection.BadRequest("the request target is empty"))
+  }
+  const target = Urls.parse(parts[1])
+  if (target is Err(message)) {
+    return Err(Rejection.BadRequest(`the request target: ${message}`))
+  }
+  const version = parseVersion(parts[2])
+  if (version is Err(rejection)) {
+    return Err(rejection)
+  }
+  const headers = parseHeaderLines(lines)
+  if (headers is Err(rejection)) {
+    return Err(rejection)
+  }
+  // An HTTP/1.1 request names its host once.
+  if (version.value == 1 && Arrays.length(Fields.getAll(headers.value, "Host")) != 1) {
+    return Err(Rejection.BadRequest("an HTTP/1.1 request needs exactly one Host header"))
+  }
+  return Ok(RequestHead {
+    method: methodFromName(parts[0]),
+    url: target.value,
+    version: version.value,
+    headers: headers.value,
+  })
+}
+
+/// Reads a response head, in the same shape as parseRequestHead.
+export function parseResponseHead(text: string): Result<ResponseHead, Rejection> uses alloc {
+  const lines = splitText(text, "\r\n")
+  const statusLine = lines[0]
+  // The reason phrase is free text, so only the first two spaces split the line.
+  const firstSpace = Str.indexOf(statusLine, " ")
+  if (firstSpace is None) {
+    return Err(Rejection.BadRequest("a status line must be a version and a status"))
+  }
+  const versionText = Str.slice(statusLine, 0, firstSpace.value)
+  if (versionText is None) {
+    return Err(Rejection.BadRequest("the status line has no version"))
+  }
+  const version = parseVersion(versionText.value)
+  if (version is Err(rejection)) {
+    return Err(rejection)
+  }
+  const afterVersion = Str.sliceFrom(statusLine, firstSpace.value + 1)
+  const code = Str.slice(afterVersion, 0, 3)
+  if (code is None) {
+    return Err(Rejection.BadRequest("the status is not three digits"))
+  }
+  const status = Int.parse(code.value, 10)
+  if (status is Err(_)) {
+    return Err(Rejection.BadRequest("the status is not three digits"))
+  }
+  if (status.value < 100 || status.value > 599) {
+    return Err(Rejection.BadRequest("the status is not three digits"))
+  }
+  const headers = parseHeaderLines(lines)
+  if (headers is Err(rejection)) {
+    return Err(rejection)
+  }
+  return Ok(ResponseHead { version: version.value, status: status.value, headers: headers.value })
+}
+
+/// The lowercase tokens of every header with the name, split at commas.
+export function listTokens(headers: Headers, name: string): Array<string> uses alloc {
+  let tokens: Array<string> = []
+  for (const value of Arrays.values(Fields.getAll(headers, name))) {
+    for (const piece of Arrays.values(splitText(value, ","))) {
+      const token = Unicode.toLowerCase(Str.trim(piece))
+      if (Str.length(token) > 0) {
+        Arrays.push(mutable tokens, token)
+      }
+    }
+  }
+  return tokens
+}
+
+/// Tells whether a header lists the token, without regard to case: Connection holds close.
+export function hasToken(headers: Headers, name: string, token: string): bool uses alloc {
+  return Arrays.contains(listTokens(headers, name), token)
+}
+
+function isDigits(text: string): bool {
+  if (Str.length(text) == 0) {
+    return false
+  }
+  for (const index of Ranges.between(0, Str.length(text))) {
+    const byte = Str.byteAt(text, index)
+    if (byte < 48 || byte > 57) {
+      return false
+    }
+  }
+  return true
+}
+
+function readContentLength(headers: Headers): Result<Option<int>, Rejection> uses alloc {
+  // None for no header, an Err when the values are not one number.
+  const values = Fields.getAll(headers, "Content-Length")
+  if (Arrays.length(values) == 0) {
+    return Ok(None)
+  }
+  let count = 0
+  for (const index of Ranges.between(0, Arrays.length(values))) {
+    const text = Str.trim(values[index])
+    if (!isDigits(text)) {
+      return Err(Rejection.BadRequest("the Content-Length is not a number"))
+    }
+    const parsed = Int.parse(text, 10)
+    if (parsed is Err(_)) {
+      return Err(Rejection.BodyTooLarge)
+    }
+    if (index > 0 && parsed.value != count) {
+      return Err(Rejection.BadRequest("the Content-Length headers differ"))
+    }
+    count = parsed.value
+  }
+  return Ok(Some(count))
+}
+
+/// How the body of a request is framed. A body longer than maxBodyBytes is refused here when
+/// its length is known.
+export function requestFraming(
+  headers: Headers,
+  maxBodyBytes: int,
+): Result<Framing, Rejection> uses alloc {
+  const encodings = listTokens(headers, "Transfer-Encoding")
+  const length = readContentLength(headers)
+  if (length is Err(rejection)) {
+    return Err(rejection)
+  }
+  if (Arrays.length(encodings) > 0) {
+    if (length.value is Some(_)) {
+      return Err(Rejection.BadRequest("both Transfer-Encoding and Content-Length"))
+    }
+    if (Arrays.length(encodings) != 1 || encodings[0] != "chunked") {
+      return Err(Rejection.NotImplemented)
+    }
+    return Ok(Framing.Chunked)
+  }
+  if (length.value is Some(count)) {
+    if (count > maxBodyBytes) {
+      return Err(Rejection.BodyTooLarge)
+    }
+    if (count > 0) {
+      return Ok(Framing.Length(count))
+    }
+  }
+  return Ok(Framing.Empty)
+}
+
+/// How the body of a response is framed, given the method of the request it answers. A response
+/// with no length and no chunking runs until the server closes the connection.
+export function responseFraming(
+  method: Method,
+  status: int,
+  headers: Headers,
+): Result<Framing, Rejection> uses alloc {
+  if (method == Method.Head || status < 200 || status == 204 || status == 304) {
+    return Ok(Framing.Empty)
+  }
+  const encodings = listTokens(headers, "Transfer-Encoding")
+  if (Arrays.length(encodings) > 0) {
+    if (encodings[Arrays.length(encodings) - 1] == "chunked") {
+      return Ok(Framing.Chunked)
+    }
+    return Ok(Framing.UntilClose)
+  }
+  const length = readContentLength(headers)
+  if (length is Err(rejection)) {
+    return Err(rejection)
+  }
+  if (length.value is Some(count)) {
+    if (count == 0) {
+      return Ok(Framing.Empty)
+    }
+    return Ok(Framing.Length(count))
+  }
+  return Ok(Framing.UntilClose)
+}
+
+function writeHeaderLines(mutable builder: StringBuilder, headers: Headers) uses alloc {
+  for (const header of Arrays.values(headers.entries)) {
+    Str.append(mutable builder, `${header.name}: ${header.value}\r\n`)
+  }
+  Str.append(mutable builder, "\r\n")
+}
+
+/// The request line, the header lines and the blank line, as bytes. The target is what goes on
+/// the request line.
+export function writeRequestHead(
+  method: Method,
+  target: string,
+  headers: Headers,
+): string uses alloc {
+  const builder = Str.builder()
+  Str.append(mutable builder, `${methodName(method)} ${target} HTTP/1.1\r\n`)
+  writeHeaderLines(mutable builder, headers)
+  return Str.build(builder)
+}
+
+/// The status line, the header lines and the blank line.
+export function writeResponseHead(status: int, headers: Headers): string uses alloc {
+  const builder = Str.builder()
+  Str.append(mutable builder, `HTTP/1.1 ${Int.toString(status)} ${reasonPhrase(status)}\r\n`)
+  writeHeaderLines(mutable builder, headers)
+  return Str.build(builder)
+}

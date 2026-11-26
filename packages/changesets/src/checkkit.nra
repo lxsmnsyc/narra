@@ -1,0 +1,121 @@
+// The counters and helpers that the checks of the package share.
+
+import * as Arrays from "std/array"
+import * as Cells from "std/cell"
+import * as Fs from "std/fs"
+import * as Int from "std/int"
+import * as Process from "std/process"
+import * as Str from "std/string"
+import { Cell } from "std/cell"
+
+/// How many checks ran and how many failed. Copies share the counts.
+export struct Report {
+  checked: Cell<int>
+  failed: Cell<int>
+}
+
+export function createReport(): Report uses alloc {
+  return Report { checked: Cells.create(0), failed: Cells.create(0) }
+}
+
+/// Counts one check. A failed check prints its line.
+export function expect(report: Report, name: string, condition: bool) uses io, alloc {
+  Cells.set(report.checked, Cells.get(report.checked) + 1)
+  if (!condition) {
+    Cells.set(report.failed, Cells.get(report.failed) + 1)
+    print(`FAIL - ${name}`)
+  }
+}
+
+/// A check that two texts are equal. A failure prints both.
+export function expectText(
+  report: Report,
+  name: string,
+  actual: string,
+  expected: string,
+) uses io, alloc {
+  expect(report, name, actual == expected)
+  if (actual != expected) {
+    print(`  expected: ${expected}`)
+    print(`  actual:   ${actual}`)
+  }
+}
+
+/// The last line of the run.
+export function describeCount(report: Report): string uses alloc {
+  return `${Int.toString(Cells.get(report.checked))} checks, ${Int.toString(Cells.get(report.failed))} failed`
+}
+
+/// Makes an empty folder in the system's temporary folder.
+export function createTempFolder(): Result<string, string> uses io, alloc {
+  const result = Process.run("mktemp", ["-d"])
+  if (result is Err(message)) {
+    return Err(message)
+  }
+  const #[code, output, _errorOutput] = result.value
+  if (code != 0) {
+    return Err("mktemp failed")
+  }
+  return Ok(Str.trim(output))
+}
+
+/// Copies a folder and everything in it.
+export function copyTree(source: string, destination: string): Result<bool, string> uses io, alloc {
+  const created = Fs.createDirAll(destination)
+  if (created is Err(message)) {
+    return Err(message)
+  }
+  const listing = Fs.listDir(source)
+  if (listing is Err(message)) {
+    return Err(message)
+  }
+  for (const name of listing.value) {
+    const sourcePath = `${source}/${name}`
+    if (Fs.isDir(sourcePath)) {
+      const copied = copyTree(sourcePath, `${destination}/${name}`)
+      if (copied is Err(message)) {
+        return Err(message)
+      }
+    } else {
+      const text = Fs.readText(sourcePath)
+      if (text is Err(message)) {
+        return Err(message)
+      }
+      const written = Fs.writeText(`${destination}/${name}`, text.value)
+      if (written is Err(message)) {
+        return Err(message)
+      }
+    }
+  }
+  return Ok(true)
+}
+
+/// Runs git in a folder with its own identity and no user or system configuration, so a test
+/// never reads or changes the configuration of whoever runs it. Gives the output, or the error.
+export function runTestGit(
+  folder: string,
+  arguments: Array<string>,
+): Result<string, string> uses io, alloc {
+  const environment = [
+    #["GIT_AUTHOR_NAME", "Test"],
+    #["GIT_AUTHOR_EMAIL", "test@example.com"],
+    #["GIT_COMMITTER_NAME", "Test"],
+    #["GIT_COMMITTER_EMAIL", "test@example.com"],
+    #["GIT_CONFIG_GLOBAL", "/dev/null"],
+    #["GIT_CONFIG_NOSYSTEM", "1"],
+  ]
+  const result = Process.run("git", arguments, environment: environment, folder: Some(folder))
+  if (result is Err(message)) {
+    return Err(message)
+  }
+  const #[code, output, errorOutput] = result.value
+  if (code != 0) {
+    return Err(`git ${Str.join(arguments, " ")}: ${errorOutput}`)
+  }
+  return Ok(output)
+}
+
+/// Whether a text is in an array.
+export function hasLine(lines: Array<string>, wanted: string): bool {
+  return Arrays.contains(lines, wanted)
+}

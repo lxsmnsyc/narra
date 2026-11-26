@@ -1,10 +1,10 @@
 ---
 id: pkg-changesets
 title: "changesets package: version bumps, changelogs and member tags"
-status: todo
+status: done
 priority: could
 type: feature
-story:
+story: batch-26
 early: false
 outline: false
 milestone: p4-packages
@@ -21,7 +21,7 @@ exclusive: []
 fulfilled_by:
 gate: false
 added: 2026-11-25
-spent:
+spent: 278000
 owns:
   - roadmaps/selfhost/nodes/pkg-changesets/**
   - packages/changesets/**
@@ -53,11 +53,33 @@ A library and CLI that release workspace members the way changesets does for npm
 - Bump rule for unreleased versions: follow the changesets behavior for `0.x` (a `minor` stays `minor`). Write the rule in the README.
 - `status` lists pending changes and exits 1 when a changed member has no changeset, for use in checks.
 
+## Design (maintainer, 2026-11-26)
+
+The CLI is what matters; the library modules behind it are the worker's call (record them in the outcome).
+
+CLI, binary `changesets`, run from the workspace root:
+
+- `changesets add <member>:<level> ... -m "<summary>"` writes `.changeset/<random-words>.md`. Arguments only, no prompts.
+- `changesets status [--since <ref>]` lists pending releases; exits 1 when a member changed since `<ref>` (default `main`) and no pending changeset names it.
+- `changesets version` applies every pending file: bumps `narra.toml` versions, writes `CHANGELOG.md` entries, deletes the applied files.
+- `changesets tag` creates the `<name>/v<version>` tags that do not exist yet. It never pushes.
+
+Rules:
+
+- Several changesets for one member: the highest level wins. `0.x`: `minor` 0.3.1 to 0.4.0, `patch` to 0.3.2, `major` to 1.0.0.
+- A member that depends on a bumped member through `{ workspace = true }` gets a `patch` bump, cascading through chains, with the changelog line "Updated dependency <name> to <version>".
+- Only the `version = "..."` line under `[package]` changes; comments, order and spacing stay.
+- `CHANGELOG.md`: a new section at the top, `## <version>`, then `### Major changes`, `### Minor changes`, `### Patch changes` as present, one bullet per summary.
+- An unknown member, unknown level, missing frontmatter or a member named twice in one file is reported with file and line, and nothing on disk changes.
+- Out of scope: a config file (fixed or linked groups), prereleases.
+
 ## Acceptance
 
 - [ ] On a fixture workspace of three members (one depending on another), `version` with two changeset files gives the expected manifests, changelogs and deleted files, compared to goldens.
 - [ ] `tag` on a temporary git repo creates exactly the missing tags; a second run creates none.
-- [ ] Bad files (unknown member, unknown level, no frontmatter) are reported with file and line, and change nothing.
+- [ ] Bad files (unknown member, unknown level, no frontmatter, a member named twice) are reported with file and line, and change nothing; a fuzz check feeds random text to the file parser.
+- [ ] `status --since` exits 1 for a changed member with no changeset and 0 otherwise, on a temporary git repo.
+- [ ] `packages/changesets/README.md` documents the CLI and the bump rules.
 - [ ] `sh scripts/test.sh` runs the package tests and passes.
 
 ## Sizing

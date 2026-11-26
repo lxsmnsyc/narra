@@ -1,0 +1,224 @@
+// changesets/workspace: the members of a workspace and their versions.
+
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Maps from "std/map"
+import * as Str from "std/string"
+import * as Toml from "std/toml"
+import { Value } from "std/shape"
+
+/// A workspace member that has a version. `folder` is relative to the workspace root and
+/// `dependencies` lists the members it depends on through `{ workspace = true }`.
+export struct Member {
+  name: string
+  folder: string
+  version: string
+  dependencies: Array<string>
+}
+
+/// Reads the root `narra.toml` and every member it lists. A member with no `version` in its
+/// `[package]` table (such as the compiler itself) has nothing to release and is left out.
+export function loadWorkspace(root: string): Result<Array<Member>, string> uses io, alloc {
+  const rootText = Fs.readText(`${root}/narra.toml`)
+  if (rootText is Err(message)) {
+    return Err(`cannot read ${root}/narra.toml: ${message}`)
+  }
+  const rootValue = Toml.parse(rootText.value)
+  if (rootValue is Err(error)) {
+    return Err(`${root}/narra.toml:${Toml.formatError(error)}`)
+  }
+  const patterns = readTextList(rootValue.value, ["workspace", "members"])
+  const folders = expandMembers(root, patterns)
+  let members: Array<Member> = []
+  for (const folder of folders) {
+    const path = `${root}/${folder}/narra.toml`
+    const text = Fs.readText(path)
+    if (text is Err(message)) {
+      return Err(`cannot read ${path}: ${message}`)
+    }
+    const value = Toml.parse(text.value)
+    if (value is Err(error)) {
+      return Err(`${path}:${Toml.formatError(error)}`)
+    }
+    const name = readText(value.value, ["package", "name"])
+    const version = readText(value.value, ["package", "version"])
+    if (name is Some(memberName)) {
+      if (version is Some(memberVersion)) {
+        Arrays.push(mutable members, Member {
+          name: memberName,
+          folder,
+          version: memberVersion,
+          dependencies: findWorkspaceDependencies(value.value),
+        })
+      }
+    }
+  }
+  return Ok(members)
+}
+
+function lookup(value: Value, names: Array<string>): Option<Value> from value uses alloc {
+  let current = value
+  for (const name of names) {
+    if (current is Value.Record(fields)) {
+      const next = fields[name]
+      if (next is Some(found)) {
+        current = found
+      } else {
+        return None
+      }
+    } else {
+      return None
+    }
+  }
+  return Some(current)
+}
+
+function readText(value: Value, names: Array<string>): Option<string> uses alloc {
+  const found = lookup(value, names)
+  if (found is Some(Value.Text(text))) {
+    return Some(text)
+  }
+  return None
+}
+
+function readTextList(value: Value, names: Array<string>): Array<string> uses alloc {
+  let texts: Array<string> = []
+  const found = lookup(value, names)
+  if (found is Some(Value.List(items))) {
+    for (const item of items) {
+      if (item is Value.Text(text)) {
+        Arrays.push(mutable texts, text)
+      }
+    }
+  }
+  return texts
+}
+
+function findWorkspaceDependencies(value: Value): Array<string> uses alloc {
+  let names: Array<string> = []
+  const table = lookup(value, ["dependencies"])
+  if (table is Some(Value.Record(dependencies))) {
+    for (const #[name, dependency] of Maps.entries(dependencies)) {
+      const shared = lookup(dependency, ["workspace"])
+      if (shared is Some(Value.Bool(true))) {
+        Arrays.push(mutable names, name)
+      }
+    }
+  }
+  return names
+}
+
+function expandMembers(root: string, patterns: Array<string>): Array<string> uses io, alloc {
+  let folders: Array<string> = []
+  for (const pattern of patterns) {
+    if (!Str.startsWith(pattern, "!")) {
+      if (Str.endsWith(pattern, "/*")) {
+        const base = Str.slice(pattern, 0, Str.length(pattern) - 2)
+        if (base is Some(parentFolder)) {
+          const listing = Fs.listDir(`${root}/${parentFolder}`)
+          if (listing is Ok(names)) {
+            let sorted = copy(names)
+            Arrays.sort(mutable sorted)
+            for (const name of sorted) {
+              if (Fs.exists(`${root}/${parentFolder}/${name}/narra.toml`)) {
+                Arrays.push(mutable folders, `${parentFolder}/${name}`)
+              }
+            }
+          }
+        }
+      } else {
+        Arrays.push(mutable folders, pattern)
+      }
+    }
+  }
+  let kept: Array<string> = []
+  for (const folder of folders) {
+    if (!Arrays.contains(patterns, `!${folder}`)) {
+      Arrays.push(mutable kept, folder)
+    }
+  }
+  return kept
+}
+
+/// Gives `manifest` the new version on the `version` line of its `[package]` table. Every other
+/// byte stays. Returns None when the table has no `version = "..."` line.
+export function replaceVersion(manifest: string, version: string): Option<string> uses alloc {
+  const split = Str.split(manifest, "\n")
+  if (split is None) {
+    return None
+  }
+  let lines = copy(split.value)
+  let inPackage = false
+  let index = 0
+  while (index < Arrays.length(lines)) {
+    const line = lines[index]
+    const trimmed = Str.trim(line)
+    if (Str.startsWith(trimmed, "[")) {
+      inPackage = Str.startsWith(trimmed, "[package]")
+    } else if (inPackage && isVersionLine(trimmed)) {
+      // The value is quoted with " or ', and the comment after it may hold quotes too
+      const opening = findOpeningQuote(line)
+      if (opening is None) {
+        return None
+      }
+      const closing = findClosingQuote(line, opening.value)
+      if (closing is None) {
+        return None
+      }
+      const head = Str.slice(line, 0, opening.value + 1)
+      if (head is None) {
+        return None
+      }
+      lines[index] = `${head.value}${version}${Str.sliceFrom(line, closing.value)}`
+      return Some(Str.join(lines, "\n"))
+    }
+    index += 1
+  }
+  return None
+}
+
+function findOpeningQuote(line: string): Option<int> uses alloc {
+  const equals = Str.indexOf(line, "=")
+  if (equals is None) {
+    return None
+  }
+  let position = equals.value + 1
+  while (position < Str.length(line)) {
+    const byte = Str.byteAt(line, position)
+    if (byte == 34 || byte == 39) {
+      return Some(position)
+    }
+    // Only spaces and tabs may sit between the equals sign and the quote
+    if (byte != 32 && byte != 9) {
+      return None
+    }
+    position += 1
+  }
+  return None
+}
+
+function findClosingQuote(line: string, opening: int): Option<int> {
+  const quote = Str.byteAt(line, opening)
+  let position = opening + 1
+  while (position < Str.length(line)) {
+    const byte = Str.byteAt(line, position)
+    // A backslash escapes the next byte in a basic string, not in a literal one
+    if (quote == 34 && byte == 92) {
+      position += 2
+      continue
+    }
+    if (byte == quote) {
+      return Some(position)
+    }
+    position += 1
+  }
+  return None
+}
+
+function isVersionLine(trimmed: string): bool uses alloc {
+  if (!Str.startsWith(trimmed, "version")) {
+    return false
+  }
+  const rest = Str.trim(Str.sliceFrom(trimmed, 7))
+  return Str.startsWith(rest, "=")
+}

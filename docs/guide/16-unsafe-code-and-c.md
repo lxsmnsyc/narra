@@ -425,6 +425,123 @@ export function run(args: Array<string>): int {
 
 `libm` needs no search folder. The line shows where a library of your own would go: with `from "shapes"` and `vendor/lib/libshapes.a` in the package, the build finds it. `search` is the only key `[link]` takes.
 
+### C files in a package
+
+Some C functions cannot be declared in an `extern` block. `snprintf` takes any number of arguments after its format, and C passes those differently from fixed ones on some machines, so a block with a fixed signature for it reads garbage. The way out is a small C function with a fixed signature that calls `snprintf` itself, written in a C file of your package.
+
+An `extern` block can end with the path of that file instead of a library name. A path starts with `./` or `../`, ends with `.c` and is relative to the folder of the file that holds the block, the way an import path is. Here the Narra file is `src/main.nra` and the C file sits in the package folder, so the path is `"../wrap.c"`. `narrac build` compiles the file with the same C compiler, flags and target as the rest of the program, and links it in.
+
+```narra file describer narra.toml
+[package]
+name = "describer"
+
+[[binary]]
+name = "describer"
+entry = "main.run"
+```
+
+```narra file describer wrap.c
+#include <stdio.h>
+
+static char buffer[64];
+
+const char *wrap_describe(int value, int scale) {
+  snprintf(buffer, sizeof buffer, "value=%d scale=%d", value, scale);
+  return buffer;
+}
+```
+
+```narra file describer src/main.nra
+import * as CStrings from "std/cstring"
+import * as Ptr from "std/ptr"
+
+extern {
+  function wrap_describe(value: i32, scale: i32): Ptr<u8>
+} from "../wrap.c"
+
+@trusted
+function describe(value: i32, scale: i32): string uses alloc {
+  let text = ""
+  unsafe {
+    if (CStrings.read(wrap_describe(value, scale)) is Ok(copied)) {
+      text = copied
+    }
+  }
+  return text
+}
+
+export function run(args: Array<string>): int uses alloc {
+  print(describe(7, 3))
+  return 0
+}
+```
+
+```text
+value=7 scale=3
+```
+
+The file must exist and stay inside the package. A path that leaves the package folder, such as one with too many `../`, a symbolic link that points outside it, or a missing file is an error when the package loads, even if no code calls the block. If the C compiler rejects the file, the build stops and names the package, the file and the first error line.
+
+#### More files, include folders and defines
+
+A package that has more C than one file lists the rest in a `[c]` table of `narra.toml`. All paths here are relative to the package folder, and stay inside it:
+
+```toml
+[c]
+sources = ["c/lib/*.c", "!c/lib/main.c"]
+include = ["c/lib"]
+defines = ["MAX=64"]
+
+[c.os.Linux]
+defines = ["USE_LINUX"]
+```
+
+- `sources` lists files to compile. A `*` stands for any run of characters in one file name, in one folder. An entry that starts with `!` takes out the files it matches, here the `main.c` of a library that has its own `main`. A file that a block names with `from` needs no entry.
+- `include` lists folders that become `-I` flags, so `#include <header.h>` finds a header there.
+- `defines` lists `NAME` or `NAME=value` entries that become `-D` flags.
+- A table named `[c.os.Linux]` adds to `[c]` only when building for that system. The names are `MacOS`, `Linux`, `Windows` and `Wasi`, the same as the `Os` values of `std/build`.
+
+The defines of a package apply to that package's C files only, never to the files of a package that depends on it or that it depends on. Each package compiles its own files with its own defines. The include folders of a package also go to the C files of the packages that list it in `[dependencies]`; the section on C packages below shows why.
+
+Compiled files are kept in the build cache, in the `objects` folder of the cache described in [chapter 8](08-modules-and-packages.md). A rebuild with no change compiles nothing. When a header changes, only the files that include it compile again. Adding a file to an include folder compiles the files of that package again, because the new file may hide a header that was found later in the list. To see which files a build compiles, set `NARRA_C_LOG=1`: each compile prints a line `compiled package/file`.
+
+#### C libraries as packages
+
+A C library such as zlib or SQLite should not be copied into every package that uses it. A C package is a small Narra package whose `narra.toml` points at the upstream source by git URL and tag, and says which files to build:
+
+```toml
+[package]
+name = "c_zlib"
+version = "1.3.1"
+
+[c]
+git = "https://github.com/madler/zlib"
+tag = "v1.3.1"
+sources = ["*.c", "!example.c", "!minigzip.c"]
+include = ["."]
+```
+
+With `git` and `tag`, the paths in `[c]` are relative to the upstream checkout instead of the package folder. The package itself holds the manifest and one `.nra` module, so it loads like any other package; its version follows the upstream release. `[c]` takes `git` and `tag` together, and not inside `[c.os.<name>]`. Only a package that is fetched as a dependency can use them: the package you are building, and the members of a workspace, cannot.
+
+A package that uses the library lists the C package in `[dependencies]` and binds the functions with `from "<package>/<path>"`, where the path names a file of the upstream checkout:
+
+```toml
+[dependencies]
+c_zlib = { git = "https://github.com/example/narra-c-zlib", version = "1.3.1" }
+```
+
+```narra fragment
+extern {
+  function zlibVersion(): Ptr<u8>
+} from "c_zlib/zlib.h"
+```
+
+The build fetches the tag of the upstream into the dependency cache the same way it fetches any dependency, compiles the files `sources` lists, and links them once. The path in `from` must exist in the checkout, so a typo is an error when the package loads. A path ending in `.c` that `sources` does not list is compiled too. The package that writes `from "c_zlib/..."` must list `c_zlib` in its own `[dependencies]`; a package that is in the build only because another package needs it cannot be named.
+
+Two things cross from the C package to the packages that depend on it. The include folders do, so a C file of your own can `#include <zlib.h>`. The defines do not: `[c] defines` is for building the library, and a package that depends on it compiles with its own defines only. Version selection works as for every package, so two packages that need different versions of the C package build the highest one, and the program has one copy of the C files.
+
+`narra.lock` records the upstream next to the package: its `c_git`, `c_tag`, `c_commit` and `c_content` (the tree hash). A build fetches the tag only when the cache has no checkout of it, and checks the checkout against the lock. When the upstream moves a tag to another commit, the next fetch finds a different tree and the build stops with an error that names the package.
+
 ### A library for one system
 
 Some libraries exist on one operating system only. `@target` before an `extern` block declares its functions, and links its library, only when building for that system. Every call must then sit inside a branch that holds only there, as [chapter 19](19-building-for-other-systems.md) explains for `@target` functions:

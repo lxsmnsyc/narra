@@ -8,7 +8,7 @@
 - An array of strings, which may continue over several lines.
 - An inline table, in `[dependencies]` and `[overrides]` only. A trailing comma is an error.
 
-A line outside these forms is an error: E0405 for `[[name]` without the closing `]]`, E0406 for `[name` without `]`, E0408 for a line in a known table with no `=`. A table the loader does not know is skipped. A key the loader does not know in `[package]` is skipped when its value can be read as one of the values above. `[link]` and `[workspace]` reject unknown keys.
+A line outside these forms is an error: E0405 for `[[name]` without the closing `]]`, E0406 for `[name` without `]`, E0408 for a line in a known table with no `=`. A table the loader does not know is skipped. A key the loader does not know in `[package]` is skipped when its value can be read as one of the values above. `[link]`, `[c]` and `[workspace]` reject unknown keys.
 
 An error in `narra.toml` names the file and line, as in `narra.toml:3:1: version "1.0" is not MAJOR.MINOR.PATCH`. The text output does not show the code. `narrac check --json` prints it in the `code` field, and `narrac explain CODE` prints the message.
 
@@ -22,6 +22,7 @@ An error in `narra.toml` names the file and line, as in `narra.toml:3:1: version
 | [`[overrides]`](#overrides) | no | Replacement repositories, in the root only. |
 | [`[exports]`](#exports) | no | The modules other packages may import. |
 | [`[link]`](#link) | no | Where the C compiler looks for libraries. |
+| [`[c]`](#c) | no | C files to compile, their include folders and macros, and C libraries fetched from git. |
 | [`[fmt]`](#fmt) | no | Options for `narrac fmt`. |
 | [`[workspace]`](#workspace) | no | The member packages of a workspace. |
 
@@ -176,7 +177,7 @@ search = ["/opt/homebrew/lib"]
 | --- | --- | --- | --- |
 | `search` | array of strings | `[]` | Folders the C compiler searches for libraries (`-L`). A relative path starts at the package folder. |
 
-The libraries themselves come from the `from` of the `extern` blocks in the code, not from this table.
+The libraries themselves come from the `from` of the `extern` blocks in the code, not from this table. [The `from` forms](#the-from-of-an-extern-block) are listed below.
 
 Errors:
 
@@ -184,6 +185,92 @@ Errors:
 | --- | --- |
 | E0413 | `search` is not an array of strings. |
 | E1000 | The table has a key other than `search`. |
+
+## c
+
+```toml
+[c]
+sources = ["c/*.c", "!c/test.c"]
+include = ["c"]
+defines = ["USE_FAST_PATH", "LEVEL=2"]
+
+[c.os.Windows]
+sources = ["c/windows/*.c"]
+defines = ["WIN32_LEAN_AND_MEAN"]
+```
+
+The table lists C files that `narrac` compiles and links into the program, with the folders and macros they need. A package that needs only the one file that an `extern` block names has no `[c]` table: that file compiles without it.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `sources` | array of strings | `[]` | The C files to compile. Each entry is a path, or a pattern with `*` standing for any run of characters in one file name (it does not cross folders). An entry that starts with `!` removes the files it matches from the list so far. |
+| `include` | array of strings | `[]` | Folders passed to the C compiler as `-I`. |
+| `defines` | array of strings | `[]` | Macros passed as `-D`, written `NAME` or `NAME=value`. |
+| `git` | string | none | The repository of a C library. Needs `tag`. See [C packages](#c-packages). |
+| `tag` | string | none | The tag of that repository. Needs `git`. |
+
+All paths are relative to the package folder, not to a source file, and must stay inside the package, also through `..` and symbolic links. Each file compiles with the C compiler and flags that `narrac` uses for the program, with warnings off, plus the `-I` and `-D` values of its own package. A file that is both in `sources` and named by an `extern` block compiles once.
+
+`[c.os.<name>]` takes `sources`, `include` and `defines` and adds them to `[c]` when building for that system. `<name>` is `MacOS`, `Linux`, `Windows` or `Wasi`, the variants of `Os` in `std/build`. The tables of other systems are ignored, and their files are not checked.
+
+A dependency's `[c]` table applies to the dependency's own files. Its `include` folders also reach the packages that list it in `[dependencies]`, one level deep. Its `defines` reach no other package.
+
+Compiled objects are cached in `objects/` of the cache folder, keyed by the compiler, its flags and the text of each file and header. `NARRA_C_LOG=1` makes `narrac` print `compiled <package>/<file>` for each real compile.
+
+Errors:
+
+| Code | Cause |
+| --- | --- |
+| E1000 | The table has an unknown key, `[c.os.<name>]` names another system, `git` and `tag` are not both present, or `[c.os.<name>]` has `git` or `tag`. |
+| E1660 | A path in `sources` matches no file. |
+| E1661 | A path leaves the package. |
+| E1662 | A C file does not compile. The message names the package, the file and the first error line of the compiler. |
+| E1665 | The package being built, or a workspace member, has `git` in `[c]`. |
+
+### C packages
+
+```toml
+[package]
+name = "c_zlib"
+version = "1.3.1"
+
+[c]
+git = "https://github.com/madler/zlib"
+tag = "v1.3.1"
+sources = ["*.c", "!example.c", "!minigzip.c"]
+include = ["."]
+```
+
+With `git` and `tag`, a package wraps a C library that someone else publishes. `narrac` fetches the tag into the cache folder, and every path in `sources` and `include` is relative to that checkout, not to the package folder. The package still has a `[package]` table, with the version of the library, and one `.nra` module in `src/`.
+
+Leave out every file of the library that has a `main` function, such as examples and tests. Only a package that is fetched as a dependency can have `git` and `tag`. `[c.os.<name>]` cannot have them: a package has one upstream.
+
+Another package uses the library by listing the C package in its `[dependencies]` and naming one of its files in an `extern` block, as `from "c_zlib/zlib.h"` below shows.
+
+The lock entry of a C package has four more keys after `content`, written together or not at all: `c_git`, `c_tag`, `c_commit` and `c_content`. They hold the repository, the tag, the commit and the tree hash of the library. A key missing from the group is E0438. A tag that has moved to another commit is E0452 when the cache has to fetch it again, and a tag that does not exist is E0442.
+
+| Code | Cause |
+| --- | --- |
+| E1663 | A package names a file of another package in `from`, and does not list that package in its own `[dependencies]`. |
+| E1664 | The package named in `from` has no `[c]` table. |
+
+### The from of an extern block
+
+An `extern` block names what it binds after `from`. There are three forms:
+
+| Form | Meaning |
+| --- | --- |
+| `"m"` | A system library, linked with `-lm`. Letters, digits, `_`, `.`, `+` and `-` only. `"c"` is the C library and needs no flag. |
+| `"./file.c"` or `"../file.c"` | A C file of the package, compiled and linked. The path is relative to the folder of the `.nra` file that holds the block, like an import path. It must end in `.c`, exist (E1660) and stay inside the package (E1661). Any other ending is E1000. |
+| `"c_zlib/zlib.h"` | A file of a C package: the package name, a `/` and a path. The path is relative to the library's files (its checkout when it has `git` and `tag`, otherwise its folder). The file need not be C source: a header works, and binds the functions it declares. The package that writes the block lists `c_zlib` in its own `[dependencies]` (E1663). The objects of the whole C package are compiled and linked. |
+
+```narra fragment
+extern {
+  function zlibVersion(): Ptr<u8>
+} from "c_zlib/zlib.h"
+```
+
+A block whose functions are never used compiles nothing. The checks for missing files and paths outside the package run when the package loads, for every block.
 
 ## fmt
 
@@ -259,6 +346,8 @@ Each `[[package]]` table has these keys, in this order, and the tables are sorte
 | `tag` | The tag the version came from: `v<version>`, or `<name>/v<version>` in a repository that tags each package. |
 | `commit` | The full commit hash of the tag, 40 or 64 lowercase hex digits. |
 | `content` | The git tree hash of that commit, in the same form. |
+
+The entry of a [C package](#c-packages) may add `c_git`, `c_tag`, `c_commit` and `c_content` after `content`, in that order.
 
 Errors:
 

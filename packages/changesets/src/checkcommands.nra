@@ -1,0 +1,392 @@
+// Checks of the four commands on fixture workspaces and temporary git repositories.
+
+import * as Args from "std/args"
+import * as Arrays from "std/array"
+import * as Fs from "std/fs"
+import * as Options from "std/option"
+import * as Process from "std/process"
+import * as Random from "std/random"
+import * as Str from "std/string"
+import {
+  Report,
+  copyTree,
+  createTempFolder,
+  expect,
+  expectText,
+  runTestGit,
+} from "changesets/checkkit"
+import { addChangeset, applyVersion, createTags, showStatus } from "changesets/commands"
+import { ArgsError } from "std/args"
+import { describeCommands } from "changesets/cli"
+import { listChangedFiles, listTags } from "changesets/git"
+
+const EXPECTED_FILES = [
+  "core/narra.toml",
+  "core/CHANGELOG.md",
+  "app/narra.toml",
+  "app/CHANGELOG.md",
+  "docs/narra.toml",
+  "docs/CHANGELOG.md",
+]
+
+// Reads a file, or an empty text when it is missing.
+function readOrEmpty(path: string): string uses io, alloc {
+  const text = Fs.readText(path)
+  if (text is Ok(content)) {
+    return content
+  }
+  return ""
+}
+
+function checkVersion(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/version`
+  const copied = copyTree(`${fixtures}/workspace`, root)
+  expect(report, "fixture copied", copied is Ok(_))
+  const outcome = applyVersion(root)
+  expect(report, "version succeeds", outcome.exitCode == 0)
+  for (const file of EXPECTED_FILES) {
+    expectText(
+      report,
+      `golden ${file}`,
+      readOrEmpty(`${root}/${file}`),
+      readOrEmpty(`${fixtures}/expected/${file}`),
+    )
+  }
+  expect(report, "one.md deleted", !Fs.exists(`${root}/.changeset/one.md`))
+  expect(report, "two.md deleted", !Fs.exists(`${root}/.changeset/two.md`))
+  expect(report, "tools untouched", !Fs.exists(`${root}/tools/CHANGELOG.md`))
+  const again = applyVersion(root)
+  expect(
+    report,
+    "second version has nothing to do",
+    again.exitCode == 0 && again.lines[0] == "no pending changesets",
+  )
+  expectText(
+    report,
+    "second run keeps the manifest",
+    readOrEmpty(`${root}/core/narra.toml`),
+    readOrEmpty(`${fixtures}/expected/core/narra.toml`),
+  )
+}
+
+function checkBadFiles(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/bad`
+  const copied = copyTree(`${fixtures}/workspace`, root)
+  expect(report, "bad fixture copied", copied is Ok(_))
+  const written = Fs.writeText(
+    `${root}/.changeset/three.md`,
+    "---\n\"core\": patch\n\"ghost\": patch\n---\n\nx\n",
+  )
+  expect(report, "bad file written", written is Ok(_))
+  const outcome = applyVersion(root)
+  expect(report, "bad file fails", outcome.exitCode == 1)
+  expect(
+    report,
+    "problem names file and line",
+    Arrays.contains(outcome.lines, `${root}/.changeset/three.md:3: unknown member ghost`),
+  )
+  expect(
+    report,
+    "nothing changed",
+    Fs.exists(`${root}/.changeset/one.md`) && Fs.exists(`${root}/.changeset/three.md`),
+  )
+  expectText(
+    report,
+    "manifest unchanged",
+    readOrEmpty(`${root}/core/narra.toml`),
+    readOrEmpty(`${fixtures}/workspace/core/narra.toml`),
+  )
+  expect(report, "no changelog written", !Fs.exists(`${root}/core/CHANGELOG.md`))
+  const status = showStatus(root, "main")
+  expect(report, "status reports the problem", status.exitCode == 1)
+}
+
+function checkAdd(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/add`
+  const copied = copyTree(`${fixtures}/workspace`, root)
+  expect(report, "add fixture copied", copied is Ok(_))
+  const before = listChangesetFiles(root)
+  let random = Random.seeded(5)
+  const outcome = addChangeset(root, ["core:minor", "docs:patch"], "Add a flag.", mutable random)
+  expect(report, "add succeeds", outcome.exitCode == 0)
+  const after = listChangesetFiles(root)
+  expect(report, "one file added", Arrays.length(after) == Arrays.length(before) + 1)
+  for (const name of after) {
+    if (!Arrays.contains(before, name)) {
+      expect(report, "name is three words", countWords(name) == 3)
+      expectText(
+        report,
+        "added file text",
+        readOrEmpty(`${root}/.changeset/${name}`),
+        "---\n\"core\": minor\n\"docs\": patch\n---\n\nAdd a flag.\n",
+      )
+    }
+  }
+  const unknown = addChangeset(root, ["ghost:minor"], "x", mutable random)
+  expect(report, "add rejects an unknown member", unknown.exitCode == 1)
+  const level = addChangeset(root, ["core:huge"], "x", mutable random)
+  expect(report, "add rejects an unknown level", level.exitCode == 1)
+  const twice = addChangeset(root, ["core:minor", "core:patch"], "x", mutable random)
+  expect(report, "add rejects a member twice", twice.exitCode == 1)
+  const silent = addChangeset(root, ["core:minor"], "", mutable random)
+  expect(report, "add needs a summary", silent.exitCode == 1)
+  expect(
+    report,
+    "rejected adds write nothing",
+    Arrays.length(listChangesetFiles(root)) == Arrays.length(after),
+  )
+  const versioned = applyVersion(root)
+  expect(report, "added file applies", versioned.exitCode == 0)
+}
+
+// How many dash-separated words a name has.
+function countWords(name: string): int uses alloc {
+  const words = Str.split(name, "-")
+  if (words is Some(parts)) {
+    return Arrays.length(parts)
+  }
+  return 0
+}
+
+function listChangesetFiles(root: string): Array<string> uses io, alloc {
+  const listing = Fs.listDir(`${root}/.changeset`)
+  if (listing is Ok(names)) {
+    return copy(names)
+  }
+  return []
+}
+
+// Makes a git repository with the fixture workspace committed on main.
+function createRepository(report: Report, fixtures: string, root: string) uses io, alloc {
+  const copied = copyTree(`${fixtures}/workspace`, root)
+  expect(report, "repository files copied", copied is Ok(_))
+  expect(report, "git init", runTestGit(root, ["init", "-b", "main"]) is Ok(_))
+  expect(report, "git add", runTestGit(root, ["add", "."]) is Ok(_))
+  expect(
+    report,
+    "git commit",
+    runTestGit(root, ["-c", "commit.gpgsign=false", "commit", "-m", "start"]) is Ok(_),
+  )
+}
+
+function checkTag(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/tag`
+  createRepository(report, fixtures, root)
+  const first = createTags(root)
+  expect(report, "tag succeeds", first.exitCode == 0)
+  expect(report, "three tags created", Arrays.length(first.lines) == 3)
+  const tags = listTags(root)
+  expect(report, "tags exist", tags is Ok(_))
+  if (tags is Ok(names)) {
+    expect(report, "exactly three tags", Arrays.length(names) == 3)
+    expect(report, "core tag", Arrays.contains(names, "core/v0.3.1"))
+    expect(report, "app tag", Arrays.contains(names, "app/v1.2.0"))
+    expect(report, "docs tag", Arrays.contains(names, "docs/v0.1.0"))
+  }
+  const second = createTags(root)
+  expect(report, "second tag run succeeds", second.exitCode == 0)
+  expectText(report, "second run creates none", second.lines[0], "no tags to create")
+  // Bump one member and tag again: only its tag is new
+  const versioned = applyVersion(root)
+  expect(report, "version in the repository", versioned.exitCode == 0)
+  const third = createTags(root)
+  expect(report, "three new tags after version", Arrays.length(third.lines) == 3)
+  expect(report, "core new tag", Arrays.contains(third.lines, "created tag core/v0.4.0"))
+  const fourth = createTags(root)
+  expectText(report, "nothing left to tag", fourth.lines[0], "no tags to create")
+}
+
+function checkStatus(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/status`
+  createRepository(report, fixtures, root)
+  const quiet = showStatus(root, "main")
+  expect(report, "status on main with pending files and no change", quiet.exitCode == 0)
+  expect(
+    report,
+    "status lists a release",
+    Arrays.contains(quiet.lines, "core 0.3.1 -> 0.4.0 (minor)"),
+  )
+  expect(
+    report,
+    "status lists the dependent",
+    Arrays.contains(quiet.lines, "app 1.2.0 -> 1.2.1 (patch)"),
+  )
+  expect(report, "branch", runTestGit(root, ["checkout", "-b", "feature"]) is Ok(_))
+  const written = Fs.writeText(`${root}/app/main.nra`, "// changed\n")
+  expect(report, "file written", written is Ok(_))
+  const missing = showStatus(root, "main")
+  expect(report, "an untracked change without a changeset fails", missing.exitCode == 1)
+  expect(
+    report,
+    "status names the member",
+    Arrays.contains(missing.lines, "missing changeset: app changed since main"),
+  )
+  expect(report, "git add the change", runTestGit(root, ["add", "."]) is Ok(_))
+  expect(
+    report,
+    "git commit the change",
+    runTestGit(root, ["-c", "commit.gpgsign=false", "commit", "-m", "change app"]) is Ok(_),
+  )
+  const committed = showStatus(root, "main")
+  expect(report, "a committed change without a changeset fails", committed.exitCode == 1)
+  const changelogOnly = showStatus(root, "feature")
+  expect(report, "no change since the branch itself", changelogOnly.exitCode == 0)
+  let random = Random.seeded(9)
+  const added = addChangeset(root, ["app:patch"], "Change the app.", mutable random)
+  expect(report, "add for app", added.exitCode == 0)
+  const covered = showStatus(root, "main")
+  expect(report, "a changeset covers the change", covered.exitCode == 0)
+  const unknownRef = showStatus(root, "nowhere")
+  expect(report, "an unknown ref fails", unknownRef.exitCode == 1)
+}
+
+function checkMoves(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/moves`
+  createRepository(report, fixtures, root)
+  // A source file of app on main, which the branch then moves out of the member
+  const source = Fs.writeText(`${root}/app/main.nra`, "// main\n")
+  expect(report, "source written", source is Ok(_))
+  expect(report, "add the source", runTestGit(root, ["add", "."]) is Ok(_))
+  expect(
+    report,
+    "commit the source",
+    runTestGit(root, ["-c", "commit.gpgsign=false", "commit", "-m", "source"]) is Ok(_),
+  )
+  expect(report, "moves branch", runTestGit(root, ["checkout", "-b", "feature"]) is Ok(_))
+  expect(report, "git mv", runTestGit(root, ["mv", "app/main.nra", "tools/main.nra"]) is Ok(_))
+  expect(
+    report,
+    "commit the move",
+    runTestGit(root, ["-c", "commit.gpgsign=false", "commit", "-m", "move"]) is Ok(_),
+  )
+  const moved = showStatus(root, "main")
+  expect(report, "a moved file counts for its old member", moved.exitCode == 1)
+  expect(
+    report,
+    "the old member is named",
+    Arrays.contains(moved.lines, "missing changeset: app changed since main"),
+  )
+  const written = Fs.writeText(`${root}/core/café.nra`, "// accent\n")
+  expect(report, "accented file written", written is Ok(_))
+  const files = listChangedFiles(root, "main")
+  expect(report, "files listed", files is Ok(_))
+  if (files is Ok(names)) {
+    expect(
+      report,
+      "an accented path comes back as written",
+      Arrays.contains(names, "core/café.nra"),
+    )
+  }
+  const dash = showStatus(root, "-x")
+  expect(report, "a ref with a leading dash fails", dash.exitCode == 1)
+  expect(
+    report,
+    "the dash is named",
+    Str.contains(dash.lines[Arrays.length(dash.lines) - 1], "dash"),
+  )
+}
+
+function checkUnwritable(report: Report, fixtures: string, temp: string) uses io, alloc {
+  const root = `${temp}/locked`
+  const copied = copyTree(`${fixtures}/workspace`, root)
+  expect(report, "locked fixture copied", copied is Ok(_))
+  const locked = Process.run("chmod", ["a-w", `${root}/app`])
+  expect(report, "folder locked", locked is Ok(_))
+  const probe = Fs.writeText(`${root}/app/probe`, "x")
+  if (probe is Ok(_)) {
+    // A user that ignores permissions (root) cannot run this check
+    const _removed = Fs.removeFile(`${root}/app/probe`)
+  } else {
+    const outcome = applyVersion(root)
+    expect(report, "an unwritable member fails", outcome.exitCode == 1)
+    expectText(
+      report,
+      "the first member keeps its version",
+      readOrEmpty(`${root}/core/narra.toml`),
+      readOrEmpty(`${fixtures}/workspace/core/narra.toml`),
+    )
+    expect(report, "no changelog written", !Fs.exists(`${root}/core/CHANGELOG.md`))
+    expect(report, "no temporary file left", !Fs.exists(`${root}/core/narra.toml.changesets-tmp`))
+    expect(
+      report,
+      "the changesets stay",
+      Fs.exists(`${root}/.changeset/one.md`) && Fs.exists(`${root}/.changeset/two.md`),
+    )
+  }
+  const unlocked = Process.run("chmod", ["u+w", `${root}/app`])
+  expect(report, "folder unlocked", unlocked is Ok(_))
+}
+
+function checkCommandLine(report: Report) uses io, alloc {
+  const description = describeCommands()
+  expect(
+    report,
+    "add parses",
+    Args.parse(description, ["changesets", "add", "core:minor", "-m", "Add a flag."]) is Ok(_),
+  )
+  expect(
+    report,
+    "status takes --since",
+    Args.parse(description, ["changesets", "status", "--since", "origin/main"]) is Ok(_),
+  )
+  expect(
+    report,
+    "a repeated -m is an error",
+    Args.parse(description, ["changesets", "add", "core:minor", "-m", "a", "-m", "b"]) is Err(_),
+  )
+  expect(
+    report,
+    "an unknown flag is an error",
+    Args.parse(description, ["changesets", "version", "--force"]) is Err(_),
+  )
+  expect(
+    report,
+    "-m needs a value",
+    Args.parse(description, ["changesets", "add", "core:minor", "-m"]) is Err(_),
+  )
+  expect(
+    report,
+    "an unknown command is an error",
+    Args.parse(description, ["changesets", "ship"]) is Err(_),
+  )
+  expect(report, "no command is an error", Args.parse(description, ["changesets"]) is Err(_))
+  expect(
+    report,
+    "--help gives help",
+    Args.parse(description, ["changesets", "--help"]) is Err(ArgsError.Help(_)),
+  )
+  const parsed = Args.parse(description, [
+    "changesets",
+    "add",
+    "core:minor",
+    "docs:patch",
+    "--message",
+    "x",
+  ])
+  if (parsed is Ok(arguments)) {
+    expect(report, "add positionals", Arrays.length(Args.rest(arguments)) == 2)
+    expectText(
+      report,
+      "message value",
+      Options.withDefault(Args.value(arguments, "message"), ""),
+      "x",
+    )
+  }
+}
+
+export function runCommandChecks(report: Report, fixtures: string) uses io, alloc {
+  const temp = createTempFolder()
+  expect(report, "temporary folder", temp is Ok(_))
+  if (temp is Ok(folder)) {
+    checkVersion(report, fixtures, folder)
+    checkBadFiles(report, fixtures, folder)
+    checkAdd(report, fixtures, folder)
+    checkTag(report, fixtures, folder)
+    checkStatus(report, fixtures, folder)
+    checkMoves(report, fixtures, folder)
+    checkUnwritable(report, fixtures, folder)
+    checkCommandLine(report)
+    const removed = Fs.removeDirAll(folder)
+    expect(report, "temporary folder removed", removed is Ok(_))
+  }
+}

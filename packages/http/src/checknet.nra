@@ -1,0 +1,1073 @@
+// Checks of the server and the client over loopback, in one program: the server and the clients
+// share the event loop. Every wait has a limit, so a stuck check fails instead of hanging.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Client from "http/client"
+import * as Errors from "http/error"
+import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Message from "http/message"
+import * as Net from "std/net"
+import * as Options from "std/option"
+import * as Random from "std/random"
+import * as Ranges from "std/range"
+import * as Requests from "http/request"
+import * as Responses from "http/response"
+import * as Server from "http/server"
+import * as State from "http/bodystate"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { Connection, Listener } from "std/net"
+import { HttpError } from "http/error"
+import { Method, Request } from "http/request"
+import {
+  Report,
+  exchange,
+  expect,
+  expectContains,
+  expectText,
+  findFirstLine,
+  readUntilClose,
+} from "http/checkkit"
+import { Response, Upgrade } from "http/response"
+
+async function* generatePieces(): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  yield Ok(Bytes.fromString("one"))
+  yield Ok(Bytes.fromString("two"))
+  yield Ok(Bytes.fromString("three"))
+}
+
+async function echoOnce(connection: Connection, leftover: bytes) uses io, alloc {
+  // The upgrade of /upgrade: tells the client what came with the request, then echoes one read.
+  const greeting = Bytes.toString(leftover)
+  if (greeting is Err(_)) {
+    return
+  }
+  const sent = await Net.write(connection, Bytes.fromString(`upgraded:${greeting.value}|`))
+  if (sent is Err(_)) {
+    return
+  }
+  const data = await Net.read(connection, 100)
+  if (data is Err(_)) {
+    return
+  }
+  const echoed = await Net.write(connection, Bytes.concat(Bytes.fromString("echo:"), data.value))
+  if (echoed is Err(_)) {
+    return
+  }
+}
+
+/// The handler of the checks: a few routes that each cover one part of the server.
+export async function route(request: Request): Response uses io, alloc {
+  const path = request.url.path
+  if (path == "/hello") {
+    return Responses.text(200, "hello")
+  }
+  if (path == "/method") {
+    return Responses.text(200, Requests.methodName(request.method))
+  }
+  if (path == "/query") {
+    return Responses.text(200, Options.withDefault(request.url.query, "none"))
+  }
+  if (path == "/echo") {
+    const content = await Bodies.readAll(request.body, 1000000)
+    if (content is Err(error)) {
+      return Responses.text(400, Errors.describe(error))
+    }
+    const text = Bytes.toString(content.value)
+    if (text is Err(_)) {
+      return Responses.text(400, "not text")
+    }
+    return Responses.text(200, `got:${text.value}`)
+  }
+  if (path == "/echo-ignoring-errors") {
+    // A handler that ignores a failed body still gets the 400 or 413 of the server.
+    const _content = await Bodies.readAll(request.body, 1000000)
+    return Responses.text(200, "fine")
+  }
+  if (path == "/ignore") {
+    return Responses.text(200, "ignored")
+  }
+  if (path == "/stream") {
+    let response = Responses.create(200)
+    response.body = Bodies.fromStream(generatePieces())
+    return response
+  }
+  if (path == "/redirect") {
+    let response = Responses.create(302)
+    Fields.add(mutable response.headers, "Location", "/hello")
+    return response
+  }
+  if (path == "/redirect-307" || path == "/redirect-308") {
+    // A redirect that keeps the method and the body, to /echo or to /framing.
+    let response = Responses.create(307)
+    if (path == "/redirect-308") {
+      response = Responses.create(308)
+    }
+    Fields.add(mutable response.headers, "Location", "/echo")
+    if (request.url.query is Some(_)) {
+      Fields.set(mutable response.headers, "Location", "/framing")
+    }
+    return response
+  }
+  if (path == "/framing") {
+    // Tells how the request body was framed.
+    const length = Options.withDefault(Fields.get(request.headers, "Content-Length"), "none")
+    const encoding = Options.withDefault(Fields.get(request.headers, "Transfer-Encoding"), "none")
+    return Responses.text(200, `length:${length} encoding:${encoding}`)
+  }
+  if (path == "/read-twice") {
+    // An incoming body is a stream: the second read finds it used up.
+    const first = await readBodyText(request.body)
+    const second = await readBodyText(request.body)
+    return Responses.text(200, `first:${first} second:${second}`)
+  }
+  if (path == "/forward" || path == "/forward-read") {
+    // The request body goes back as the response body, unread or after the handler read it.
+    if (path == "/forward-read") {
+      const _first = await readBodyText(request.body)
+    }
+    let response = Responses.create(200)
+    response.body = copy(request.body)
+    return response
+  }
+  if (path == "/short" || path == "/long") {
+    // A body that promises 20 bytes and gives 11, or promises 5 and gives 11.
+    let promised = 20
+    if (path == "/long") {
+      promised = 5
+    }
+    let response = Responses.create(200)
+    response.body = State.fromIncoming(generatePieces(), Some(promised))
+    return response
+  }
+  if (path == "/announced") {
+    // The length that the request announced for its body.
+    const length = State.findLength(request.body)
+    if (length is Some(count)) {
+      return Responses.text(200, `length:${Int.toString(count)}`)
+    }
+    return Responses.text(200, "length:none")
+  }
+  if (path == "/no-content" || path == "/not-modified") {
+    // A body that must not go out, with the headers that would announce it.
+    let response = Responses.text(204, "never sent")
+    if (path == "/not-modified") {
+      response = Responses.text(304, "never sent")
+    }
+    Fields.add(mutable response.headers, "Content-Length", "10")
+    return response
+  }
+  if (path == "/lying") {
+    // Framing headers that disagree with the body: the server writes the real ones.
+    let response = Responses.text(200, "abc")
+    Fields.add(mutable response.headers, "Content-Length", "999")
+    Fields.add(mutable response.headers, "Transfer-Encoding", "chunked")
+    return response
+  }
+  if (path == "/bad-upgrade") {
+    return Responses.create(101)
+  }
+  if (path == "/upgrade") {
+    // An upgrade needs the Connection: Upgrade token, so a client that drops it gets a 400.
+    if (!Message.hasToken(request.headers, "Connection", "upgrade")) {
+      return Responses.text(400, "the request does not ask for an upgrade")
+    }
+    let response = Responses.create(101)
+    Fields.add(mutable response.headers, "Upgrade", "test")
+    Fields.add(mutable response.headers, "Connection", "Upgrade")
+    response.upgrade = Some(Upgrade { run: echoOnce })
+    return response
+  }
+  return Responses.text(404, "no such route")
+}
+
+function buildAddress(port: int, path: string): string uses alloc {
+  return `http://127.0.0.1:${Int.toString(port)}${path}`
+}
+
+async function readBodyText(body: Bodies.Body): string uses io, alloc {
+  const content = await Bodies.readAll(body, 1000000)
+  if (content is Err(error)) {
+    return `error: ${Errors.describe(error)}`
+  }
+  const text = Bytes.toString(content.value)
+  if (text is Ok(value)) {
+    return value
+  }
+  return "not text"
+}
+
+async function fetchText(url: string): string uses io, alloc {
+  const response = await Client.get(url)
+  if (response is Err(error)) {
+    return `error: ${Errors.describe(error)}`
+  }
+  return await readBodyText(response.value.body)
+}
+
+function repeatText(text: string, count: int): string uses alloc {
+  return Options.withDefault(Str.repeat(text, count), "")
+}
+
+export async function runNetChecks(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "net: the test server listens", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  const server = Server.serve(listener.value, Server.defaultOptions(), route)
+  await checkClient(report, port)
+  await checkServerRaw(report, port)
+  await checkServerFraming(report, port)
+  await checkTimeouts(report)
+  await checkSlowBody(report)
+  await checkChunkFuzz(report)
+  await checkResponseFuzz(report)
+  await checkFuzz(report, port)
+  // The server must still answer after everything above.
+  expectText(
+    report,
+    "net: the server survives the checks",
+    await fetchText(buildAddress(port, "/hello")),
+    "hello",
+  )
+  Async.cancel(server)
+}
+
+async function checkClient(report: Report, port: int) uses io, alloc {
+  expectText(report, "client: get", await fetchText(buildAddress(port, "/hello")), "hello")
+  expectText(
+    report,
+    "client: the query reaches the handler",
+    await fetchText(buildAddress(port, "/query?a=1&b=2")),
+    "a=1&b=2",
+  )
+  expectText(
+    report,
+    "client: a chunked response is decoded",
+    await fetchText(buildAddress(port, "/stream")),
+    "onetwothree",
+  )
+  const streamed = await Client.get(buildAddress(port, "/stream"))
+  if (streamed is Ok(response)) {
+    expectText(
+      report,
+      "client: the chunked header is kept",
+      Options.withDefault(Fields.get(response.headers, "transfer-encoding"), ""),
+      "chunked",
+    )
+  }
+  const hello = await Client.get(buildAddress(port, "/hello"))
+  if (hello is Ok(response)) {
+    expect(report, "client: the status", response.status == 200)
+    expectText(
+      report,
+      "client: Content-Length is set by the server",
+      Options.withDefault(Fields.get(response.headers, "Content-Length"), ""),
+      "5",
+    )
+    expectText(
+      report,
+      "client: the content type",
+      Options.withDefault(Fields.get(response.headers, "Content-Type"), ""),
+      "text/plain; charset=utf-8",
+    )
+  }
+  const missing = await Client.get(buildAddress(port, "/nothing"))
+  if (missing is Ok(response)) {
+    expect(report, "client: a 404 is a response, not an error", response.status == 404)
+  } else {
+    expect(report, "client: a 404 is a response, not an error", false)
+  }
+  // A request with a body: bytes, then a stream (sent chunked).
+  const post = Requests.create(Method.Post, buildAddress(port, "/echo"))
+  if (post is Ok(request)) {
+    let withBytes = copy(request)
+    withBytes.body = Bodies.fromText("abc")
+    const answered = await Client.send(withBytes, Client.defaultOptions())
+    if (answered is Ok(response)) {
+      expectText(report, "client: a body of bytes", await readBodyText(response.body), "got:abc")
+    }
+    let withStream = copy(request)
+    withStream.body = Bodies.fromStream(generatePieces())
+    const streamedBody = await Client.send(withStream, Client.defaultOptions())
+    if (streamedBody is Ok(response)) {
+      expectText(
+        report,
+        "client: a body of a stream is sent chunked",
+        await readBodyText(response.body),
+        "got:onetwothree",
+      )
+    }
+  }
+  const method = Requests.create(Method.Other("PURGE"), buildAddress(port, "/method"))
+  if (method is Ok(request)) {
+    const answered = await Client.send(request, Client.defaultOptions())
+    if (answered is Ok(response)) {
+      expectText(report, "client: another method", await readBodyText(response.body), "PURGE")
+    }
+  }
+  const head = Requests.create(Method.Head, buildAddress(port, "/hello"))
+  if (head is Ok(request)) {
+    const answered = await Client.send(request, Client.defaultOptions())
+    if (answered is Ok(response)) {
+      expectText(report, "client: HEAD has no body", await readBodyText(response.body), "")
+    }
+  }
+  await checkRedirect(report, port)
+  await checkBodyFraming(report, port)
+  await checkUpgrade(report, port)
+  await checkClientErrors(report, port)
+}
+
+async function checkRedirect(report: Report, port: int) uses io, alloc {
+  const request = Requests.create(Method.Get, buildAddress(port, "/redirect"))
+  if (request is Err(_)) {
+    return
+  }
+  const stay = await Client.send(request.value, Client.defaultOptions())
+  if (stay is Ok(response)) {
+    expect(report, "redirect: off by default", response.status == 302)
+    expectText(
+      report,
+      "redirect: Location is readable",
+      Options.withDefault(Fields.get(response.headers, "Location"), ""),
+      "/hello",
+    )
+  }
+  let follow = Client.defaultOptions()
+  follow.maxRedirects = 2
+  const followed = await Client.send(request.value, follow)
+  if (followed is Ok(response)) {
+    expect(report, "redirect: followed", response.status == 200)
+    expectText(
+      report,
+      "redirect: the body of the target",
+      await readBodyText(response.body),
+      "hello",
+    )
+  } else {
+    expect(report, "redirect: followed", false)
+  }
+}
+
+async function sendBody(
+  port: int,
+  path: string,
+  body: Bodies.Body,
+  maxRedirects: int,
+): Option<Response> uses io, alloc {
+  // A POST of the body to the path; None when the request or the send failed.
+  const request = Requests.createWithBody(Method.Post, buildAddress(port, path), body)
+  if (request is Err(_)) {
+    return None
+  }
+  let options = Client.defaultOptions()
+  options.maxRedirects = maxRedirects
+  const answered = await Client.send(request.value, options)
+  if (answered is Ok(response)) {
+    return Some(response)
+  }
+  return None
+}
+
+async function checkBodyFraming(report: Report, port: int) uses io, alloc {
+  // A text body has a length, a stream has none and goes out chunked.
+  const sized = await sendBody(port, "/framing", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "body framing: text is sent with Content-Length",
+    await readOptionalText(sized),
+    "length:3 encoding:none",
+  )
+  const bytes = await sendBody(port, "/framing", Bodies.fromBytes(Bytes.fromString("abcd")), 0)
+  expectText(
+    report,
+    "body framing: bytes are sent with Content-Length",
+    await readOptionalText(bytes),
+    "length:4 encoding:none",
+  )
+  const piped = await sendBody(port, "/framing", Bodies.fromStream(generatePieces()), 0)
+  expectText(
+    report,
+    "body framing: a stream is sent chunked",
+    await readOptionalText(piped),
+    "length:none encoding:chunked",
+  )
+  // A 307 or 308 is followed with a body that can be sent again, and returned for a stream.
+  const again = await sendBody(port, "/redirect-307", Bodies.fromText("abc"), 2)
+  expectText(
+    report,
+    "redirect 307: a text body is sent again",
+    await readOptionalText(again),
+    "got:abc",
+  )
+  const again308 = await sendBody(
+    port,
+    "/redirect-308?x",
+    Bodies.fromBytes(Bytes.fromString("xy")),
+    2,
+  )
+  expectText(
+    report,
+    "redirect 308: a bytes body is sent again with its length",
+    await readOptionalText(again308),
+    "length:2 encoding:none",
+  )
+  const once = await sendBody(port, "/redirect-307", Bodies.fromStream(generatePieces()), 2)
+  if (once is Some(response)) {
+    expect(report, "redirect 307: a stream body is returned as it is", response.status == 307)
+  } else {
+    expect(report, "redirect 307: a stream body is returned as it is", false)
+  }
+  // An incoming body is read once; a second read finds it used up.
+  const twice = await sendBody(port, "/read-twice", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "incoming body: the second read is empty",
+    await readOptionalText(twice),
+    "first:abc second:",
+  )
+  // An incoming body keeps the length that the peer announced; a chunked one has none.
+  const forwarded = await sendBody(port, "/forward", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "forwarded body: an unread body goes back whole",
+    await readOptionalText(forwarded),
+    "abc",
+  )
+  // A body that was read has nothing left, so it goes out empty instead of with the old length.
+  const spent = await sendBody(port, "/forward-read", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "forwarded body: a read body goes back empty without a stall",
+    await readOptionalText(spent),
+    "",
+  )
+  // A stream that ends short or runs past its length ends the connection.
+  const pipelined = "GET /short HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
+  const short = await exchange(port, encodeText(pipelined))
+  expect(report, "body length: a short stream ends the connection", countParts(short, "hello") == 0)
+  const overrun = "GET /long HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
+  const longer = await exchange(port, encodeText(overrun))
+  expect(report, "body length: a long stream ends the connection", countParts(longer, "hello") == 0)
+  const shortSent = await sendBody(port, "/echo", State.fromIncoming(generatePieces(), Some(20)), 0)
+  expect(report, "body length: the client gives Closed for a short body", shortSent is None)
+  const announced = await sendBody(port, "/announced", Bodies.fromText("abc"), 0)
+  expectText(
+    report,
+    "incoming body: Content-Length is its length",
+    await readOptionalText(announced),
+    "length:3",
+  )
+  const unannounced = await sendBody(port, "/announced", Bodies.fromStream(generatePieces()), 0)
+  expectText(
+    report,
+    "incoming body: a chunked body has no length",
+    await readOptionalText(unannounced),
+    "length:none",
+  )
+  // A stream response ends with the connection for an HTTP/1.0 client.
+  const old = await exchange(port, encodeText("GET /stream HTTP/1.0\r\n\r\n"))
+  expectContains(report, "http 1.0: a stream ends with the connection", old, "onetwothree")
+  expect(report, "http 1.0: a stream is not chunked", !Str.contains(old, "chunked"))
+}
+
+async function readOptionalText(response: Option<Response>): string uses io, alloc {
+  if (response is Some(found)) {
+    return await readBodyText(found.body)
+  }
+  return "no response"
+}
+
+async function checkUpgrade(report: Report, port: int) uses io, alloc {
+  const request = Requests.create(Method.Get, buildAddress(port, "/upgrade"))
+  if (request is Err(_)) {
+    return
+  }
+  // Without the Connection: Upgrade token the route refuses.
+  const plain = await Client.send(request.value, Client.defaultOptions())
+  if (plain is Ok(refused)) {
+    expect(report, "upgrade: no token, no upgrade", refused.status == 400)
+  } else {
+    expect(report, "upgrade: no token, no upgrade", false)
+  }
+  let upgrading = copy(request.value)
+  Fields.add(mutable upgrading.headers, "Connection", "Upgrade")
+  Fields.add(mutable upgrading.headers, "Upgrade", "test")
+  const answered = await Client.send(upgrading, Client.defaultOptions())
+  if (answered is Err(_)) {
+    expect(report, "upgrade: the client gets the 101", false)
+    return
+  }
+  expect(report, "upgrade: the client gets the 101", answered.value.status == 101)
+  const taken = answered.value.upgraded
+  if (taken is None) {
+    expect(report, "upgrade: the connection is handed to the client", false)
+    return
+  }
+  expect(report, "upgrade: the connection is handed to the client", true)
+  const sent = await Net.write(taken.value.connection, Bytes.fromString("ping"))
+  if (sent is Err(_)) {
+    expect(report, "upgrade: the handler receives the connection", false)
+    return
+  }
+  const text = await readUntilContains(taken.value.connection, taken.value.leftover, "echo:ping")
+  expectContains(
+    report,
+    "upgrade: the handler receives the connection",
+    text,
+    "upgraded:|echo:ping",
+  )
+}
+
+async function readUntilContains(
+  connection: Connection,
+  first: bytes,
+  part: string,
+): string uses io, alloc {
+  // Reads until the text holds the part, the peer closes, or twenty reads have passed.
+  let received = ""
+  const start = Bytes.toString(first)
+  if (start is Ok(startText)) {
+    received = startText
+  }
+  for (const _attempt of Ranges.between(0, 20)) {
+    if (Str.contains(received, part)) {
+      return received
+    }
+    const data = await Net.read(connection, 100)
+    if (data is Err(_)) {
+      return received
+    }
+    if (Bytes.length(data.value) == 0) {
+      return received
+    }
+    const piece = Bytes.toString(data.value)
+    if (piece is Ok(value)) {
+      received = `${received}${value}`
+    }
+  }
+  return received
+}
+
+async function checkClientErrors(report: Report, port: int) uses io, alloc {
+  expectText(
+    report,
+    "client: a host name is looked up",
+    await fetchText(`http://localhost:${Int.toString(port)}/hello`),
+    "hello",
+  )
+  const unknown = await Client.get("http://nonexistent.invalid/")
+  expect(report, "client: an unknown host is an io error", unknown is Err(HttpError.Io(_)))
+  const secure = await Client.get("https://127.0.0.1:9/")
+  expect(report, "client: https is Malformed", secure is Err(HttpError.Malformed(_)))
+  const relative = await Client.get("/just/a/path")
+  expect(report, "client: a relative url is Malformed", relative is Err(HttpError.Malformed(_)))
+  // A listener that never accepts: the connection opens and no answer comes.
+  const silent = Net.listen("127.0.0.1", 0)
+  if (silent is Ok(listener)) {
+    let quick = Client.defaultOptions()
+    quick.timeout = Some(Time.milliseconds(200))
+    const request = Requests.create(Method.Get, buildAddress(Net.localPort(listener), "/"))
+    if (request is Ok(found)) {
+      const answered = await Client.send(found, quick)
+      expect(report, "client: a silent server gives TimedOut", answered is Err(HttpError.TimedOut))
+    }
+  }
+  // A port that nobody listens on: the connection is refused.
+  const request = Requests.create(Method.Get, buildAddress(findFreePort(), "/"))
+  if (request is Ok(found)) {
+    const answered = await Client.send(found, Client.defaultOptions())
+    expect(report, "client: a refused connection is an Io error", answered is Err(HttpError.Io(_)))
+  }
+}
+
+function findFreePort(): int uses io, alloc {
+  // A listener takes the port and closes when the function returns, so nobody listens on it.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Ok(found)) {
+    return Net.localPort(found)
+  }
+  return 1
+}
+
+function encodeText(text: string): bytes {
+  return Bytes.fromString(text)
+}
+
+async function checkServerRaw(report: Report, port: int) uses io, alloc {
+  // Two requests in one write, on one connection: the second ends the connection.
+  const pair = "GET /hello HTTP/1.1\r\nHost: x\r\n\r\nGET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+  const twice = await exchange(port, encodeText(pair))
+  expectText(report, "keep-alive: the first answer", findFirstLine(twice), "HTTP/1.1 200 OK")
+  expect(report, "keep-alive: both requests are answered", countParts(twice, "hello") == 2)
+  expectContains(report, "keep-alive: the last answer closes", twice, "Connection: close")
+  // HTTP/1.0 closes unless it asks to stay.
+  const old = await exchange(port, encodeText("GET /hello HTTP/1.0\r\n\r\n"))
+  expectContains(report, "http 1.0: the connection closes", old, "Connection: close")
+  // A streamed response is chunked, with the chunk framing on the wire.
+  const chunked = await exchange(
+    port,
+    encodeText("GET /stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+  )
+  expectContains(report, "chunked response: the header", chunked, "Transfer-Encoding: chunked")
+  expectContains(
+    report,
+    "chunked response: the chunks",
+    chunked,
+    "3\r\none\r\n3\r\ntwo\r\n5\r\nthree\r\n0\r\n\r\n",
+  )
+  // A chunked request body, with an extension and a trailer.
+  const request = "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3;ext=1\r\nabc\r\n3\r\ndef\r\n0\r\nTrailer: x\r\n\r\n"
+  expectContains(
+    report,
+    "chunked request: the body is decoded",
+    await exchange(port, encodeText(request)),
+    "got:abcdef",
+  )
+  // A body that the handler ignores is drained, so the next request on the connection works.
+  const ignored = "POST /ignore HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nabcdeGET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+  const drained = await exchange(port, encodeText(ignored))
+  expect(
+    report,
+    "drain: the request after an ignored body is answered",
+    countParts(drained, "HTTP/1.1 200 OK") == 2,
+  )
+  // Malformed requests.
+  expectContains(
+    report,
+    "400: a request line that is not HTTP",
+    findFirstLine(await exchange(port, encodeText("hello\r\n\r\n"))),
+    "400",
+  )
+  expectContains(
+    report,
+    "400: a bad version token",
+    findFirstLine(await exchange(port, encodeText("GET / FTP/1.1\r\n\r\n"))),
+    "400",
+  )
+  expectContains(
+    report,
+    "505: HTTP/2.0",
+    findFirstLine(await exchange(port, encodeText("GET / HTTP/2.0\r\n\r\n"))),
+    "505",
+  )
+  expectContains(
+    report,
+    "400: a header without a colon",
+    findFirstLine(await exchange(port, encodeText("GET / HTTP/1.1\r\nHost\r\n\r\n"))),
+    "400",
+  )
+  const badChunk = await exchange(
+    port,
+    encodeText(
+      "POST /echo-ignoring-errors HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n",
+    ),
+  )
+  expectContains(
+    report,
+    "400: a bad chunk size, even when the handler ignores the error",
+    findFirstLine(badChunk),
+    "400",
+  )
+  expectContains(
+    report,
+    "400: a bad chunk size reaches the handler as Malformed",
+    await exchange(
+      port,
+      encodeText(
+        "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n",
+      ),
+    ),
+    "malformed message",
+  )
+  expectContains(
+    report,
+    "400: both Content-Length and Transfer-Encoding",
+    findFirstLine(
+      await exchange(
+        port,
+        encodeText(
+          "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\nabc",
+        ),
+      ),
+    ),
+    "400",
+  )
+  expectContains(
+    report,
+    "501: an unknown Transfer-Encoding",
+    findFirstLine(
+      await exchange(
+        port,
+        encodeText("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n"),
+      ),
+    ),
+    "501",
+  )
+  expectContains(
+    report,
+    "413: a Content-Length over the limit",
+    findFirstLine(
+      await exchange(
+        port,
+        encodeText("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999\r\n\r\n"),
+      ),
+    ),
+    "413",
+  )
+  const bigHeader = `GET / HTTP/1.1\r\nHost: x\r\nX-Big: ${repeatText("a", 20000)}\r\n\r\n`
+  expectContains(
+    report,
+    "431: headers over the limit",
+    findFirstLine(await exchange(port, encodeText(bigHeader))),
+    "431",
+  )
+  const endless = `GET / HTTP/1.1\r\nX-Big: ${repeatText("a", 20000)}`
+  expectContains(
+    report,
+    "431: a head that never ends",
+    findFirstLine(await exchange(port, encodeText(endless))),
+    "431",
+  )
+  // A chunked body over the limit stops with TooLarge, and the server answers 413.
+  const oversized = repeatText("0123456789abcdef", 600000)
+  const limited = await limitedServerCheck(oversized)
+  expect(report, "413: a chunked body over the limit", limited)
+}
+
+async function checkServerFraming(report: Report, port: int) uses io, alloc {
+  // HEAD, 204 and 304 put no body on the wire: the answer ends with the blank line of its head.
+  const head = await exchange(
+    port,
+    encodeText("HEAD /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+  )
+  expect(report, "HEAD: the answer ends with its head", Str.endsWith(head, "\r\n\r\n"))
+  expectContains(report, "HEAD: the length of the body is announced", head, "Content-Length: 5")
+  expect(report, "HEAD: no body bytes", !Str.contains(head, "hello"))
+  const noContent = await exchange(
+    port,
+    encodeText("GET /no-content HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+  )
+  expectContains(report, "204: the status", findFirstLine(noContent), "204")
+  expect(report, "204: no body bytes", Str.endsWith(noContent, "\r\n\r\n"))
+  expect(report, "204: no length header", !Str.contains(noContent, "Content-Length"))
+  const notModified = await exchange(
+    port,
+    encodeText("GET /not-modified HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+  )
+  expectContains(report, "304: the status", findFirstLine(notModified), "304")
+  expect(report, "304: no body bytes", Str.endsWith(notModified, "\r\n\r\n"))
+  // HTTP/1.0 stays open when it asks to.
+  const kept = await exchange(
+    port,
+    encodeText("GET /hello HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /hello HTTP/1.0\r\n\r\n"),
+  )
+  expect(report, "http 1.0: keep-alive serves two requests", countParts(kept, "hello") == 2)
+  expectContains(report, "http 1.0: keep-alive is confirmed", kept, "Connection: keep-alive")
+  // A request that waits for permission to send its body gets it.
+  const expecting = await exchange(
+    port,
+    encodeText(
+      "POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+    ),
+  )
+  expect(
+    report,
+    "expect: 100 Continue comes first",
+    Str.startsWith(expecting, "HTTP/1.1 100 Continue"),
+  )
+  expectContains(report, "expect: the body is read", expecting, "got:abc")
+  // Refusals of the head.
+  expectContains(
+    report,
+    "400: two Content-Length headers that differ",
+    findFirstLine(
+      await exchange(
+        port,
+        encodeText(
+          "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\nabc",
+        ),
+      ),
+    ),
+    "400",
+  )
+  expectContains(
+    report,
+    "400: HTTP/1.1 with no Host",
+    findFirstLine(await exchange(port, encodeText("GET /hello HTTP/1.1\r\n\r\n"))),
+    "400",
+  )
+  expectContains(
+    report,
+    "400: a version that is not a version",
+    findFirstLine(await exchange(port, encodeText("GET /hello HTTP/abc\r\n\r\n"))),
+    "400",
+  )
+  expectContains(
+    report,
+    "505: a well-formed version that is not supported",
+    findFirstLine(await exchange(port, encodeText("GET /hello HTTP/1.2\r\n\r\n"))),
+    "505",
+  )
+  // A handler that makes a 101 without an upgrade, or lies about the framing.
+  expectContains(
+    report,
+    "500: a 101 with no upgrade",
+    findFirstLine(
+      await exchange(
+        port,
+        encodeText("GET /bad-upgrade HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+      ),
+    ),
+    "500",
+  )
+  const lying = await exchange(
+    port,
+    encodeText("GET /lying HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+  )
+  expectContains(report, "framing: the real length is written", lying, "Content-Length: 3")
+  expect(report, "framing: the handler's headers are dropped", !Str.contains(lying, "999"))
+  expect(report, "framing: the handler's encoding is dropped", !Str.contains(lying, "chunked"))
+}
+
+function countParts(text: string, part: string): int uses alloc {
+  const pieces = Str.split(text, part)
+  if (pieces is Some(found)) {
+    return Arrays.length(found) - 1
+  }
+  return 0
+}
+
+async function limitedServerCheck(content: string): bool uses io, alloc {
+  // A second server with a small body limit, to send a chunked body over it.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    return false
+  }
+  let options = Server.defaultOptions()
+  options.maxBodyBytes = 1000
+  const server = Server.serve(listener.value, options, route)
+  const size = Int.toHex(Str.length(content))
+  const first = Options.withDefault(Str.slice(content, 0, 5000), "")
+  const request = `POST /echo-ignoring-errors HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n${size}\r\n${first}`
+  const answer = await exchange(Net.localPort(listener.value), encodeText(request))
+  Async.cancel(server)
+  return Str.startsWith(answer, "HTTP/1.1 413")
+}
+
+async function checkTimeouts(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "timeout: the server listens", false)
+    return
+  }
+  let options = Server.defaultOptions()
+  options.headerTimeout = Time.milliseconds(200)
+  options.idleTimeout = Time.milliseconds(300)
+  const server = Server.serve(listener.value, options, route)
+  const port = Net.localPort(listener.value)
+  const slow = await exchange(port, encodeText("GET /hello HTTP/1.1\r\nHost"))
+  expectContains(
+    report,
+    "timeout: a head that does not finish gets 408",
+    findFirstLine(slow),
+    "408",
+  )
+  // A connection that sends nothing is closed with no answer.
+  const silent = await exchange(port, encodeText(""))
+  expectText(report, "timeout: a silent connection is closed", silent, "")
+  // A keep-alive connection that goes quiet is closed after the idle timeout.
+  const started = Time.now()
+  const idle = await exchange(port, encodeText("GET /hello HTTP/1.1\r\nHost: x\r\n\r\n"))
+  const waited = Time.asMilliseconds(Time.elapsed(started))
+  expect(report, "timeout: an idle connection answers once", countParts(idle, "hello") == 1)
+  expect(report, "timeout: an idle connection is closed by the server", waited < 2000)
+  Async.cancel(server)
+}
+
+async function checkFuzz(report: Report, port: int) uses io, alloc {
+  let random = Random.seeded(7)
+  let answered = 0
+  for (const _round of Ranges.between(0, 40)) {
+    let hex = ""
+    const length = Options.withDefault(Random.nextInt(mutable random, 1, 200), 1)
+    for (const _byte of Ranges.between(0, length)) {
+      const value = Options.withDefault(Random.nextInt(mutable random, 0, 256), 0)
+      hex = `${hex}${Str.padStart(Int.toHex(value), 2, '0')}`
+    }
+    const noise = Bytes.fromHex(hex)
+    if (noise is Some(data)) {
+      // Random bytes end with a blank line, so the head is complete and the server answers it.
+      const reply = await exchange(port, Bytes.concat(data, encodeText("\r\n\r\n")))
+      if (Str.startsWith(reply, "HTTP/1.1 4") || Str.length(reply) == 0) {
+        answered += 1
+      }
+    }
+  }
+  expect(report, "fuzz: random bytes get a 4xx answer or a closed connection", answered == 40)
+}
+
+async function checkSlowBody(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "slow body: the server listens", false)
+    return
+  }
+  // Each read has five seconds, but the whole body only 300 milliseconds.
+  let options = Server.defaultOptions()
+  options.idleTimeout = Time.seconds(5)
+  options.bodyTimeout = Time.milliseconds(300)
+  const server = Server.serve(listener.value, options, route)
+  const connection = await Net.connect("127.0.0.1", Net.localPort(listener.value))
+  if (connection is Err(_)) {
+    expect(report, "slow body: the client connects", false)
+    Async.cancel(server)
+    return
+  }
+  const started = Time.now()
+  const head = "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\na"
+  const sent = await Net.write(connection.value, encodeText(head))
+  if (sent is Err(_)) {
+    expect(report, "slow body: the head is sent", false)
+    Async.cancel(server)
+    return
+  }
+  // One byte every 100 milliseconds: no read waits long, yet the body never ends in time.
+  for (const _drip of Ranges.between(0, 8)) {
+    const _slept = await Time.sleep(Time.milliseconds(100))
+    const _written = await Net.write(connection.value, encodeText("b"))
+  }
+  const reply = await readUntilClose(connection.value)
+  const waited = Time.asMilliseconds(Time.elapsed(started))
+  expectContains(report, "slow body: the handler sees TimedOut", reply, "timed out")
+  expect(report, "slow body: the answer comes before the body could finish", waited < 4000)
+  Async.cancel(server)
+}
+
+async function checkChunkFuzz(report: Report) uses io, alloc {
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "chunk fuzz: the server listens", false)
+    return
+  }
+  let options = Server.defaultOptions()
+  options.idleTimeout = Time.milliseconds(150)
+  const server = Server.serve(listener.value, options, route)
+  const port = Net.localPort(listener.value)
+  let random = Random.seeded(11)
+  let answered = 0
+  for (const _round of Ranges.between(0, 25)) {
+    let body = ""
+    const count = Options.withDefault(Random.nextInt(mutable random, 1, 12), 1)
+    for (const _piece of Ranges.between(0, count)) {
+      const choice = Options.withDefault(
+        Random.nextInt(mutable random, 0, Arrays.length(CHUNK_PIECES)),
+        0,
+      )
+      body = `${body}${CHUNK_PIECES[choice]}`
+    }
+    const request = `POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n${body}`
+    const reply = await exchange(port, encodeText(request))
+    if (Str.startsWith(reply, "HTTP/1.1 ") || Str.length(reply) == 0) {
+      answered += 1
+    }
+  }
+  expect(report, "chunk fuzz: random chunk streams get an answer or a close", answered == 25)
+  expectText(
+    report,
+    "chunk fuzz: the server survives",
+    await fetchText(buildAddress(port, "/hello")),
+    "hello",
+  )
+  Async.cancel(server)
+}
+
+const CHUNK_PIECES = [
+  "0",
+  "1",
+  "5",
+  "a",
+  "ff",
+  "zz",
+  "-1",
+  "5;ext=1",
+  " 5",
+  "\r\n",
+  "\r\n\r\n",
+  "abc",
+  "hello",
+  "0\r\n\r\n",
+  "3\r\nabc\r\n",
+  "ffffffffffffffff",
+  "\n",
+]
+
+const RESPONSE_PIECES = [
+  "HTTP/1.1 200 OK\r\n",
+  "HTTP/1.1 100 Continue\r\n\r\n",
+  "HTTP/1.1 204 No Content\r\n",
+  "HTTP/1.0 200 OK\r\n",
+  "HTTP/2 200\r\n",
+  "Content-Length: 5\r\n",
+  "Content-Length: -3\r\n",
+  "Transfer-Encoding: chunked\r\n",
+  "Transfer-Encoding: gzip\r\n",
+  "X-Header: value\r\n",
+  "bad header\r\n",
+  "\r\n",
+  "\r\n\r\n",
+  "hello",
+  "5\r\nhello\r\n",
+  "0\r\n\r\n",
+  "zz\r\n",
+]
+
+async function serveText(listener: Listener, text: string) uses io, alloc {
+  // A fake server: waits for a request, answers with the text and closes the connection.
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(_)) {
+    return
+  }
+  const _request = await Net.read(accepted.value, 1000)
+  const _answer = await Net.write(accepted.value, encodeText(text))
+}
+
+async function checkResponseFuzz(report: Report) uses io, alloc {
+  let random = Random.seeded(13)
+  let finished = 0
+  for (const _round of Ranges.between(0, 30)) {
+    let text = ""
+    const count = Options.withDefault(Random.nextInt(mutable random, 1, 8), 1)
+    for (const _piece of Ranges.between(0, count)) {
+      const choice = Options.withDefault(
+        Random.nextInt(mutable random, 0, Arrays.length(RESPONSE_PIECES)),
+        0,
+      )
+      text = `${text}${RESPONSE_PIECES[choice]}`
+    }
+    const listener = Net.listen("127.0.0.1", 0)
+    if (listener is Ok(found)) {
+      const fake = serveText(found, text)
+      const request = Requests.create(Method.Get, buildAddress(Net.localPort(found), "/"))
+      if (request is Ok(prepared)) {
+        let options = Client.defaultOptions()
+        options.timeout = Some(Time.milliseconds(300))
+        // Any answer is fine, a value or an error, as long as the client returns.
+        const answered = await Client.send(prepared, options)
+        if (answered is Ok(response)) {
+          const _body = await Bodies.readAll(response.body, 1000)
+        }
+        finished += 1
+      }
+      await fake
+    }
+  }
+  expect(report, "response fuzz: random responses never hang or panic the client", finished == 30)
+}

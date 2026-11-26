@@ -23,6 +23,11 @@ export struct LockEntry {
   tag: string // the git tag the version was fetched from, `v<version>` or `<name>/v<version>`
   commit: string // the full commit hash of the tag
   content: string // the git tree hash of that commit
+  // The upstream checkout of a C package (`[c] git` and `tag`), all empty for any other package.
+  cGit: string = ""
+  cTag: string = ""
+  cCommit: string = ""
+  cContent: string = ""
 }
 
 const LOCK_HEADER = "# narra.lock: written by narrac. Do not edit.\n"
@@ -41,6 +46,10 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
   let tag = ""
   let commit = ""
   let content = ""
+  let cGit = ""
+  let cTag = ""
+  let cCommit = ""
+  let cContent = ""
   let seen: Set<string> = Sets.create()
   let seenKeys: Set<string> = Sets.create()
   const lines = splitString(text, "\n")
@@ -56,7 +65,10 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
     }
     if (line == "[[package]]") {
       if (open) {
-        const missing = missingKey(name, git, version, tag, commit, content)
+        let missing = missingKey(name, git, version, tag, commit, content)
+        if (missing == "") {
+          missing = missingUpstreamKey(cGit, cTag, cCommit, cContent)
+        }
         if (missing != "") {
           return Err(
             lockError(entryLine, "E0438", `entry ${quoteToml(name)} is missing the key ${missing}`),
@@ -74,7 +86,18 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
         if (!Sets.add(mutable seen, name)) {
           return Err(lockError(entryLine, "E0439", `two entries are named ${quoteToml(name)}`))
         }
-        Arrays.push(mutable entries, LockEntry { name, git, version, tag, commit, content })
+        Arrays.push(mutable entries, LockEntry {
+          name,
+          git,
+          version,
+          tag,
+          commit,
+          content,
+          cGit,
+          cTag,
+          cCommit,
+          cContent,
+        })
       }
       open = index < Arrays.length(lines)
       entryLine = lineNumber
@@ -85,6 +108,10 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
       tag = ""
       commit = ""
       content = ""
+      cGit = ""
+      cTag = ""
+      cCommit = ""
+      cContent = ""
       continue
     }
     if (!open) {
@@ -125,6 +152,14 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
       commit = value
     } else if (key == "content") {
       content = value
+    } else if (key == "c_git") {
+      cGit = value
+    } else if (key == "c_tag") {
+      cTag = value
+    } else if (key == "c_commit") {
+      cCommit = value
+    } else if (key == "c_content") {
+      cContent = value
     } else {
       return Err(
         lockError(lineNumber, "E0438", `entry ${quoteToml(name)} has the unknown key ${key}`),
@@ -154,6 +189,12 @@ export function formatLock(entries: Array<LockEntry>): string uses alloc {
     Str.append(mutable builder, `tag = ${quoteToml(entry.tag)}\n`)
     Str.append(mutable builder, `commit = ${quoteToml(entry.commit)}\n`)
     Str.append(mutable builder, `content = ${quoteToml(entry.content)}\n`)
+    if (entry.cGit != "") {
+      Str.append(mutable builder, `c_git = ${quoteToml(entry.cGit)}\n`)
+      Str.append(mutable builder, `c_tag = ${quoteToml(entry.cTag)}\n`)
+      Str.append(mutable builder, `c_commit = ${quoteToml(entry.cCommit)}\n`)
+      Str.append(mutable builder, `c_content = ${quoteToml(entry.cContent)}\n`)
+    }
   }
   return Str.build(builder)
 }
@@ -187,6 +228,26 @@ function missingKey(
   return ""
 }
 
+function missingUpstreamKey(cGit: string, cTag: string, cCommit: string, cContent: string): string {
+  // The four upstream keys come together, or none of them is there.
+  if (cGit == "" && cTag == "" && cCommit == "" && cContent == "") {
+    return ""
+  }
+  if (cGit == "") {
+    return "c_git"
+  }
+  if (cTag == "") {
+    return "c_tag"
+  }
+  if (cCommit == "") {
+    return "c_commit"
+  }
+  if (cContent == "") {
+    return "c_content"
+  }
+  return ""
+}
+
 function isControlByte(code: int): bool {
   return code < 32 || code == 127
 }
@@ -195,8 +256,14 @@ function findValueProblem(key: string, value: string): string {
   if (key == "name" && !isValidPackageName(value)) {
     return "is not a package name"
   }
-  if (key == "git" && value == "") {
+  if ((key == "git" || key == "c_git") && value == "") {
     return "is not a repository URL"
+  }
+  if (key == "c_tag" && value == "") {
+    return "is not a tag"
+  }
+  if ((key == "c_commit" || key == "c_content") && !isHash(value)) {
+    return "is not a hash"
   }
   if (key == "version" && !isVersion(value)) {
     return "is not MAJOR.MINOR.PATCH"

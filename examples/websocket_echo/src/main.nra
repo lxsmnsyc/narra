@@ -1,0 +1,52 @@
+import * as Arrays from "std/array"
+import * as Int from "std/int"
+import * as Messages from "websocket/message"
+import * as Net from "std/net"
+import * as Server from "http/server"
+import * as Sockets from "websocket/socket"
+import * as WebSocketServer from "websocket/server"
+import { Request } from "http/request"
+import { Response } from "http/response"
+import { Socket } from "websocket/socket"
+
+async function echo(socket: Socket) uses io, alloc {
+  // Sends every message back until the peer closes or the socket fails.
+  for await (const result of Sockets.messages(socket)) {
+    if (result is Err(_)) {
+      return
+    }
+    const failure = await Sockets.send(socket, result.value)
+    if (failure is Some(_)) {
+      return
+    }
+  }
+}
+
+async function handle(request: Request): Response uses io, alloc {
+  return WebSocketServer.accept(request, Messages.defaultOptions(), echo)
+}
+
+export async function run(args: Array<string>): int uses io, alloc {
+  // args[0] is the path of the program.
+  let host = "127.0.0.1"
+  let port = 9001
+  if (Arrays.length(args) > 1) {
+    host = args[1]
+  }
+  if (Arrays.length(args) > 2) {
+    const parsed = Int.parse(args[2], 10)
+    if (parsed is Err(_)) {
+      print("the port is not a number")
+      return 1
+    }
+    port = parsed.value
+  }
+  const listener = Net.listen(host, port)
+  if (listener is Err(_)) {
+    print("cannot listen on that address")
+    return 1
+  }
+  print(`listening on ${host}:${Int.toString(Net.localPort(listener.value))}`)
+  await Server.serve(listener.value, Server.defaultOptions(), handle)
+  return 0
+}

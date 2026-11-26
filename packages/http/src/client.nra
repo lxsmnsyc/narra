@@ -1,0 +1,297 @@
+// http/client: an HTTP/1.1 client over std/net.
+
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Fields from "http/headers"
+import * as Int from "std/int"
+import * as Message from "http/message"
+import * as Ranges from "std/range"
+import * as State from "http/bodystate"
+import * as Requests from "http/request"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import * as Unicode from "std/unicode"
+import * as Urls from "std/url"
+import * as Wire from "http/framing"
+import { Cell } from "std/cell"
+import { Connection } from "std/net"
+import { Duration } from "std/time"
+import { Framing, ResponseHead } from "http/message"
+import { HttpError } from "http/error"
+import { Method, Request } from "http/request"
+import { Response, Upgraded } from "http/response"
+import { Url } from "std/url"
+
+/// The most bytes of a response head that the client reads.
+const MAX_HEAD_BYTES = 65536
+
+/// The most interim (1xx) responses that the client skips before an answer.
+const MAX_INTERIM = 10
+
+/// maxRedirects is how many redirects send follows: 0 returns every redirect response as it is.
+/// timeout is the longest wait for the server in one step (the connection, a write, a read),
+/// and None waits as long as the server does.
+export struct ClientOptions {
+  maxRedirects: int
+  timeout: Option<Duration>
+}
+
+/// No redirects and a timeout of 30 seconds.
+export function defaultOptions(): ClientOptions {
+  return ClientOptions { maxRedirects: 0, timeout: Some(Time.seconds(30)) }
+}
+
+/// Fetches the url with a GET and the default options.
+export async function get(url: string): Result<Response, HttpError> uses io, alloc {
+  const request = Requests.create(Method.Get, url)
+  if (request is Err(error)) {
+    return Err(error)
+  }
+  return await send(request.value, defaultOptions())
+}
+
+/// Sends the request on a new connection and gives the response once its head has arrived. The
+/// body of the response is a stream that reads the connection, so the connection stays open
+/// until the body is read to its end or dropped. The url of the request must be absolute, with
+/// the scheme http. The host is a name or an address, and a name is looked up with std/net.
+export async function send(
+  request: Request,
+  options: ClientOptions,
+): Result<Response, HttpError> uses io, alloc {
+  let current = copy(request)
+  let followed = 0
+  while (true) {
+    const answered = await sendOnce(current, options)
+    if (answered is Err(error)) {
+      return Err(error)
+    }
+    const response = answered.value
+    if (followed >= options.maxRedirects) {
+      return Ok(response)
+    }
+    const next = redirectTarget(current, response)
+    if (next is None) {
+      return Ok(response)
+    }
+    current = next.value
+    followed += 1
+  }
+}
+
+function isRedirect(status: int): bool {
+  return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+}
+
+function redirectTarget(
+  request: Request,
+  response: Response,
+): Option<Request> from request uses alloc {
+  // None when the response is no redirect the client can follow: it has no usable Location, or
+  // it would need the body of a stream sent again.
+  if (!isRedirect(response.status)) {
+    return None
+  }
+  const location = Fields.get(response.headers, "Location")
+  if (location is None) {
+    return None
+  }
+  const reference = Urls.parse(location.value)
+  if (reference is Err(_)) {
+    return None
+  }
+  const target = Urls.resolve(request.url, reference.value)
+  if (target is Err(_)) {
+    return None
+  }
+  let method = request.method
+  let body = request.body
+  // 303, and a POST that gets 301 or 302, continue as a GET with no body.
+  const movedLater = response.status == 301 || response.status == 302
+  const movedPost = movedLater && request.method == Method.Post
+  const changesToGet = response.status == 303 || movedPost
+  if (changesToGet && request.method != Method.Head) {
+    method = Method.Get
+    body = Bodies.empty()
+  }
+  if (!State.isReplayable(body)) {
+    return None
+  }
+  let headers = copy(request.headers)
+  if (changesToGet) {
+    Fields.remove(mutable headers, "Content-Type")
+  }
+  Fields.remove(mutable headers, "Host")
+  // Credentials stay with the host that they were meant for.
+  if (target.value.host != request.url.host || target.value.port != request.url.port) {
+    Fields.remove(mutable headers, "Authorization")
+    Fields.remove(mutable headers, "Cookie")
+  }
+  return Some(Request { method, url: target.value, headers, body })
+}
+
+function findConnectHost(host: string): string uses alloc {
+  // An IPv6 address comes in brackets in a url; the socket takes it without them.
+  if (Str.startsWith(host, "[") && Str.endsWith(host, "]") && Str.length(host) > 2) {
+    const inner = Str.slice(host, 1, Str.length(host) - 1)
+    if (inner is Some(address)) {
+      return address
+    }
+  }
+  return host
+}
+
+function buildTarget(url: Url): string uses alloc {
+  let path = url.path
+  if (Str.length(path) == 0) {
+    path = "/"
+  }
+  if (url.query is Some(query)) {
+    return `${path}?${query}`
+  }
+  return path
+}
+
+async function sendOnce(
+  request: Request,
+  options: ClientOptions,
+): Result<Response, HttpError> uses io, alloc {
+  if (request.url.scheme is None) {
+    return Err(HttpError.Malformed("the url needs a scheme and a host"))
+  }
+  if (request.url.scheme is Some(scheme)) {
+    if (Unicode.toLowerCase(scheme) == "https") {
+      return Err(HttpError.Malformed("https is not supported"))
+    }
+    if (Unicode.toLowerCase(scheme) != "http") {
+      return Err(HttpError.Malformed(`the scheme ${scheme} is not supported`))
+    }
+  }
+  const hostText = request.url.host
+  if (hostText is None) {
+    return Err(HttpError.Malformed("the url needs a scheme and a host"))
+  }
+  const host = hostText.value
+  const address = findConnectHost(host)
+  let port = 80
+  if (request.url.port is Some(portText)) {
+    if (Str.length(portText) > 0) {
+      const parsedPort = Int.parse(portText, 10)
+      if (parsedPort is Err(_)) {
+        return Err(HttpError.Malformed("the port is not a number"))
+      }
+      port = parsedPort.value
+    }
+  }
+  // The head of the request.
+  let headers = copy(request.headers)
+  if (Fields.get(headers, "Host") is None) {
+    if (port == 80) {
+      Fields.set(mutable headers, "Host", host)
+    } else {
+      Fields.set(mutable headers, "Host", `${host}:${Int.toString(port)}`)
+    }
+  }
+  // The connection ends with the response, unless the caller asks for an upgrade.
+  if (!Message.hasToken(headers, "Connection", "upgrade")) {
+    Fields.set(mutable headers, "Connection", "close")
+  }
+  // The framing headers come from the body, never from the caller.
+  Fields.remove(mutable headers, "Transfer-Encoding")
+  Fields.remove(mutable headers, "Content-Length")
+  let chunked = false
+  const length = State.findLength(request.body)
+  if (length is Some(count)) {
+    if (count > 0 || needsLength(request.method)) {
+      Fields.set(mutable headers, "Content-Length", Int.toString(count))
+    }
+  } else {
+    chunked = true
+    Fields.set(mutable headers, "Transfer-Encoding", "chunked")
+  }
+  if (Message.findBadHeader(headers) is Some(bad)) {
+    return Err(HttpError.Malformed(`cannot send the ${bad}`))
+  }
+  const limit = options.timeout
+  const connected = await Wire.connect(address, port, limit)
+  if (connected is Err(error)) {
+    return Err(error)
+  }
+  const connection = connected.value
+  const head = Bytes.fromString(
+    Message.writeRequestHead(request.method, buildTarget(request.url), headers),
+  )
+  const failure = await Wire.writeMessage(connection, head, request.body, chunked, limit)
+  if (failure is Some(error)) {
+    return Err(error)
+  }
+  // The response: skip interim 1xx heads, which are not answers.
+  const leftover = Cells.create(Bytes.fromString(""))
+  for (const _attempt of Ranges.between(0, MAX_INTERIM)) {
+    const read = await Wire.readHead(connection, leftover, MAX_HEAD_BYTES, limit, limit)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    const headText = read.value
+    if (headText is None) {
+      return Err(HttpError.Closed)
+    }
+    const parsed = Message.parseResponseHead(headText.value)
+    if (parsed is Err(rejection)) {
+      return Err(HttpError.Malformed(Message.describeRejection(rejection)))
+    }
+    const status = parsed.value.status
+    if (status == 101) {
+      const upgraded = Upgraded { connection, leftover: Cells.get(leftover) }
+      return Ok(Response {
+        status,
+        headers: parsed.value.headers,
+        body: Bodies.empty(),
+        upgrade: None,
+        upgraded: Some(upgraded),
+      })
+    }
+    if (status >= 200) {
+      return openResponse(connection, leftover, request.method, parsed.value, limit)
+    }
+  }
+  return Err(HttpError.Malformed("too many interim responses"))
+}
+
+function needsLength(method: Method): bool {
+  return method == Method.Post || method == Method.Put || method == Method.Patch
+}
+
+function openResponse(
+  connection: Connection,
+  leftover: Cell<bytes>,
+  method: Method,
+  head: ResponseHead,
+  limit: Option<Duration>,
+): Result<Response, HttpError> from head uses alloc {
+  const framing = Message.responseFraming(method, head.status, head.headers)
+  if (framing is Err(rejection)) {
+    return Err(HttpError.Malformed(Message.describeRejection(rejection)))
+  }
+  let body = Bodies.empty()
+  if (framing.value is Framing.Length(count)) {
+    body = State.fromIncoming(
+      Wire.streamLength(connection, leftover, count, limit, None),
+      Some(count),
+    )
+  } else if (framing.value is Framing.Chunked) {
+    body = State.fromIncoming(
+      Wire.streamChunked(connection, leftover, Wire.NO_LIMIT, limit, None),
+      None,
+    )
+  } else if (framing.value is Framing.UntilClose) {
+    body = State.fromIncoming(Wire.streamUntilClose(connection, leftover, limit), None)
+  }
+  return Ok(Response {
+    status: head.status,
+    headers: head.headers,
+    body,
+    upgrade: None,
+    upgraded: None,
+  })
+}

@@ -1,0 +1,449 @@
+// The reader of a multipart/form-data body (RFC 7578, RFC 2046). It walks a stream of pieces:
+// the preamble, then for each part its head and its body, and stops at the closing boundary.
+// Nothing here holds a whole body: a part body is a stream of its own.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bodies from "http/body"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Fields from "http/headers"
+import * as Options from "std/option"
+import * as Ranges from "std/range"
+import * as Str from "std/string"
+import * as Unicode from "std/unicode"
+import { Body, BodyStream } from "http/body"
+import { Cell } from "std/cell"
+import { Header, Headers } from "http/headers"
+import { HttpError } from "http/error"
+
+// A limit that no part reaches, for reading a part only to skip it.
+const UNLIMITED = 4611686018427387904
+
+/// The state of one walk through a multipart body. Copies share the state. The buffer holds bytes
+/// that are read from the source and not yet used.
+export struct Reader {
+  source: BodyStream
+  buffer: Cell<bytes>
+  delimiter: bytes
+  ended: Cell<bool>
+  started: Cell<bool>
+  inPart: Cell<bool>
+  finished: Cell<bool>
+}
+
+/// What the head of a part says.
+export struct PartHead {
+  name: string
+  filename: Option<string>
+  contentType: Option<string>
+}
+
+/// The boundary of a multipart Content-Type: 1 to 70 characters, bare or in quotes. A type that
+/// is not multipart/form-data, or has no boundary, gives Malformed.
+export function findBoundary(headers: Headers): Result<string, HttpError> uses alloc {
+  const contentType = Fields.get(headers, "Content-Type")
+  if (contentType is None) {
+    return Err(HttpError.Malformed("no Content-Type"))
+  }
+  const pieces = Str.split(contentType.value, ";")
+  if (pieces is None) {
+    return Err(HttpError.Malformed("bad Content-Type"))
+  }
+  if (Unicode.toLowerCase(Str.trim(pieces.value[0])) != "multipart/form-data") {
+    return Err(HttpError.Malformed("Content-Type is not multipart/form-data"))
+  }
+  const parameters = parseParameters(Str.sliceFrom(contentType.value, Str.length(pieces.value[0])))
+  if (parameters is Err(error)) {
+    return Err(error)
+  }
+  for (const parameter of Arrays.values(parameters.value)) {
+    if (parameter.name == "boundary") {
+      const length = Str.length(parameter.value)
+      if (length < 1 || length > 70) {
+        return Err(HttpError.Malformed("the boundary is not 1 to 70 characters"))
+      }
+      return Ok(parameter.value)
+    }
+  }
+  return Err(HttpError.Malformed("no boundary in the Content-Type"))
+}
+
+/// A reader of the body. The first delimiter of the body has no line break before it, so the
+/// buffer starts with one.
+export function createReader(body: Body, boundary: string): Reader uses alloc {
+  return Reader {
+    source: Bodies.chunks(body),
+    buffer: Cells.create(Bytes.fromString("\r\n")),
+    delimiter: Bytes.fromString(`\r\n--${boundary}`),
+    ended: Cells.create(false),
+    started: Cells.create(false),
+    inPart: Cells.create(false),
+    finished: Cells.create(false),
+  }
+}
+
+/// Moves to the next part and gives its head, with the reader at the first byte of the part body.
+/// It skips the preamble before the first part, and what is left of the part before. It gives
+/// None at the closing boundary. A part head over maxHeaderBytes gives TooLarge, and a body that
+/// ends before the closing boundary gives Malformed.
+export async function nextPart(
+  reader: Reader,
+  maxHeaderBytes: int,
+): Result<Option<PartHead>, HttpError> uses io, alloc {
+  if (Cells.get(reader.finished)) {
+    return Ok(None)
+  }
+  if (!Cells.get(reader.started)) {
+    Cells.set(reader.started, true)
+    const skipped = await skipPreamble(reader)
+    if (skipped is Err(error)) {
+      return Err(error)
+    }
+  } else if (Cells.get(reader.inPart)) {
+    for await (const piece of streamPartBody(reader, UNLIMITED)) {
+      if (piece is Err(error)) {
+        return Err(error)
+      }
+    }
+  }
+  // The reader is just after a delimiter: "--" closes the body, a line break starts a part.
+  const closing = await hasPrefix(reader, "--")
+  if (closing is Err(error)) {
+    return Err(error)
+  }
+  if (closing.value) {
+    Cells.set(reader.finished, true)
+    return Ok(None)
+  }
+  const padding = await skipPadding(reader)
+  if (padding is Err(error)) {
+    return Err(error)
+  }
+  const lineBreak = await hasPrefix(reader, "\r\n")
+  if (lineBreak is Err(error)) {
+    return Err(error)
+  }
+  if (!lineBreak.value) {
+    return Err(HttpError.Malformed("a boundary line does not end with a line break"))
+  }
+  const head = await readHead(reader, maxHeaderBytes)
+  if (head is Err(error)) {
+    return Err(error)
+  }
+  Cells.set(reader.inPart, true)
+  return Ok(Some(head.value))
+}
+
+/// The body of the current part as a stream, which ends at the delimiter of the next boundary.
+/// The delimiter is used up, so nextPart goes on from there. More than maxPartBytes bytes give
+/// Err(TooLarge("part")), and a body that ends first gives Err(Malformed).
+export async function* streamPartBody(
+  reader: Reader,
+  maxPartBytes: int,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  const delimiterLength = Bytes.length(reader.delimiter)
+  let total = 0
+  while (true) {
+    const buffer = Cells.get(reader.buffer)
+    const found = findBytes(buffer, reader.delimiter)
+    if (found is Some(position)) {
+      total += position
+      if (total > maxPartBytes) {
+        yield Err(HttpError.TooLarge("part"))
+        return
+      }
+      if (position > 0) {
+        yield Ok(takeFront(reader, position))
+      }
+      dropFront(reader, delimiterLength)
+      Cells.set(reader.inPart, false)
+      return
+    }
+    // The end of the buffer may be the start of a delimiter, so it stays until more arrives.
+    const safe = Bytes.length(buffer) - (delimiterLength - 1)
+    if (safe > 0) {
+      total += safe
+      if (total > maxPartBytes) {
+        yield Err(HttpError.TooLarge("part"))
+        return
+      }
+      yield Ok(takeFront(reader, safe))
+    }
+    const filled = await fillBuffer(reader)
+    if (filled is Err(error)) {
+      yield Err(error)
+      return
+    }
+    if (!filled.value) {
+      yield Err(HttpError.Malformed("a part has no closing boundary"))
+      return
+    }
+  }
+}
+
+async function fillBuffer(reader: Reader): Result<bool, HttpError> uses io, alloc {
+  // Gives false at the end of the source.
+  if (Cells.get(reader.ended)) {
+    return Ok(false)
+  }
+  const next = await Async.next(reader.source)
+  if (next is None) {
+    Cells.set(reader.ended, true)
+    return Ok(false)
+  }
+  const piece = next.value
+  if (piece is Err(error)) {
+    return Err(error)
+  }
+  Cells.set(reader.buffer, Bytes.concat(Cells.get(reader.buffer), piece.value))
+  return Ok(true)
+}
+
+async function skipPreamble(reader: Reader): Result<bool, HttpError> uses io, alloc {
+  // Drops the bytes up to the first delimiter and the delimiter itself.
+  const delimiterLength = Bytes.length(reader.delimiter)
+  while (true) {
+    const buffer = Cells.get(reader.buffer)
+    const found = findBytes(buffer, reader.delimiter)
+    if (found is Some(position)) {
+      dropFront(reader, position + delimiterLength)
+      return Ok(true)
+    }
+    const safe = Bytes.length(buffer) - (delimiterLength - 1)
+    if (safe > 0) {
+      dropFront(reader, safe)
+    }
+    const filled = await fillBuffer(reader)
+    if (filled is Err(error)) {
+      return Err(error)
+    }
+    if (!filled.value) {
+      return Err(HttpError.Malformed("the body has no boundary"))
+    }
+  }
+}
+
+async function hasPrefix(reader: Reader, prefix: string): Result<bool, HttpError> uses io, alloc {
+  // Reads more of the source while the buffer is too short to tell. A source that ends first
+  // gives Malformed.
+  const wanted = Bytes.fromString(prefix)
+  while (Bytes.length(Cells.get(reader.buffer)) < Bytes.length(wanted)) {
+    const filled = await fillBuffer(reader)
+    if (filled is Err(error)) {
+      return Err(error)
+    }
+    if (!filled.value) {
+      return Err(HttpError.Malformed("the body has no closing boundary"))
+    }
+  }
+  return Ok(matchesAt(Cells.get(reader.buffer), wanted, 0))
+}
+
+async function skipPadding(reader: Reader): Result<bool, HttpError> uses io, alloc {
+  // Drops the spaces and tabs that may follow a delimiter.
+  while (true) {
+    const buffer = Cells.get(reader.buffer)
+    if (Bytes.length(buffer) == 0) {
+      const filled = await fillBuffer(reader)
+      if (filled is Err(error)) {
+        return Err(error)
+      }
+      if (!filled.value) {
+        return Err(HttpError.Malformed("the body has no closing boundary"))
+      }
+      continue
+    }
+    const first = Bytes.at(buffer, 0)
+    if (first == Some(32) || first == Some(9)) {
+      dropFront(reader, 1)
+    } else {
+      return Ok(true)
+    }
+  }
+}
+
+async function readHead(
+  reader: Reader,
+  maxHeaderBytes: int,
+): Result<PartHead, HttpError> uses io, alloc {
+  // The head starts with the line break of the boundary line and ends at a blank line.
+  const terminator = Bytes.fromString("\r\n\r\n")
+  while (true) {
+    const buffer = Cells.get(reader.buffer)
+    const found = findBytes(buffer, terminator)
+    if (found is Some(position)) {
+      if (position > maxHeaderBytes) {
+        return Err(HttpError.TooLarge("part header"))
+      }
+      const head = takeFront(reader, position)
+      dropFront(reader, 4)
+      return parseHead(head)
+    }
+    if (Bytes.length(buffer) > maxHeaderBytes + 4) {
+      return Err(HttpError.TooLarge("part header"))
+    }
+    const filled = await fillBuffer(reader)
+    if (filled is Err(error)) {
+      return Err(error)
+    }
+    if (!filled.value) {
+      return Err(HttpError.Malformed("a part head is not finished"))
+    }
+  }
+}
+
+function parseHead(head: bytes): Result<PartHead, HttpError> uses alloc {
+  const text = Bytes.toString(head)
+  if (text is Err(_)) {
+    return Err(HttpError.Malformed("a part head is not UTF-8"))
+  }
+  const lines = Str.split(text.value, "\r\n")
+  if (lines is None) {
+    return Err(HttpError.Malformed("bad part head"))
+  }
+  let headers = Fields.empty()
+  for (const line of Arrays.values(lines.value)) {
+    if (line == "") {
+      continue
+    }
+    const colon = Str.indexOf(line, ":")
+    if (colon is None) {
+      return Err(HttpError.Malformed("a part header has no colon"))
+    }
+    const name = Str.trim(Options.withDefault(Str.slice(line, 0, colon.value), ""))
+    if (name == "") {
+      return Err(HttpError.Malformed("a part header has no name"))
+    }
+    Fields.add(mutable headers, name, Str.trim(Str.sliceFrom(line, colon.value + 1)))
+  }
+  const disposition = Fields.get(headers, "Content-Disposition")
+  if (disposition is None) {
+    return Err(HttpError.Malformed("a part has no Content-Disposition"))
+  }
+  const pieces = Str.split(disposition.value, ";")
+  if (pieces is None) {
+    return Err(HttpError.Malformed("bad Content-Disposition"))
+  }
+  if (Unicode.toLowerCase(Str.trim(pieces.value[0])) != "form-data") {
+    return Err(HttpError.Malformed("a part is not form-data"))
+  }
+  const parameters = parseParameters(Str.sliceFrom(disposition.value, Str.length(pieces.value[0])))
+  if (parameters is Err(error)) {
+    return Err(error)
+  }
+  let name: Option<string> = None
+  let filename: Option<string> = None
+  for (const parameter of Arrays.values(parameters.value)) {
+    if (parameter.name == "name") {
+      name = Some(parameter.value)
+    }
+    if (parameter.name == "filename") {
+      filename = Some(parameter.value)
+    }
+  }
+  if (name is None) {
+    return Err(HttpError.Malformed("a part has no name"))
+  }
+  return Ok(PartHead {
+    name: name.value,
+    filename,
+    contentType: Fields.get(headers, "Content-Type"),
+  })
+}
+
+function parseParameters(text: string): Result<Array<Header>, HttpError> uses alloc {
+  // Reads ";name=value" parameters. A value is a token or a quoted string that ends at the next
+  // quote, with backslashes kept. Names are lowercased.
+  const characters = Str.chars(text)
+  const count = Arrays.length(characters)
+  let parameters: Array<Header> = []
+  let position = 0
+  while (position < count) {
+    // The separators before a name.
+    while (
+      position < count &&
+        (characters[position] == ';' || characters[position] == ' ' || characters[position] == '\t')
+    ) {
+      position += 1
+    }
+    let name = Str.builder()
+    while (position < count && characters[position] != '=' && characters[position] != ';') {
+      Str.appendChar(mutable name, characters[position])
+      position += 1
+    }
+    const parameterName = Unicode.toLowerCase(Str.trim(Str.build(name)))
+    if (position >= count || characters[position] == ';') {
+      if (parameterName != "") {
+        Arrays.push(mutable parameters, Header { name: parameterName, value: "" })
+      }
+      continue
+    }
+    // Past the equals sign.
+    position += 1
+    let value = Str.builder()
+    if (position < count && characters[position] == '"') {
+      position += 1
+      let closed = false
+      while (position < count && !closed) {
+        if (characters[position] == '"') {
+          closed = true
+        } else {
+          Str.appendChar(mutable value, characters[position])
+        }
+        position += 1
+      }
+      if (!closed) {
+        return Err(HttpError.Malformed("a quoted parameter value is not closed"))
+      }
+      Arrays.push(mutable parameters, Header { name: parameterName, value: Str.build(value) })
+    } else {
+      while (position < count && characters[position] != ';') {
+        Str.appendChar(mutable value, characters[position])
+        position += 1
+      }
+      Arrays.push(mutable parameters, Header {
+        name: parameterName,
+        value: Str.trim(Str.build(value)),
+      })
+    }
+  }
+  return Ok(parameters)
+}
+
+function findBytes(haystack: bytes, needle: bytes): Option<int> {
+  // The first offset where the needle occurs in the haystack.
+  const lastStart = Bytes.length(haystack) - Bytes.length(needle)
+  for (const offset of Ranges.between(0, lastStart + 1)) {
+    if (matchesAt(haystack, needle, offset)) {
+      return Some(offset)
+    }
+  }
+  return None
+}
+
+function matchesAt(haystack: bytes, needle: bytes, offset: int): bool {
+  if (offset + Bytes.length(needle) > Bytes.length(haystack)) {
+    return false
+  }
+  for (const index of Ranges.between(0, Bytes.length(needle))) {
+    if (Bytes.at(haystack, offset + index) != Bytes.at(needle, index)) {
+      return false
+    }
+  }
+  return true
+}
+
+function takeFront(reader: Reader, count: int): bytes uses alloc {
+  // Takes the first count bytes out of the buffer.
+  const buffer = Cells.get(reader.buffer)
+  const front = Options.withDefault(Bytes.slice(buffer, 0, count), Bytes.fromString(""))
+  dropFront(reader, count)
+  return front
+}
+
+function dropFront(reader: Reader, count: int) uses alloc {
+  const buffer = Cells.get(reader.buffer)
+  const rest = Bytes.slice(buffer, count, Bytes.length(buffer))
+  Cells.set(reader.buffer, Options.withDefault(rest, Bytes.fromString("")))
+}

@@ -31,7 +31,7 @@ name = "app"
 entry = "cli.run"     # module inside the package, then the function; "app/cli.run" also works
 ```
 
-`[link]` takes only `search`, passed to `cc` as `-L<dir>` (relative to the package); any other `[link]` key is E1000, since libraries come from `extern { } from`. Other tables, such as `[build]`, are skipped. `[dependencies]` is an error.
+`[link]` takes only `search`, passed to `cc` as `-L<dir>` (relative to the package); any other `[link]` key is E1000, since libraries come from `extern { } from`. `[c]` and `[c.os.<name>]` take `sources`, `include` and `defines`: C files of the package that `narrac build` compiles into the build cache and links (E1660 to E1662); the paths are relative to the package. A `from "./file.c"` path in an extern block is relative to the folder of the `.nra` file that holds the block, and must stay inside the package, symbolic links followed (found with `sh`; without it only `..` is checked). `[c]` also takes `git` and `tag` (a C package: the `[c]` paths are then relative to the upstream checkout, which `narra.lock` records in `c_git`, `c_tag`, `c_commit` and `c_content`), and an extern block may end with `from "<package>/<path>"`, a file of a C package the binding package depends on (E1663 to E1665); the include folders of a package go to the packages that depend on it, its defines do not. Other tables, such as `[build]`, are skipped. `[dependencies]` is an error.
 
 Set `NARRA_CHECK_LEAKS=1` when running a program to report allocations that are still live at exit. The program exits with code 102 when any are found.
 

@@ -1,7 +1,9 @@
 // The pages of the site. They are the Markdown files of the repository, read at build time:
-// the chapters of the guide, the installation guide, the reference and the specification.
+// the chapters of the guide, the installation guide, the reference, the first-party packages and
+// the specification.
 import guideIndex from '../../docs/guide/README.md';
 import install from '../../docs/install.md';
+import packagesIndex from '../../docs/packages/README.md';
 import referenceIndex from '../../docs/reference/README.md';
 import spec from '../../SPEC.md';
 import type { Page } from '../plugins/markdown.ts';
@@ -79,4 +81,40 @@ export function findReference(slug: string): ReferencePage | undefined {
   return undefined;
 }
 
-export { guideIndex, install, referenceIndex, spec };
+const packageFiles = import.meta.glob<Page>('../../packages/*/README.md', {
+  eager: true,
+  import: 'default',
+});
+
+export interface PackagePage {
+  /** The folder of the package under `packages`, such as `http`. */
+  slug: string;
+  title: string;
+  /** The first paragraph of the README, for the index. */
+  description: string;
+  page: Page;
+}
+
+function listPackagePages(): PackagePage[] {
+  const pages: PackagePage[] = [];
+  for (const [file, page] of Object.entries(packageFiles)) {
+    const slug = /packages\/([^/]+)\/README\.md$/.exec(file)![1]!;
+    pages.push({ slug, title: page.title || slug, description: page.description, page });
+  }
+  pages.sort((first, second) => first.slug.localeCompare(second.slug));
+  return pages;
+}
+
+/** The first-party packages, one for each `packages/<name>/README.md`. */
+export const packagePages: PackagePage[] = listPackagePages();
+
+export function findPackage(slug: string): PackagePage | undefined {
+  for (const entry of packagePages) {
+    if (entry.slug === slug) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+export { guideIndex, install, packagesIndex, referenceIndex, spec };

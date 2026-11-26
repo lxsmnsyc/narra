@@ -448,7 +448,7 @@ export async function run(args: Array<string>): int {
 reply: hello
 ```
 
-`Net.read` gives at most 64 KiB per call, and the network may split a message into several pieces. A program that reads longer messages calls `Net.read` in a loop until it has the whole message. The host is a numeric address such as `127.0.0.1`. A `Connection` closes when the last name that holds it goes away.
+`Net.read` gives at most 64 KiB per call, and the network may split a message into several pieces. A program that reads longer messages calls `Net.read` in a loop until it has the whole message. `Net.listen` takes a numeric address such as `127.0.0.1`. `Net.connect` also takes a host name such as `localhost`: it asks the system resolver for the addresses and tries each one until a connection opens. `Net.lookup(host)` gives the addresses without connecting. The lookup runs on a helper thread, so other tasks keep running while it waits, and a cancel ends the wait at once. A `Connection` closes when the last name that holds it goes away.
 
 ## Shutting down on a signal: `std/signal`
 

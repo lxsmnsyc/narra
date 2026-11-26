@@ -76,6 +76,14 @@ function rewriteLink(href: string, from: string): string {
     const page = reference[1]!.replace(/(^|\/)README$/, '');
     return `/reference${page ? `/${page}` : ''}${rest}`;
   }
+  // The README of a package is its page, and the README of `docs/packages` is the index.
+  const packagePage = /^packages\/([^/]+)\/README\.md$/.exec(target);
+  if (packagePage) {
+    return `/packages/${packagePage[1]}${rest}`;
+  }
+  if (target === 'docs/packages/README.md') {
+    return `/packages${rest}`;
+  }
   if (target === 'docs/install.md') {
     return `/install${rest}`;
   }

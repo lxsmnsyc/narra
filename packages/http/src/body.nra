@@ -1,0 +1,75 @@
+// http/body: the content of a request or a response. To a caller a body is a stream of bytes, as
+// in the Fetch API: a caller makes one with empty, fromText, fromBytes or fromStream, and reads
+// one with readAll, readText, readJson or chunks. The state is in the private bodystate module,
+// which the server, client and framing code use to learn the length of a body and to send it.
+
+import * as Bytes from "std/bytes"
+import * as Json from "std/json"
+import * as State from "http/bodystate"
+import { HttpError } from "http/error"
+import { Value } from "std/shape"
+
+/// The pieces of a body: each Ok value is one piece, and an Err ends the message with that
+/// error. The type carries the effects of reading a connection.
+export type BodyStream = State.BodyStream
+
+/// The content of a message, read as a stream of bytes. A body made from text or bytes is sent
+/// with its length and can be read and sent again. A body made from a stream is sent chunked and
+/// is used up by one read or one send. A body that arrived on a connection is a stream.
+export type Body = State.Body
+
+/// A body with no content.
+export const empty = State.empty
+
+/// A body of the UTF-8 bytes of the text.
+export const fromText = State.fromText
+
+/// A body of the bytes.
+export const fromBytes = State.fromBytes
+
+/// A body that the sender reads piece by piece. Each Ok value is one piece, and an Err ends the
+/// message with that error.
+export const fromStream = State.fromStream
+
+/// Every byte of the body. It reads the stream to its end, and gives TooLarge("body") as soon as
+/// more than maxBytes bytes have come. A body of text or bytes can be read again. A stream is
+/// used up by the read, so a second read of it gives no bytes.
+export const readAll = State.readAll
+
+/// The body as text. It reads like readAll, and gives Malformed when the bytes are not UTF-8.
+export async function readText(
+  body: Body,
+  maxBytes: int,
+): Result<string, HttpError> uses io, alloc {
+  const content = await readAll(body, maxBytes)
+  if (content is Err(error)) {
+    return Err(error)
+  }
+  const text = Bytes.toString(content.value)
+  if (text is Err(message)) {
+    return Err(HttpError.Malformed(`body is not UTF-8: ${message}`))
+  }
+  return Ok(text.value)
+}
+
+/// The body as a JSON value. It reads like readText, and gives Malformed when the text is not
+/// JSON.
+export async function readJson(body: Body, maxBytes: int): Result<Value, HttpError> uses io, alloc {
+  const text = await readText(body, maxBytes)
+  if (text is Err(error)) {
+    return Err(error)
+  }
+  const value = Json.parse(text.value)
+  if (value is Err(message)) {
+    return Err(HttpError.Malformed(`body is not JSON: ${message}`))
+  }
+  return Ok(value.value)
+}
+
+/// The body as one stream of pieces: its bytes when it holds them, otherwise the pieces of its
+/// stream.
+export async function* chunks(
+  body: Body,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  yield* State.chunks(body)
+}

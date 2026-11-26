@@ -1,0 +1,2331 @@
+// yaml: read and write YAML 1.2 text as a Value of std/shape.
+//
+// A mapping is a Record in the order of the text, a sequence a List, and a scalar follows the core
+// schema: null, booleans, integers, floats and text. The reader takes block and flow collections,
+// all scalar styles, anchors and aliases, merge keys and comments. A read error is a YamlError at a
+// line and column; formatError writes `<line>:<column>: <reason>`. The writer gives block style.
+
+import * as Str from "std/string"
+import * as Int from "std/int"
+import * as Char from "std/char"
+import * as Arrays from "std/array"
+import * as Maps from "std/map"
+import * as Scalars from "yaml/scalar"
+import * as Writer from "yaml/writer"
+import { Value, Shape } from "std/shape"
+
+// The deepest nesting that any options can allow.
+const MAX_DEPTH_LIMIT = 512
+const TAB = 9
+const LINE_FEED = 10
+const CARRIAGE_RETURN = 13
+const SPACE = 32
+const BANG = 33
+const DOUBLE_QUOTE = 34
+const HASH = 35
+const PERCENT = 37
+const AMPERSAND = 38
+const SINGLE_QUOTE = 39
+const ASTERISK = 42
+const PLUS = 43
+const COMMA = 44
+const DASH = 45
+const DOT = 46
+const COLON = 58
+const GREATER = 62
+const QUESTION = 63
+const AT = 64
+const OPEN_BRACKET = 91
+const BACKSLASH = 92
+const CLOSE_BRACKET = 93
+const BACKTICK = 96
+const OPEN_BRACE = 123
+const PIPE = 124
+const CLOSE_BRACE = 125
+
+// Why the scan of a plain scalar line stopped.
+const STOP_LINE = 0
+const STOP_COLON = 1
+const STOP_FLOW = 2
+const STOP_COMMENT = 3
+const STOP_BAD = 4
+
+/// A read error: the line and column where it was found, both from 1, and the reason.
+export struct YamlError derives Show, Equatable {
+  line: int
+  column: int
+  reason: string
+}
+
+/// What the reader accepts. `maxDepth` is the deepest nesting of collections (a value above 512 is
+/// lowered to 512, which is the ceiling), `maxAliasNodes` the
+/// most nodes that aliases may copy in total, and `mergeKeys` turns on the `<<` merge key.
+export struct ReadOptions derives Show, Equatable {
+  maxDepth: int
+  maxAliasNodes: int
+  mergeKeys: bool
+}
+
+/// The default options: 512 levels, 100000 alias nodes, merge keys on.
+export function defaultOptions(): ReadOptions {
+  return ReadOptions { maxDepth: 512, maxAliasNodes: 100000, mergeKeys: true }
+}
+
+// The kinds of node that the reader meets on a line, before a tag decides what a scalar is.
+enum TokenKind derives Equatable {
+  Plain
+  Quoted
+  Alias
+  Flow
+  Empty
+}
+
+// What the reader found at a position: a scalar with its text, an alias, or a flow collection.
+struct Token {
+  kind: TokenKind
+  value: Value
+  text: string
+  start: int
+  singleLine: bool
+}
+
+// The anchor and tag that come before a node.
+struct Props {
+  present: bool
+  anchor: string
+  tag: string
+  start: int
+  countAtStart: int
+}
+
+struct Anchor {
+  value: Value
+  size: int
+  text: string
+}
+
+// A key and its value, before the entries become a Record.
+struct Entry {
+  key: string
+  merge: bool
+  value: Value
+  position: int
+  isPair: bool
+}
+
+enum HeadKind derives Equatable {
+  Complete
+  Sequence
+  Mapping
+}
+
+// The start of a block node, from readNodeHead: the whole node, or the start of a block collection.
+struct Head {
+  kind: HeadKind
+  value: Value
+  props: Props
+  column: int
+  pending: Option<Pending>
+}
+
+// A mapping key that has been read: its text, whether it is the merge key, and where it starts.
+struct EntryKey {
+  text: string
+  merge: bool
+  position: int
+}
+
+// The first key of a block mapping when the reader has read it already.
+struct Pending {
+  token: Token
+  value: Value
+  props: Props
+}
+
+struct Segment {
+  end: int
+  reason: int
+}
+
+struct Stream {
+  documents: Array<Value>
+  starts: Array<int>
+}
+
+struct Parser {
+  text: string
+  length: int
+  position: int
+  lineStarts: Array<int>
+  options: ReadOptions
+  anchors: Map<string, Anchor>
+  open: Map<string, bool>
+  handles: Map<string, string>
+  nodeCount: int
+  aliasNodes: int
+  lastText: string
+}
+
+/// parse reads one YAML document as a Value. An empty text is Null, and more than one document is
+/// an error; parseAll reads a stream of documents.
+export function parse(text: string): Result<Value, YamlError> uses alloc {
+  return parseWith(text, defaultOptions())
+}
+
+/// parseWith is parse with the limits and switches of the options.
+export function parseWith(text: string, options: ReadOptions): Result<Value, YamlError> uses alloc {
+  let parser = createParser(text, options)
+  const stream = readStream(mutable parser)
+  if (stream is Err(error)) {
+    return Err(error)
+  }
+  const count = Arrays.length(stream.value.documents)
+  if (count == 0) {
+    return Ok(Value.Null)
+  }
+  if (count > 1) {
+    return fail(parser, stream.value.starts[1], "expected a single document")
+  }
+  return Ok(stream.value.documents[0])
+}
+
+/// parseAll reads every document of a stream, such as `---` separated texts.
+export function parseAll(text: string): Result<Array<Value>, YamlError> uses alloc {
+  let parser = createParser(text, defaultOptions())
+  const stream = readStream(mutable parser)
+  if (stream is Err(error)) {
+    return Err(error)
+  }
+  return Ok(stream.value.documents)
+}
+
+/// formatError writes an error as `<line>:<column>: <reason>`.
+export function formatError(error: YamlError): string uses alloc {
+  return `${Int.toString(error.line)}:${Int.toString(error.column)}: ${error.reason}`
+}
+
+/// stringify writes a value as block-style YAML. A string is quoted only where it would read back
+/// as another type or break the syntax, and a string with line breaks is a `|` block.
+export function stringify(value: Value): string uses alloc {
+  return Writer.write(value)
+}
+
+/// decode reads YAML text as a T: `Yaml.decode<Manifest>(text)`. A read error reads as formatError
+/// writes it; a shape error as `<path>: <reason>`.
+export function decode<T: Shape>(text: string): Result<T, string> uses alloc {
+  const value = parse(text)
+  if (value is Err(error)) {
+    return Err(formatError(error))
+  }
+  return Shape.fromValue<T>(value.value)
+}
+
+/// encode writes any value that implements Shape as block-style YAML.
+export function encode<T: Shape>(value: T): string uses alloc {
+  return stringify(Shape.toValue(value))
+}
+
+function limitOptions(options: ReadOptions): ReadOptions {
+  // The reader recurses on nesting, so a deeper limit could overflow the stack. Under the
+  // sanitizer a flow collection needs about 640 levels to overflow, so 512 keeps a margin.
+  let maxDepth = options.maxDepth
+  if (maxDepth > MAX_DEPTH_LIMIT) {
+    maxDepth = MAX_DEPTH_LIMIT
+  }
+  return ReadOptions {
+    maxDepth,
+    maxAliasNodes: options.maxAliasNodes,
+    mergeKeys: options.mergeKeys,
+  }
+}
+
+function createParser(text: string, options: ReadOptions): Parser uses alloc {
+  const length = Str.length(text)
+  let lineStarts: Array<int> = [0]
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == LINE_FEED) {
+      Arrays.push(mutable lineStarts, index + 1)
+    } else if (byte == CARRIAGE_RETURN) {
+      if (index + 1 >= length || Str.byteAt(text, index + 1) != LINE_FEED) {
+        Arrays.push(mutable lineStarts, index + 1)
+      }
+    }
+    index += 1
+  }
+  return Parser {
+    text,
+    length,
+    position: 0,
+    lineStarts,
+    options: limitOptions(options),
+    anchors: Map {},
+    open: Map {},
+    handles: Map {},
+    nodeCount: 0,
+    aliasNodes: 0,
+    lastText: "",
+  }
+}
+
+function findLineIndex(parser: Parser, position: int): int {
+  let low = 0
+  let high = Arrays.length(parser.lineStarts) - 1
+  while (low < high) {
+    const middle = (low + high + 1) / 2
+    if (parser.lineStarts[middle] <= position) {
+      low = middle
+    } else {
+      high = middle - 1
+    }
+  }
+  return low
+}
+
+function fail<T>(parser: Parser, position: int, reason: string): Result<T, YamlError> uses alloc {
+  const lineIndex = findLineIndex(parser, position)
+  let column = 1
+  let index = parser.lineStarts[lineIndex]
+  while (index < position && index < parser.length) {
+    const byte = Str.byteAt(parser.text, index)
+    if (byte < 128 || byte >= 192) {
+      column += 1
+    }
+    index += 1
+  }
+  return Err(YamlError { line: lineIndex + 1, column, reason })
+}
+
+function cutText(text: string, start: int, end: int): string uses alloc {
+  if (Str.slice(text, start, end) is Some(piece)) {
+    return piece
+  }
+  panic("cutText: the range is outside the text")
+}
+
+function byteAt(parser: Parser, position: int): int {
+  if (position < 0 || position >= parser.length) {
+    return -1
+  }
+  return Str.byteAt(parser.text, position)
+}
+
+function isBlank(byte: int): bool {
+  return byte == SPACE || byte == TAB
+}
+
+function isBreak(byte: int): bool {
+  return byte == LINE_FEED || byte == CARRIAGE_RETURN
+}
+
+function isSeparator(byte: int): bool {
+  return byte < 0 || byte == SPACE || byte == TAB || byte == LINE_FEED || byte == CARRIAGE_RETURN
+}
+
+function isFlowIndicator(byte: int): bool {
+  return (byte == COMMA ||
+    byte == OPEN_BRACKET ||
+    byte == CLOSE_BRACKET ||
+    byte == OPEN_BRACE ||
+    byte == CLOSE_BRACE)
+}
+
+function isControl(byte: int): bool {
+  return (byte < 32 && byte != TAB && byte != LINE_FEED && byte != CARRIAGE_RETURN) || byte == 127
+}
+
+function isLineEnd(parser: Parser): bool {
+  const byte = byteAt(parser, parser.position)
+  return byte < 0 || isBreak(byte)
+}
+
+function skipBlanks(mutable parser: Parser) {
+  while (isBlank(byteAt(parser, parser.position))) {
+    parser.position += 1
+  }
+}
+
+function skipBlanksFrom(parser: Parser, start: int): int {
+  let index = start
+  while (isBlank(byteAt(parser, index))) {
+    index += 1
+  }
+  return index
+}
+
+function skipBreak(parser: Parser, position: int): int {
+  const byte = byteAt(parser, position)
+  if (byte == CARRIAGE_RETURN && byteAt(parser, position + 1) == LINE_FEED) {
+    return position + 2
+  }
+  if (isBreak(byte)) {
+    return position + 1
+  }
+  return position
+}
+
+function skipToLineEnd(mutable parser: Parser) {
+  while (parser.position < parser.length && !isBreak(Str.byteAt(parser.text, parser.position))) {
+    parser.position += 1
+  }
+}
+
+function skipSpaceAndComment(mutable parser: Parser) {
+  skipBlanks(mutable parser)
+  if (byteAt(parser, parser.position) == HASH && isSeparator(byteAt(parser, parser.position - 1))) {
+    skipToLineEnd(mutable parser)
+  }
+}
+
+function skipToContent(mutable parser: Parser): bool {
+  let crossed = false
+  while (true) {
+    skipSpaceAndComment(mutable parser)
+    if (!isLineEnd(parser) || parser.position >= parser.length) {
+      return crossed
+    }
+    parser.position = skipBreak(parser, parser.position)
+    crossed = true
+  }
+}
+
+function skipLineTail(mutable parser: Parser): Result<bool, YamlError> uses alloc {
+  skipSpaceAndComment(mutable parser)
+  if (!isLineEnd(parser)) {
+    return fail(parser, parser.position, "unexpected content after the node")
+  }
+  return Ok(true)
+}
+
+function isLineStart(parser: Parser, position: int): bool {
+  return position == 0 || isBreak(byteAt(parser, position - 1))
+}
+
+function isMarker(parser: Parser, position: int, byte: int): bool {
+  return (isLineStart(parser, position) &&
+    byteAt(parser, position) == byte &&
+    byteAt(parser, position + 1) == byte &&
+    byteAt(parser, position + 2) == byte &&
+    isSeparator(byteAt(parser, position + 3)))
+}
+
+function isBoundary(parser: Parser, position: int): bool {
+  return isMarker(parser, position, DASH) || isMarker(parser, position, DOT)
+}
+
+function lineIndentAt(parser: Parser, position: int): int {
+  const lineStart = parser.lineStarts[findLineIndex(parser, position)]
+  let index = lineStart
+  while (byteAt(parser, index) == SPACE) {
+    index += 1
+  }
+  return index - lineStart
+}
+
+function findColumn(parser: Parser, position: int): int {
+  let column = 0
+  let index = parser.lineStarts[findLineIndex(parser, position)]
+  while (index < position) {
+    const byte = Str.byteAt(parser.text, index)
+    if (byte < 128 || byte >= 192) {
+      column += 1
+    }
+    index += 1
+  }
+  return column
+}
+
+function hasLeadingTab(parser: Parser, position: int): bool {
+  let index = parser.lineStarts[findLineIndex(parser, position)]
+  while (index < position) {
+    if (Str.byteAt(parser.text, index) == TAB) {
+      return true
+    }
+    index += 1
+  }
+  return false
+}
+
+function hexValue(byte: int): int {
+  if (byte >= 48 && byte <= 57) {
+    return byte - 48
+  }
+  if (byte >= 97 && byte <= 102) {
+    return byte - 87
+  }
+  if (byte >= 65 && byte <= 70) {
+    return byte - 55
+  }
+  return -1
+}
+
+function trimBlanksEnd(text: string): string uses alloc {
+  let end = Str.length(text)
+  while (end > 0 && isBlank(Str.byteAt(text, end - 1))) {
+    end -= 1
+  }
+  return cutText(text, 0, end)
+}
+
+function appendBreaks(mutable builder: StringBuilder, count: int) uses alloc {
+  let index = 0
+  while (index < count) {
+    Str.append(mutable builder, "\n")
+    index += 1
+  }
+}
+
+function createEmptyProps(parser: Parser): Props {
+  return Props {
+    present: false,
+    anchor: "",
+    tag: "",
+    start: parser.position,
+    countAtStart: parser.nodeCount,
+  }
+}
+
+function createEmptyToken(parser: Parser): Token {
+  return Token {
+    kind: TokenKind.Empty,
+    value: Value.Null,
+    text: "",
+    start: parser.position,
+    singleLine: true,
+  }
+}
+
+function readStream(mutable parser: Parser): Result<Stream, YamlError> uses alloc {
+  let documents: Array<Value> = []
+  let starts: Array<int> = []
+  if (byteAt(parser, 0) == 239 && byteAt(parser, 1) == 187 && byteAt(parser, 2) == 191) {
+    parser.position = 3
+  }
+  while (true) {
+    skipToContent(mutable parser)
+    if (parser.position >= parser.length) {
+      break
+    }
+    parser.handles = Map {}
+    let directives = false
+    let versionSeen = false
+    while (byteAt(parser, parser.position) == PERCENT && isLineStart(parser, parser.position)) {
+      const name = readDirective(mutable parser)
+      if (name is Err(error)) {
+        return Err(error)
+      }
+      if (name.value == "YAML") {
+        if (versionSeen) {
+          return fail(parser, parser.position, "the YAML directive appears twice")
+        }
+        versionSeen = true
+      }
+      directives = true
+      skipToContent(mutable parser)
+      if (parser.position >= parser.length) {
+        return fail(parser, parser.position, "a directive needs a document after it")
+      }
+    }
+    const hasStart = isMarker(parser, parser.position, DASH)
+    if (hasStart) {
+      Arrays.push(mutable starts, parser.position)
+      parser.position += 3
+    } else {
+      if (directives) {
+        return fail(parser, parser.position, "expected --- after the directives")
+      }
+      if (isMarker(parser, parser.position, DOT)) {
+        parser.position += 3
+        const tail = skipLineTail(mutable parser)
+        if (tail is Err(error)) {
+          return Err(error)
+        }
+        continue
+      }
+      Arrays.push(mutable starts, parser.position)
+    }
+    parser.anchors = Map {}
+    parser.open = Map {}
+    const root = parseBlockNode(mutable parser, -1, !hasStart, false, 0)
+    if (root is Err(error)) {
+      return Err(error)
+    }
+    Arrays.push(mutable documents, root.value)
+    skipToContent(mutable parser)
+    if (parser.position >= parser.length) {
+      break
+    }
+    if (isMarker(parser, parser.position, DASH)) {
+      continue
+    }
+    if (isMarker(parser, parser.position, DOT)) {
+      parser.position += 3
+      const tail = skipLineTail(mutable parser)
+      if (tail is Err(error)) {
+        return Err(error)
+      }
+      continue
+    }
+    return fail(parser, parser.position, "unexpected content after the document")
+  }
+  return Ok(Stream { documents, starts })
+}
+
+function readWord(mutable parser: Parser): string uses alloc {
+  const start = parser.position
+  while (!isSeparator(byteAt(parser, parser.position))) {
+    parser.position += 1
+  }
+  return cutText(parser.text, start, parser.position)
+}
+
+function isVersionText(text: string): bool {
+  const length = Str.length(text)
+  let dot = -1
+  let index = 0
+  while (index < length) {
+    const byte = Str.byteAt(text, index)
+    if (byte == DOT && dot < 0) {
+      dot = index
+    } else if (byte < 48 || byte > 57) {
+      return false
+    }
+    index += 1
+  }
+  return dot > 0 && dot < length - 1
+}
+
+function readDirective(mutable parser: Parser): Result<string, YamlError> uses alloc {
+  parser.position += 1
+  const name = readWord(mutable parser)
+  if (name == "") {
+    return fail(parser, parser.position, "a directive needs a name")
+  }
+  skipBlanks(mutable parser)
+  if (name == "YAML") {
+    const versionStart = parser.position
+    const version = readWord(mutable parser)
+    if (!isVersionText(version)) {
+      return fail(parser, versionStart, "the YAML directive needs a version such as 1.2")
+    }
+    if (!Str.startsWith(version, "1.")) {
+      return fail(parser, versionStart, "only YAML 1.x documents can be read")
+    }
+  } else if (name == "TAG") {
+    const handleStart = parser.position
+    const handle = readWord(mutable parser)
+    skipBlanks(mutable parser)
+    const prefix = readWord(mutable parser)
+    if (!Str.startsWith(handle, "!") || !Str.endsWith(handle, "!") || prefix == "") {
+      return fail(parser, handleStart, "a TAG directive needs a handle and a prefix")
+    }
+    parser.handles[handle] = prefix
+  } else {
+    while (
+      !isLineEnd(parser) &&
+        !(byteAt(parser, parser.position) == HASH && isBlank(byteAt(parser, parser.position - 1)))
+    ) {
+      parser.position += 1
+    }
+  }
+  const tail = skipLineTail(mutable parser)
+  if (tail is Err(error)) {
+    return Err(error)
+  }
+  return Ok(name)
+}
+
+function nodeFits(parser: Parser, indent: int, seqAtIndent: bool): bool {
+  // The content is part of a node below indent. A sequence entry may sit at indent itself when
+  // the sequence is the value of a mapping key.
+  if (parser.position >= parser.length || isBoundary(parser, parser.position)) {
+    return false
+  }
+  const lineIndent = lineIndentAt(parser, parser.position)
+  if (lineIndent > indent) {
+    return true
+  }
+  if (seqAtIndent && lineIndent == indent) {
+    return byteAt(parser, parser.position) == DASH &&
+      isSeparator(byteAt(parser, parser.position + 1))
+  }
+  return false
+}
+
+function parseBlockNode(
+  mutable parser: Parser,
+  indent: int,
+  sameLine: bool,
+  seqAtIndent: bool,
+  depth: int,
+): Result<Value, YamlError> uses alloc {
+  // indent is the indentation of the parent; the node is the content on this line or below it.
+  // sameLine says whether a block collection may start on this line, seqAtIndent whether a
+  // sequence may sit at indent, and depth counts the collections around the node.
+  const head = readNodeHead(mutable parser, indent, sameLine, seqAtIndent, depth)
+  if (head is Err(error)) {
+    return Err(error)
+  }
+  if (head.value.kind == HeadKind.Complete) {
+    return Ok(head.value.value)
+  }
+  if (head.value.kind == HeadKind.Sequence) {
+    const sequence = parseBlockSequence(mutable parser, head.value.column, depth)
+    if (sequence is Err(error)) {
+      return Err(error)
+    }
+    return finishCollection(mutable parser, head.value.props, sequence.value)
+  }
+  const mapping = parseBlockMapping(mutable parser, head.value.column, depth, head.value.pending)
+  if (mapping is Err(error)) {
+    return Err(error)
+  }
+  return finishCollection(mutable parser, head.value.props, mapping.value)
+}
+
+function completeHead(value: Result<Value, YamlError>): Result<Head, YamlError> from value {
+  if (value is Err(error)) {
+    return Err(error)
+  }
+  return Ok(Head {
+    kind: HeadKind.Complete,
+    value: value.value,
+    props: Props { present: false, anchor: "", tag: "", start: 0, countAtStart: 0 },
+    column: 0,
+    pending: None,
+  })
+}
+
+function readNodeHead(
+  mutable parser: Parser,
+  indent: int,
+  sameLine: bool,
+  seqAtIndent: bool,
+  depth: int,
+): Result<Head, YamlError> uses alloc {
+  // This function gives the node when it is read in full, and for a block collection only its
+  // column and properties, so that the frames that stay on the stack while the reader goes down
+  // a level of nesting are the small ones of parseBlockNode and the collection readers.
+  const blankStart = parser.position
+  skipSpaceAndComment(mutable parser)
+  let crossed = false
+  let tabSeparated = false
+  if (isLineEnd(parser)) {
+    skipToContent(mutable parser)
+    crossed = true
+    if (!nodeFits(parser, indent, seqAtIndent)) {
+      const empty = createEmptyProps(parser)
+      return completeHead(scalarValue(mutable parser, empty, true, ""))
+    }
+  } else {
+    tabSeparated = containsTab(parser, blankStart, parser.position)
+  }
+  // The properties on lines of their own belong to the node below them. Those that share a line
+  // with the node belong to it, or to its key.
+  let ownProps = createEmptyProps(parser)
+  let inlineProps = createEmptyProps(parser)
+  while (true) {
+    const lead = byteAt(parser, parser.position)
+    if (lead != AMPERSAND && lead != BANG) {
+      break
+    }
+    const read = readProperties(mutable parser)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    skipSpaceAndComment(mutable parser)
+    if (!isLineEnd(parser)) {
+      inlineProps = read.value
+      break
+    }
+    const merged = mergeProps(parser, ownProps, read.value)
+    if (merged is Err(error)) {
+      return Err(error)
+    }
+    ownProps = merged.value
+    skipToContent(mutable parser)
+    crossed = true
+    tabSeparated = false
+    if (!nodeFits(parser, indent, seqAtIndent)) {
+      return completeHead(scalarValue(mutable parser, ownProps, true, ""))
+    }
+  }
+  const byte = byteAt(parser, parser.position)
+  const next = byteAt(parser, parser.position + 1)
+  const isIndicator = isSeparator(next) && (byte == DASH || byte == QUESTION || byte == COLON)
+  if (isIndicator && !(byte == COLON && inlineProps.present)) {
+    if (inlineProps.present) {
+      return fail(
+        parser,
+        parser.position,
+        "a block collection cannot follow properties on its line",
+      )
+    }
+    if (!crossed && !sameLine) {
+      return fail(parser, parser.position, "a block collection is not allowed here")
+    }
+    if (tabSeparated || (crossed && hasLeadingTab(parser, parser.position))) {
+      return fail(parser, parser.position, "a tab cannot indent a block collection")
+    }
+    let kind = HeadKind.Mapping
+    if (byte == DASH) {
+      kind = HeadKind.Sequence
+    }
+    return Ok(Head {
+      kind,
+      value: Value.Null,
+      props: ownProps,
+      column: findColumn(parser, parser.position),
+      pending: None,
+    })
+  }
+  if (byte == PIPE || byte == GREATER) {
+    const blockProps = mergeProps(parser, ownProps, inlineProps)
+    if (blockProps is Err(error)) {
+      return Err(error)
+    }
+    const text = readBlockScalar(mutable parser, indent)
+    if (text is Err(error)) {
+      return Err(error)
+    }
+    return completeHead(scalarValue(mutable parser, blockProps.value, false, text.value))
+  }
+  const tokenStart = parser.position
+  const read = readBlockToken(mutable parser, indent, depth)
+  if (read is Err(error)) {
+    return Err(error)
+  }
+  const token = read.value
+  skipBlanks(mutable parser)
+  if (
+    byteAt(parser, parser.position) == COLON && isSeparator(byteAt(parser, parser.position + 1))
+  ) {
+    if (!token.singleLine) {
+      return fail(parser, tokenStart, "an implicit key must be on one line")
+    }
+    if (!crossed && !sameLine) {
+      return fail(parser, parser.position, "a mapping value is not allowed here")
+    }
+    let keyStart = tokenStart
+    if (inlineProps.present) {
+      keyStart = inlineProps.start
+    }
+    if (tabSeparated || (crossed && hasLeadingTab(parser, keyStart))) {
+      return fail(parser, keyStart, "a tab cannot indent a block collection")
+    }
+    const keyValue = finishToken(mutable parser, inlineProps, token)
+    if (keyValue is Err(error)) {
+      return Err(error)
+    }
+    const pending = Pending { token, value: keyValue.value, props: inlineProps }
+    return Ok(Head {
+      kind: HeadKind.Mapping,
+      value: Value.Null,
+      props: ownProps,
+      column: findColumn(parser, keyStart),
+      pending: Some(pending),
+    })
+  }
+  const tail = skipLineTail(mutable parser)
+  if (tail is Err(error)) {
+    return Err(error)
+  }
+  const props = mergeProps(parser, ownProps, inlineProps)
+  if (props is Err(error)) {
+    return Err(error)
+  }
+  return completeHead(finishToken(mutable parser, props.value, token))
+}
+
+function mergeProps(
+  parser: Parser,
+  first: Props,
+  second: Props,
+): Result<Props, YamlError> uses alloc {
+  if (!first.present) {
+    return Ok(Props {
+      present: second.present,
+      anchor: second.anchor,
+      tag: second.tag,
+      start: second.start,
+      countAtStart: second.countAtStart,
+    })
+  }
+  if (!second.present) {
+    return Ok(Props {
+      present: true,
+      anchor: first.anchor,
+      tag: first.tag,
+      start: first.start,
+      countAtStart: first.countAtStart,
+    })
+  }
+  if (first.anchor != "" && second.anchor != "") {
+    return fail(parser, second.start, "a node has one anchor")
+  }
+  if (first.tag != "" && second.tag != "") {
+    return fail(parser, second.start, "a node has one tag")
+  }
+  let anchor = first.anchor
+  if (anchor == "") {
+    anchor = second.anchor
+  }
+  let tag = first.tag
+  if (tag == "") {
+    tag = second.tag
+  }
+  return Ok(Props {
+    present: true,
+    anchor,
+    tag,
+    start: first.start,
+    countAtStart: first.countAtStart,
+  })
+}
+
+function containsTab(parser: Parser, start: int, end: int): bool {
+  let index = start
+  while (index < end) {
+    if (Str.byteAt(parser.text, index) == TAB) {
+      return true
+    }
+    index += 1
+  }
+  return false
+}
+
+function parseBlockSequence(
+  mutable parser: Parser,
+  column: int,
+  depth: int,
+): Result<Value, YamlError> uses alloc {
+  if (depth >= parser.options.maxDepth) {
+    return fail(
+      parser,
+      parser.position,
+      `nesting is deeper than ${Int.toString(parser.options.maxDepth)}`,
+    )
+  }
+  let items: Array<Value> = []
+  while (true) {
+    // Skip the dash.
+    parser.position += 1
+    const item = parseBlockNode(mutable parser, column, true, false, depth + 1)
+    if (item is Err(error)) {
+      return Err(error)
+    }
+    Arrays.push(mutable items, item.value)
+    skipToContent(mutable parser)
+    if (parser.position >= parser.length || isBoundary(parser, parser.position)) {
+      break
+    }
+    const lineIndent = lineIndentAt(parser, parser.position)
+    if (lineIndent < column) {
+      break
+    }
+    if (lineIndent > column) {
+      return fail(parser, parser.position, "bad indentation of a sequence entry")
+    }
+    if (
+      byteAt(parser, parser.position) != DASH || !isSeparator(byteAt(parser, parser.position + 1))
+    ) {
+      break
+    }
+    if (hasLeadingTab(parser, parser.position)) {
+      return fail(parser, parser.position, "a tab cannot indent a block collection")
+    }
+  }
+  parser.nodeCount += 1
+  return Ok(Value.List(items))
+}
+
+function parseBlockMapping(
+  mutable parser: Parser,
+  column: int,
+  depth: int,
+  pending: Option<Pending>,
+): Result<Value, YamlError> from pending uses alloc {
+  if (depth >= parser.options.maxDepth) {
+    return fail(
+      parser,
+      parser.position,
+      `nesting is deeper than ${Int.toString(parser.options.maxDepth)}`,
+    )
+  }
+  let entries: Array<Entry> = []
+  let next = pending
+  while (true) {
+    const entry = readMappingEntry(mutable parser, column, depth + 1, next)
+    if (entry is Err(error)) {
+      return Err(error)
+    }
+    Arrays.push(mutable entries, entry.value)
+    next = None
+    skipToContent(mutable parser)
+    if (parser.position >= parser.length || isBoundary(parser, parser.position)) {
+      break
+    }
+    const lineIndent = lineIndentAt(parser, parser.position)
+    if (lineIndent < column) {
+      break
+    }
+    if (lineIndent > column) {
+      return fail(parser, parser.position, "bad indentation of a mapping entry")
+    }
+    if (hasLeadingTab(parser, parser.position)) {
+      return fail(parser, parser.position, "a tab cannot indent a block collection")
+    }
+  }
+  return buildRecord(mutable parser, entries)
+}
+
+function isMergeKey(parser: Parser, props: Props, token: Token): bool {
+  return (parser.options.mergeKeys &&
+    props.tag == "" &&
+    token.kind == TokenKind.Plain &&
+    token.text == "<<")
+}
+
+function readPendingKey(
+  parser: Parser,
+  first: Pending,
+): Result<EntryKey, YamlError> from first uses alloc {
+  const text = readKeyText(parser, first.token, first.value)
+  if (text is Err(error)) {
+    return Err(error)
+  }
+  return Ok(EntryKey {
+    text: text.value,
+    merge: isMergeKey(parser, first.props, first.token),
+    position: first.token.start,
+  })
+}
+
+function readImplicitKey(
+  mutable parser: Parser,
+  column: int,
+  depth: int,
+): Result<EntryKey, YamlError> uses alloc {
+  const start = parser.position
+  let props = createEmptyProps(parser)
+  const byte = byteAt(parser, parser.position)
+  if (byte == AMPERSAND || byte == BANG) {
+    const read = readProperties(mutable parser)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    props = read.value
+  }
+  const token = readBlockToken(mutable parser, column, depth)
+  if (token is Err(error)) {
+    return Err(error)
+  }
+  skipBlanks(mutable parser)
+  if (
+    byteAt(parser, parser.position) != COLON || !isSeparator(byteAt(parser, parser.position + 1))
+  ) {
+    return fail(parser, start, "expected a mapping key followed by a colon")
+  }
+  if (!token.value.singleLine) {
+    return fail(parser, start, "an implicit key must be on one line")
+  }
+  const keyValue = finishToken(mutable parser, props, token.value)
+  if (keyValue is Err(error)) {
+    return Err(error)
+  }
+  const text = readKeyText(parser, token.value, keyValue.value)
+  if (text is Err(error)) {
+    return Err(error)
+  }
+  return Ok(EntryKey {
+    text: text.value,
+    merge: isMergeKey(parser, props, token.value),
+    position: start,
+  })
+}
+
+function readExplicitEntry(
+  mutable parser: Parser,
+  column: int,
+  depth: int,
+): Result<Entry, YamlError> uses alloc {
+  const start = parser.position
+  // Skip the question mark.
+  parser.position += 1
+  const key = parseBlockNode(mutable parser, column, true, true, depth)
+  if (key is Err(error)) {
+    return Err(error)
+  }
+  if (isCollection(key.value)) {
+    return fail(parser, start, "a collection cannot be a key")
+  }
+  // The key is the text of the scalar as written.
+  const keyText = parser.lastText
+  skipToContent(mutable parser)
+  let value = Value.Null
+  if (
+    parser.position < parser.length &&
+      !isBoundary(parser, parser.position) &&
+      lineIndentAt(parser, parser.position) == column &&
+      byteAt(parser, parser.position) == COLON &&
+      isSeparator(byteAt(parser, parser.position + 1))
+  ) {
+    // Skip the colon.
+    parser.position += 1
+    const read = parseBlockNode(mutable parser, column, true, true, depth)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    value = read.value
+  }
+  return Ok(Entry { key: keyText, merge: false, value, position: start, isPair: true })
+}
+
+function readMappingEntry(
+  mutable parser: Parser,
+  column: int,
+  depth: int,
+  pending: Option<Pending>,
+): Result<Entry, YamlError> from pending uses alloc {
+  let key = EntryKey { text: "", merge: false, position: parser.position }
+  let sameLine = false
+  if (pending is Some(first)) {
+    const read = readPendingKey(parser, first)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    key = read.value
+  } else {
+    const byte = byteAt(parser, parser.position)
+    const isIndicator = isSeparator(byteAt(parser, parser.position + 1))
+    if (byte == QUESTION && isIndicator) {
+      return readExplicitEntry(mutable parser, column, depth)
+    }
+    if (byte == COLON && isIndicator) {
+      sameLine = true
+    } else {
+      const read = readImplicitKey(mutable parser, column, depth)
+      if (read is Err(error)) {
+        return Err(error)
+      }
+      key = read.value
+    }
+  }
+  // Skip the colon.
+  parser.position += 1
+  const value = parseBlockNode(mutable parser, column, sameLine, true, depth)
+  if (value is Err(error)) {
+    return Err(error)
+  }
+  return Ok(Entry {
+    key: key.text,
+    merge: key.merge,
+    value: value.value,
+    position: key.position,
+    isPair: true,
+  })
+}
+
+function isCollection(value: Value): bool {
+  return value is Value.List(_) || value is Value.Record(_)
+}
+
+function readKeyText(
+  parser: Parser,
+  token: Token,
+  value: Value,
+): Result<string, YamlError> from token uses alloc {
+  if (token.kind == TokenKind.Flow) {
+    return fail(parser, token.start, "a collection cannot be a key")
+  }
+  if (token.kind == TokenKind.Alias) {
+    if (isCollection(value)) {
+      return fail(parser, token.start, "a collection cannot be a key")
+    }
+  }
+  return Ok(token.text)
+}
+
+function buildRecord(
+  mutable parser: Parser,
+  entries: Array<Entry>,
+): Result<Value, YamlError> from entries uses alloc {
+  let own: Map<string, bool> = Map {}
+  for (const entry of Arrays.values(entries)) {
+    if (entry.merge) {
+      continue
+    }
+    if (own[entry.key] is Some(_)) {
+      return fail(parser, entry.position, `duplicate key "${entry.key}"`)
+    }
+    own[entry.key] = true
+  }
+  let fields: Map<string, Value> = Map {}
+  for (const entry of Arrays.values(entries)) {
+    if (!entry.merge) {
+      fields[entry.key] = entry.value
+      continue
+    }
+    const sources = mergeSources(entry.value)
+    if (sources is None) {
+      return fail(parser, entry.position, "a merge value must be a mapping or a list of mappings")
+    }
+    for (const source of Arrays.values(sources.value)) {
+      for (const pair of Maps.entries(source)) {
+        const #[key, field] = pair
+        if (own[key] is None && fields[key] is None) {
+          fields[key] = field
+        }
+      }
+    }
+  }
+  parser.nodeCount += 1
+  return Ok(Value.Record(fields))
+}
+
+function mergeSources(value: Value): Option<Array<Map<string, Value>>> from value uses alloc {
+  if (value is Value.Record(fields)) {
+    return Some([fields])
+  }
+  if (value is Value.List(items)) {
+    let sources: Array<Map<string, Value>> = []
+    for (const item of Arrays.values(items)) {
+      if (item is Value.Record(fields)) {
+        Arrays.push(mutable sources, fields)
+      } else {
+        return None
+      }
+    }
+    return Some(sources)
+  }
+  return None
+}
+
+function readProperties(mutable parser: Parser): Result<Props, YamlError> uses alloc {
+  const start = parser.position
+  const countAtStart = parser.nodeCount
+  let anchor = ""
+  let tag = ""
+  let hasAnchor = false
+  let hasTag = false
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte == AMPERSAND) {
+      if (hasAnchor) {
+        return fail(parser, parser.position, "a node has one anchor")
+      }
+      parser.position += 1
+      const nameStart = parser.position
+      while (
+        !isSeparator(byteAt(parser, parser.position)) &&
+          !isFlowIndicator(byteAt(parser, parser.position))
+      ) {
+        parser.position += 1
+      }
+      anchor = cutText(parser.text, nameStart, parser.position)
+      if (anchor == "") {
+        return fail(parser, nameStart, "an anchor needs a name")
+      }
+      hasAnchor = true
+    } else if (byte == BANG) {
+      if (hasTag) {
+        return fail(parser, parser.position, "a node has one tag")
+      }
+      const read = readTag(mutable parser)
+      if (read is Err(error)) {
+        return Err(error)
+      }
+      tag = read.value
+      hasTag = true
+    } else {
+      break
+    }
+    skipBlanks(mutable parser)
+  }
+  if (hasAnchor) {
+    parser.open[anchor] = true
+  }
+  return Ok(Props { present: true, anchor, tag, start, countAtStart })
+}
+
+function isCoreTagName(name: string): bool {
+  return (name == "str" ||
+    name == "int" ||
+    name == "float" ||
+    name == "bool" ||
+    name == "null" ||
+    name == "seq" ||
+    name == "map")
+}
+
+function readTag(mutable parser: Parser): Result<string, YamlError> uses alloc {
+  const start = parser.position
+  let full = ""
+  if (byteAt(parser, parser.position + 1) == 60) {
+    // A verbatim tag, `!<...>`.
+    const innerStart = parser.position + 2
+    let index = innerStart
+    while (
+      byteAt(parser, index) >= 0 &&
+        byteAt(parser, index) != GREATER &&
+        !isSeparator(byteAt(parser, index))
+    ) {
+      index += 1
+    }
+    if (byteAt(parser, index) != GREATER || index == innerStart) {
+      return fail(parser, start, "a verbatim tag needs a closing >")
+    }
+    full = cutText(parser.text, innerStart, index)
+    parser.position = index + 1
+  } else {
+    parser.position += 1
+    while (
+      !isSeparator(byteAt(parser, parser.position)) &&
+        !isFlowIndicator(byteAt(parser, parser.position))
+    ) {
+      parser.position += 1
+    }
+    const word = cutText(parser.text, start, parser.position)
+    if (word == "!") {
+      return Ok("!")
+    }
+    let handle = "!"
+    let suffix = Str.sliceFrom(word, 1)
+    if (Str.startsWith(word, "!!")) {
+      handle = "!!"
+      suffix = Str.sliceFrom(word, 2)
+    } else if (Str.indexOf(suffix, "!") is Some(mark)) {
+      handle = `!${cutText(suffix, 0, mark + 1)}`
+      suffix = Str.sliceFrom(suffix, mark + 1)
+    }
+    if (suffix == "") {
+      return fail(parser, start, "a tag needs a name")
+    }
+    let prefix = ""
+    if (parser.handles[handle] is Some(declared)) {
+      prefix = declared
+    } else if (handle == "!!") {
+      prefix = "tag:yaml.org,2002:"
+    } else if (handle == "!") {
+      prefix = "!"
+    } else {
+      return fail(parser, start, `the tag handle ${handle} is not declared`)
+    }
+    full = `${prefix}${suffix}`
+  }
+  const core = "tag:yaml.org,2002:"
+  if (Str.startsWith(full, core) && isCoreTagName(Str.sliceFrom(full, Str.length(core)))) {
+    return Ok(Str.sliceFrom(full, Str.length(core)))
+  }
+  return fail(parser, start, `the tag ${full} is not in the core schema`)
+}
+
+function registerAnchor(mutable parser: Parser, props: Props, value: Value) uses alloc {
+  if (props.anchor == "") {
+    return
+  }
+  let size = parser.nodeCount - props.countAtStart
+  if (size < 1) {
+    size = 1
+  }
+  parser.anchors[props.anchor] = Anchor { value, size, text: parser.lastText }
+  Maps.remove(mutable parser.open, props.anchor)
+}
+
+function scalarValue(
+  mutable parser: Parser,
+  props: Props,
+  plain: bool,
+  text: string,
+): Result<Value, YamlError> uses alloc {
+  parser.nodeCount += 1
+  parser.lastText = text
+  let value = Value.Text(text)
+  if (props.tag == "") {
+    if (plain) {
+      value = Scalars.resolvePlain(text)
+    }
+  } else {
+    const tagged = Scalars.readTagged(props.tag, text, plain)
+    if (tagged is Err(reason)) {
+      return fail(parser, props.start, `tag !!${props.tag}: ${reason}`)
+    }
+    value = tagged.value
+  }
+  registerAnchor(mutable parser, props, value)
+  return Ok(value)
+}
+
+function finishCollection(
+  mutable parser: Parser,
+  props: Props,
+  value: Value,
+): Result<Value, YamlError> from value uses alloc {
+  if (props.tag == "seq" && !(value is Value.List(_))) {
+    return fail(parser, props.start, "tag !!seq does not fit a mapping")
+  }
+  if (props.tag == "map" && !(value is Value.Record(_))) {
+    return fail(parser, props.start, "tag !!map does not fit a sequence")
+  }
+  if (props.tag != "" && props.tag != "!" && props.tag != "seq" && props.tag != "map") {
+    return fail(parser, props.start, `tag !!${props.tag} does not fit a collection`)
+  }
+  registerAnchor(mutable parser, props, value)
+  return Ok(value)
+}
+
+function finishToken(
+  mutable parser: Parser,
+  props: Props,
+  token: Token,
+): Result<Value, YamlError> from token uses alloc {
+  if (token.kind == TokenKind.Alias) {
+    if (props.present) {
+      return fail(parser, props.start, "an alias cannot have properties")
+    }
+    return Ok(token.value)
+  }
+  if (token.kind == TokenKind.Flow) {
+    return finishCollection(mutable parser, props, token.value)
+  }
+  return scalarValue(mutable parser, props, token.kind != TokenKind.Quoted, token.text)
+}
+
+function readAlias(mutable parser: Parser): Result<Token, YamlError> uses alloc {
+  const start = parser.position
+  parser.position += 1
+  const nameStart = parser.position
+  while (
+    !isSeparator(byteAt(parser, parser.position)) &&
+      !isFlowIndicator(byteAt(parser, parser.position))
+  ) {
+    parser.position += 1
+  }
+  const name = cutText(parser.text, nameStart, parser.position)
+  if (name == "") {
+    return fail(parser, start, "an alias needs a name")
+  }
+  if (parser.open[name] is Some(_)) {
+    return fail(parser, start, `the alias *${name} points at a node that contains it`)
+  }
+  if (parser.anchors[name] is Some(anchor)) {
+    parser.aliasNodes += anchor.size
+    parser.nodeCount += anchor.size
+    if (parser.aliasNodes > parser.options.maxAliasNodes) {
+      return fail(
+        parser,
+        start,
+        `aliases copy more than ${Int.toString(parser.options.maxAliasNodes)} nodes`,
+      )
+    }
+    parser.lastText = anchor.text
+    return Ok(Token {
+      kind: TokenKind.Alias,
+      value: copy(anchor.value),
+      text: anchor.text,
+      start,
+      singleLine: true,
+    })
+  }
+  return fail(parser, start, `the anchor ${name} is not defined`)
+}
+
+function readBlockToken(
+  mutable parser: Parser,
+  indent: int,
+  depth: int,
+): Result<Token, YamlError> uses alloc {
+  const start = parser.position
+  const byte = byteAt(parser, parser.position)
+  if (byte == ASTERISK) {
+    return readAlias(mutable parser)
+  }
+  if (byte == DOUBLE_QUOTE || byte == SINGLE_QUOTE) {
+    return readQuotedToken(mutable parser, indent)
+  }
+  if (byte == OPEN_BRACKET || byte == OPEN_BRACE) {
+    const collection = parseFlowCollection(mutable parser, indent, depth)
+    if (collection is Err(error)) {
+      return Err(error)
+    }
+    return Ok(makeFlowToken(parser, start, collection.value))
+  }
+  if (byte == COLON && isSeparator(byteAt(parser, parser.position + 1))) {
+    return Ok(createEmptyToken(parser))
+  }
+  if (canStartPlain(parser, false)) {
+    return readPlain(mutable parser, indent, false)
+  }
+  return fail(parser, start, "unexpected character")
+}
+
+function readQuotedToken(mutable parser: Parser, indent: int): Result<Token, YamlError> uses alloc {
+  const start = parser.position
+  let text = ""
+  if (byteAt(parser, start) == DOUBLE_QUOTE) {
+    const read = readDoubleQuoted(mutable parser, indent)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    text = read.value
+  } else {
+    const read = readSingleQuoted(mutable parser, indent)
+    if (read is Err(error)) {
+      return Err(error)
+    }
+    text = read.value
+  }
+  const singleLine = findLineIndex(parser, start) == findLineIndex(parser, parser.position - 1)
+  return Ok(Token { kind: TokenKind.Quoted, value: Value.Null, text, start, singleLine })
+}
+
+function canStartPlain(parser: Parser, flow: bool): bool {
+  const byte = byteAt(parser, parser.position)
+  if (byte < 0 || isBlank(byte) || isBreak(byte) || isControl(byte)) {
+    return false
+  }
+  if (
+    isFlowIndicator(byte) ||
+      byte == HASH ||
+      byte == AMPERSAND ||
+      byte == ASTERISK ||
+      byte == BANG ||
+      byte == PIPE ||
+      byte == GREATER ||
+      byte == SINGLE_QUOTE ||
+      byte == DOUBLE_QUOTE ||
+      byte == PERCENT ||
+      byte == AT ||
+      byte == BACKTICK
+  ) {
+    return false
+  }
+  if (byte == QUESTION || byte == COLON || byte == DASH) {
+    const next = byteAt(parser, parser.position + 1)
+    if (isSeparator(next) || (flow && isFlowIndicator(next))) {
+      return false
+    }
+  }
+  return true
+}
+
+function scanPlainSegment(parser: Parser, start: int, flow: bool): Segment {
+  let index = start
+  let lastContent = start
+  while (true) {
+    const byte = byteAt(parser, index)
+    if (byte < 0 || isBreak(byte)) {
+      return Segment { end: lastContent, reason: STOP_LINE }
+    }
+    if (byte == COLON) {
+      const next = byteAt(parser, index + 1)
+      if (isSeparator(next) || (flow && isFlowIndicator(next))) {
+        return Segment { end: lastContent, reason: STOP_COLON }
+      }
+    }
+    if (byte == HASH && index > start && isBlank(byteAt(parser, index - 1))) {
+      return Segment { end: lastContent, reason: STOP_COMMENT }
+    }
+    if (flow && isFlowIndicator(byte)) {
+      return Segment { end: lastContent, reason: STOP_FLOW }
+    }
+    if (isControl(byte)) {
+      return Segment { end: index, reason: STOP_BAD }
+    }
+    index += 1
+    if (!isBlank(byte)) {
+      lastContent = index
+    }
+  }
+}
+
+function readPlain(
+  mutable parser: Parser,
+  indent: int,
+  flow: bool,
+): Result<Token, YamlError> uses alloc {
+  // A line continues the scalar when it is indented more than indent. A scalar that stops at a
+  // colon is a key, and a key is a single line.
+  const start = parser.position
+  const first = scanPlainSegment(parser, start, flow)
+  if (first.reason == STOP_BAD) {
+    return fail(parser, first.end, "a control character cannot be in a scalar")
+  }
+  let builder = Str.builder()
+  Str.append(mutable builder, cutText(parser.text, start, first.end))
+  let singleLine = true
+  let cursor = first.end
+  let reason = first.reason
+  while (reason == STOP_LINE) {
+    // Find the next line that has content, counting the blank lines before it.
+    let probe = skipBlanksFrom(parser, cursor)
+    if (byteAt(parser, probe) < 0) {
+      break
+    }
+    probe = skipBreak(parser, probe)
+    let blankLines = 0
+    let found = false
+    while (true) {
+      probe = skipBlanksFrom(parser, probe)
+      const byte = byteAt(parser, probe)
+      if (byte < 0) {
+        break
+      }
+      if (isBreak(byte)) {
+        blankLines += 1
+        probe = skipBreak(parser, probe)
+        continue
+      }
+      found = true
+      break
+    }
+    if (!found) {
+      break
+    }
+    if (
+      byteAt(parser, probe) == HASH ||
+        isBoundary(parser, probe) ||
+        lineIndentAt(parser, probe) <= indent
+    ) {
+      break
+    }
+    const segment = scanPlainSegment(parser, probe, flow)
+    if (segment.reason == STOP_BAD) {
+      return fail(parser, segment.end, "a control character cannot be in a scalar")
+    }
+    if (segment.end == probe) {
+      break
+    }
+    if (segment.reason == STOP_COLON && !flow) {
+      return fail(parser, segment.end, "a mapping value is not allowed in a scalar")
+    }
+    if (blankLines == 0) {
+      Str.append(mutable builder, " ")
+    } else {
+      appendBreaks(mutable builder, blankLines)
+    }
+    Str.append(mutable builder, cutText(parser.text, probe, segment.end))
+    singleLine = false
+    cursor = segment.end
+    reason = segment.reason
+  }
+  parser.position = cursor
+  return Ok(Token {
+    kind: TokenKind.Plain,
+    value: Value.Null,
+    text: Str.build(builder),
+    start,
+    singleLine,
+  })
+}
+
+function foldBreak(
+  mutable parser: Parser,
+  indent: int,
+  start: int,
+): Result<string, YamlError> uses alloc {
+  let probe = skipBreak(parser, parser.position)
+  let blankLines = 0
+  while (true) {
+    probe = skipBlanksFrom(parser, probe)
+    if (isBreak(byteAt(parser, probe))) {
+      blankLines += 1
+      probe = skipBreak(parser, probe)
+      continue
+    }
+    break
+  }
+  parser.position = probe
+  if (probe >= parser.length) {
+    return fail(parser, start, "a quoted scalar is not closed")
+  }
+  if (isBoundary(parser, probe)) {
+    return fail(parser, probe, "a document marker cannot be in a quoted scalar")
+  }
+  if (lineIndentAt(parser, probe) <= indent) {
+    return fail(parser, probe, "a line of a quoted scalar is not indented enough")
+  }
+  if (blankLines == 0) {
+    return Ok(" ")
+  }
+  let builder = Str.builder()
+  appendBreaks(mutable builder, blankLines)
+  return Ok(Str.build(builder))
+}
+
+function readSingleQuoted(
+  mutable parser: Parser,
+  indent: int,
+): Result<string, YamlError> uses alloc {
+  const start = parser.position
+  parser.position += 1
+  let builder = Str.builder()
+  let runStart = parser.position
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte < 0) {
+      return fail(parser, start, "a quoted scalar is not closed")
+    }
+    if (byte == SINGLE_QUOTE) {
+      Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
+      if (byteAt(parser, parser.position + 1) == SINGLE_QUOTE) {
+        Str.append(mutable builder, "'")
+        parser.position += 2
+        runStart = parser.position
+        continue
+      }
+      parser.position += 1
+      return Ok(Str.build(builder))
+    }
+    if (isBreak(byte)) {
+      Str.append(mutable builder, trimBlanksEnd(cutText(parser.text, runStart, parser.position)))
+      const folded = foldBreak(mutable parser, indent, start)
+      if (folded is Err(error)) {
+        return Err(error)
+      }
+      Str.append(mutable builder, folded.value)
+      runStart = parser.position
+      continue
+    }
+    if (isControl(byte)) {
+      return fail(parser, parser.position, "a control character cannot be in a scalar")
+    }
+    parser.position += 1
+  }
+}
+
+function readDoubleQuoted(
+  mutable parser: Parser,
+  indent: int,
+): Result<string, YamlError> uses alloc {
+  const start = parser.position
+  parser.position += 1
+  let builder = Str.builder()
+  let runStart = parser.position
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte < 0) {
+      return fail(parser, start, "a quoted scalar is not closed")
+    }
+    if (byte == DOUBLE_QUOTE) {
+      Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
+      parser.position += 1
+      return Ok(Str.build(builder))
+    }
+    if (byte == BACKSLASH) {
+      Str.append(mutable builder, cutText(parser.text, runStart, parser.position))
+      const escape = readEscape(mutable parser, mutable builder, indent, start)
+      if (escape is Err(error)) {
+        return Err(error)
+      }
+      runStart = parser.position
+      continue
+    }
+    if (isBreak(byte)) {
+      Str.append(mutable builder, trimBlanksEnd(cutText(parser.text, runStart, parser.position)))
+      const folded = foldBreak(mutable parser, indent, start)
+      if (folded is Err(error)) {
+        return Err(error)
+      }
+      Str.append(mutable builder, folded.value)
+      runStart = parser.position
+      continue
+    }
+    if (isControl(byte)) {
+      return fail(parser, parser.position, "a control character cannot be in a scalar")
+    }
+    parser.position += 1
+  }
+}
+
+function simpleEscape(letter: int): int {
+  if (letter == 48) {
+    return 0
+  }
+  if (letter == 97) {
+    return 7
+  }
+  if (letter == 98) {
+    return 8
+  }
+  if (letter == 116 || letter == TAB) {
+    return 9
+  }
+  if (letter == 110) {
+    return 10
+  }
+  if (letter == 118) {
+    return 11
+  }
+  if (letter == 102) {
+    return 12
+  }
+  if (letter == 114) {
+    return 13
+  }
+  if (letter == 101) {
+    return 27
+  }
+  if (letter == SPACE || letter == DOUBLE_QUOTE || letter == 47 || letter == BACKSLASH) {
+    return letter
+  }
+  if (letter == 78) {
+    return 133
+  }
+  if (letter == 95) {
+    return 160
+  }
+  if (letter == 76) {
+    return 8232
+  }
+  if (letter == 80) {
+    return 8233
+  }
+  return -1
+}
+
+function readEscape(
+  mutable parser: Parser,
+  mutable builder: StringBuilder,
+  indent: int,
+  start: int,
+): Result<bool, YamlError> uses alloc {
+  const escapeAt = parser.position
+  parser.position += 1
+  const letter = byteAt(parser, parser.position)
+  if (letter < 0) {
+    return fail(parser, start, "a quoted scalar is not closed")
+  }
+  if (isBreak(letter)) {
+    // An escaped line break joins the lines; the blank lines after it stay as line breaks.
+    let probe = skipBreak(parser, parser.position)
+    let blankLines = 0
+    while (true) {
+      probe = skipBlanksFrom(parser, probe)
+      if (isBreak(byteAt(parser, probe))) {
+        blankLines += 1
+        probe = skipBreak(parser, probe)
+        continue
+      }
+      break
+    }
+    parser.position = probe
+    if (probe >= parser.length) {
+      return fail(parser, start, "a quoted scalar is not closed")
+    }
+    if (isBoundary(parser, probe)) {
+      return fail(parser, probe, "a document marker cannot be in a quoted scalar")
+    }
+    if (lineIndentAt(parser, probe) <= indent) {
+      return fail(parser, probe, "a line of a quoted scalar is not indented enough")
+    }
+    appendBreaks(mutable builder, blankLines)
+    return Ok(true)
+  }
+  parser.position += 1
+  let digits = 0
+  if (letter == 120) {
+    digits = 2
+  } else if (letter == 117) {
+    digits = 4
+  } else if (letter == 85) {
+    digits = 8
+  }
+  let code = simpleEscape(letter)
+  if (digits > 0) {
+    code = 0
+    let count = 0
+    while (count < digits) {
+      const digit = hexValue(byteAt(parser, parser.position))
+      if (digit < 0) {
+        return fail(parser, escapeAt, "an escape needs hexadecimal digits")
+      }
+      code = code * 16 + digit
+      parser.position += 1
+      count += 1
+    }
+  }
+  if (code < 0) {
+    return fail(parser, escapeAt, "unknown escape")
+  }
+  if (Char.fromCode(code) is Some(character)) {
+    Str.appendChar(mutable builder, character)
+    return Ok(true)
+  }
+  return fail(parser, escapeAt, "an escape is not a Unicode scalar value")
+}
+
+function readBlockScalar(
+  mutable parser: Parser,
+  indent: int,
+): Result<string, YamlError> uses alloc {
+  // indent is the indentation of the parent node, so the lines must sit deeper.
+  const folded = byteAt(parser, parser.position) == GREATER
+  parser.position += 1
+  // The chomping: -1 strips the last line breaks, 0 keeps one, 1 keeps all of them.
+  let chomp = 0
+  let chompSet = false
+  let explicit = 0
+  while (true) {
+    const byte = byteAt(parser, parser.position)
+    if (byte == DASH || byte == PLUS) {
+      if (chompSet) {
+        return fail(parser, parser.position, "a block scalar has one chomping indicator")
+      }
+      chompSet = true
+      chomp = 1
+      if (byte == DASH) {
+        chomp = -1
+      }
+    } else if (byte >= 49 && byte <= 57) {
+      if (explicit != 0) {
+        return fail(parser, parser.position, "a block scalar has one indentation indicator")
+      }
+      explicit = byte - 48
+    } else if (byte == 48) {
+      return fail(parser, parser.position, "the indentation indicator cannot be 0")
+    } else {
+      break
+    }
+    parser.position += 1
+  }
+  skipBlanks(mutable parser)
+  if (byteAt(parser, parser.position) == HASH) {
+    if (!isSeparator(byteAt(parser, parser.position - 1))) {
+      return fail(parser, parser.position, "a comment needs a space before it")
+    }
+    skipToLineEnd(mutable parser)
+  }
+  if (!isLineEnd(parser)) {
+    return fail(parser, parser.position, "unexpected content after the block scalar header")
+  }
+  // Collect the lines. A blank line is an empty string here.
+  let contentIndent = -1
+  if (explicit > 0) {
+    contentIndent = indent + explicit
+  }
+  let leadingBlankWidth = 0
+  let lines: Array<string> = []
+  let lastLineHadBreak = false
+  let lineStart = skipBreak(parser, parser.position)
+  let atEnd = parser.position >= parser.length
+  while (!atEnd) {
+    let spaces = 0
+    while (byteAt(parser, lineStart + spaces) == SPACE) {
+      spaces += 1
+    }
+    const afterSpaces = lineStart + spaces
+    const lineByte = byteAt(parser, afterSpaces)
+    const blankLine = lineByte < 0 || isBreak(lineByte)
+    if (lineStart >= parser.length) {
+      break
+    }
+    let tabLimit = indent + 1
+    if (contentIndent > tabLimit) {
+      tabLimit = contentIndent
+    }
+    if (lineByte == TAB && spaces < tabLimit) {
+      return fail(parser, afterSpaces, "a tab cannot indent a block scalar")
+    }
+    if (contentIndent < 0) {
+      if (blankLine) {
+        if (spaces > leadingBlankWidth) {
+          leadingBlankWidth = spaces
+        }
+        Arrays.push(mutable lines, "")
+        lastLineHadBreak = lineByte >= 0
+        lineStart = skipBreak(parser, afterSpaces)
+        atEnd = lineByte < 0
+        continue
+      }
+      if (spaces <= indent) {
+        break
+      }
+      if (leadingBlankWidth > spaces) {
+        return fail(
+          parser,
+          lineStart,
+          "a blank line is indented more than the text of the block scalar",
+        )
+      }
+      contentIndent = spaces
+    }
+    if (blankLine && spaces <= contentIndent) {
+      Arrays.push(mutable lines, "")
+      lastLineHadBreak = lineByte >= 0
+      lineStart = skipBreak(parser, afterSpaces)
+      atEnd = lineByte < 0
+      continue
+    }
+    if (spaces < contentIndent) {
+      break
+    }
+    if (contentIndent == 0 && isBoundary(parser, lineStart)) {
+      break
+    }
+    let lineEnd = lineStart + contentIndent
+    while (lineEnd < parser.length && !isBreak(Str.byteAt(parser.text, lineEnd))) {
+      if (isControl(Str.byteAt(parser.text, lineEnd))) {
+        return fail(parser, lineEnd, "a control character cannot be in a scalar")
+      }
+      lineEnd += 1
+    }
+    Arrays.push(mutable lines, cutText(parser.text, lineStart + contentIndent, lineEnd))
+    lastLineHadBreak = lineEnd < parser.length
+    lineStart = skipBreak(parser, lineEnd)
+    atEnd = lineEnd >= parser.length
+  }
+  parser.position = lineStart
+  if (atEnd) {
+    parser.position = parser.length
+  }
+  // The lines at the end that are blank belong to the chomping, not to the text.
+  const lineCount = Arrays.length(lines)
+  let contentCount = lineCount
+  while (contentCount > 0 && lines[contentCount - 1] == "") {
+    contentCount -= 1
+  }
+  const trailingBlank = lineCount - contentCount
+  let builder = Str.builder()
+  if (folded) {
+    foldLines(mutable builder, lines, contentCount)
+  } else {
+    let index = 0
+    while (index < contentCount) {
+      if (index > 0) {
+        Str.append(mutable builder, "\n")
+      }
+      Str.append(mutable builder, lines[index])
+      index += 1
+    }
+  }
+  const hadBreak = trailingBlank > 0 || lastLineHadBreak
+  if (contentCount == 0) {
+    if (chomp == 1) {
+      appendBreaks(mutable builder, trailingBlank)
+    }
+  } else if (chomp == 0 && hadBreak) {
+    Str.append(mutable builder, "\n")
+  } else if (chomp == 1) {
+    if (hadBreak) {
+      Str.append(mutable builder, "\n")
+    }
+    appendBreaks(mutable builder, trailingBlank)
+  }
+  return Ok(Str.build(builder))
+}
+
+function foldLines(mutable builder: StringBuilder, lines: Array<string>, count: int) uses alloc {
+  // A single break between two lines of text becomes a space, and a more indented line keeps
+  // its breaks.
+  let previousIndented = false
+  let hasPrevious = false
+  let blankLines = 0
+  for (const #[index, line] of Arrays.entries(lines)) {
+    if (index >= count) {
+      break
+    }
+    if (line == "") {
+      blankLines += 1
+      continue
+    }
+    const indented = isBlank(Str.byteAt(line, 0))
+    if (!hasPrevious) {
+      appendBreaks(mutable builder, blankLines)
+    } else if (!previousIndented && !indented) {
+      if (blankLines == 0) {
+        Str.append(mutable builder, " ")
+      } else {
+        appendBreaks(mutable builder, blankLines)
+      }
+    } else {
+      appendBreaks(mutable builder, blankLines + 1)
+    }
+    Str.append(mutable builder, line)
+    previousIndented = indented
+    hasPrevious = true
+    blankLines = 0
+  }
+}
+
+function skipFlowSpace(
+  mutable parser: Parser,
+  flowIndent: int,
+): Result<bool, YamlError> uses alloc {
+  // A line inside a flow collection must be indented more than the block that holds it.
+  let crossed = false
+  while (true) {
+    skipSpaceAndComment(mutable parser)
+    const byte = byteAt(parser, parser.position)
+    if (byte >= 0 && isBreak(byte)) {
+      parser.position = skipBreak(parser, parser.position)
+      crossed = true
+      continue
+    }
+    if (byte < 0 || !crossed) {
+      return Ok(true)
+    }
+    if (isBoundary(parser, parser.position)) {
+      return fail(parser, parser.position, "a document marker cannot be in a flow collection")
+    }
+    if (lineIndentAt(parser, parser.position) <= flowIndent) {
+      return fail(parser, parser.position, "a line of a flow collection is not indented enough")
+    }
+    return Ok(true)
+  }
+}
+
+function makeFlowToken(parser: Parser, start: int, value: Value): Token from value {
+  const singleLine = findLineIndex(parser, start) == findLineIndex(parser, parser.position - 1)
+  return Token { kind: TokenKind.Flow, value, text: "", start, singleLine }
+}
+
+function readFlowScalarToken(
+  mutable parser: Parser,
+  flowIndent: int,
+): Result<Token, YamlError> uses alloc {
+  const start = parser.position
+  const byte = byteAt(parser, parser.position)
+  if (byte == ASTERISK) {
+    return readAlias(mutable parser)
+  }
+  if (byte == DOUBLE_QUOTE || byte == SINGLE_QUOTE) {
+    return readQuotedToken(mutable parser, flowIndent)
+  }
+  if (byte == COMMA || byte == CLOSE_BRACKET || byte == CLOSE_BRACE) {
+    return Ok(createEmptyToken(parser))
+  }
+  if (byte == COLON) {
+    const next = byteAt(parser, parser.position + 1)
+    if (isSeparator(next) || isFlowIndicator(next)) {
+      return Ok(createEmptyToken(parser))
+    }
+  }
+  if (byte == PIPE || byte == GREATER) {
+    return fail(parser, start, "a block scalar cannot be in a flow collection")
+  }
+  if (canStartPlain(parser, true)) {
+    return readPlain(mutable parser, flowIndent, true)
+  }
+  return fail(parser, start, "unexpected character")
+}
+
+function parseFlowNode(
+  mutable parser: Parser,
+  flowIndent: int,
+  depth: int,
+): Result<Token, YamlError> uses alloc {
+  // Only the collection branch recurses, so the work of the others is in helpers whose frames
+  // are gone before the reader goes down a level.
+  const props = readFlowProps(mutable parser, flowIndent)
+  if (props is Err(error)) {
+    return Err(error)
+  }
+  const byte = byteAt(parser, parser.position)
+  if (byte != OPEN_BRACKET && byte != OPEN_BRACE) {
+    return readFlowScalarNode(mutable parser, props.value, flowIndent)
+  }
+  const start = parser.position
+  const collection = parseFlowCollection(mutable parser, flowIndent, depth)
+  if (collection is Err(error)) {
+    return Err(error)
+  }
+  const token = makeFlowToken(parser, start, collection.value)
+  return finishFlowNode(mutable parser, props.value, token)
+}
+
+function readFlowProps(
+  mutable parser: Parser,
+  flowIndent: int,
+): Result<Props, YamlError> uses alloc {
+  const first = byteAt(parser, parser.position)
+  if (first != AMPERSAND && first != BANG) {
+    return Ok(createEmptyProps(parser))
+  }
+  const read = readProperties(mutable parser)
+  if (read is Err(error)) {
+    return Err(error)
+  }
+  const space = skipFlowSpace(mutable parser, flowIndent)
+  if (space is Err(error)) {
+    return Err(error)
+  }
+  return read
+}
+
+function readFlowScalarNode(
+  mutable parser: Parser,
+  props: Props,
+  flowIndent: int,
+): Result<Token, YamlError> uses alloc {
+  const read = readFlowScalarToken(mutable parser, flowIndent)
+  if (read is Err(error)) {
+    return Err(error)
+  }
+  return finishFlowNode(mutable parser, props, read.value)
+}
+
+function finishFlowNode(
+  mutable parser: Parser,
+  props: Props,
+  token: Token,
+): Result<Token, YamlError> from token uses alloc {
+  const value = finishToken(mutable parser, props, token)
+  if (value is Err(error)) {
+    return Err(error)
+  }
+  return Ok(Token {
+    kind: token.kind,
+    value: value.value,
+    text: token.text,
+    start: token.start,
+    singleLine: token.singleLine,
+  })
+}
+
+function parseFlowCollection(
+  mutable parser: Parser,
+  flowIndent: int,
+  depth: int,
+): Result<Value, YamlError> uses alloc {
+  if (depth >= parser.options.maxDepth) {
+    return fail(
+      parser,
+      parser.position,
+      `nesting is deeper than ${Int.toString(parser.options.maxDepth)}`,
+    )
+  }
+  const isMapping = byteAt(parser, parser.position) == OPEN_BRACE
+  let closer = CLOSE_BRACKET
+  if (isMapping) {
+    closer = CLOSE_BRACE
+  }
+  parser.position += 1
+  let items: Array<Value> = []
+  let entries: Array<Entry> = []
+  while (true) {
+    const space = skipFlowSpace(mutable parser, flowIndent)
+    if (space is Err(error)) {
+      return Err(error)
+    }
+    const byte = byteAt(parser, parser.position)
+    if (byte < 0) {
+      return fail(parser, parser.position, "a flow collection is not closed")
+    }
+    if (byte == closer) {
+      parser.position += 1
+      break
+    }
+    if (byte == COMMA) {
+      return fail(parser, parser.position, "unexpected comma in a flow collection")
+    }
+    const entry = parseFlowEntry(mutable parser, flowIndent, depth + 1, isMapping)
+    if (entry is Err(error)) {
+      return Err(error)
+    }
+    if (isMapping) {
+      Arrays.push(mutable entries, entry.value)
+    } else if (entry.value.isPair) {
+      let fields: Map<string, Value> = Map {}
+      fields[entry.value.key] = entry.value.value
+      parser.nodeCount += 1
+      Arrays.push(mutable items, Value.Record(fields))
+    } else {
+      Arrays.push(mutable items, entry.value.value)
+    }
+    const after = skipFlowSpace(mutable parser, flowIndent)
+    if (after is Err(error)) {
+      return Err(error)
+    }
+    const separator = byteAt(parser, parser.position)
+    if (separator == COMMA) {
+      parser.position += 1
+      continue
+    }
+    if (separator == closer) {
+      parser.position += 1
+      break
+    }
+    if (separator < 0) {
+      return fail(parser, parser.position, "a flow collection is not closed")
+    }
+    return fail(parser, parser.position, "expected a comma or the end of the flow collection")
+  }
+  if (isMapping) {
+    return buildRecord(mutable parser, entries)
+  }
+  parser.nodeCount += 1
+  return Ok(Value.List(items))
+}
+
+function parseFlowEntry(
+  mutable parser: Parser,
+  flowIndent: int,
+  depth: int,
+  inMapping: bool,
+): Result<Entry, YamlError> uses alloc {
+  const start = parser.position
+  let explicit = false
+  if (
+    byteAt(parser, parser.position) == QUESTION &&
+      (isSeparator(byteAt(parser, parser.position + 1)) ||
+        isFlowIndicator(byteAt(parser, parser.position + 1)))
+  ) {
+    explicit = true
+    parser.position += 1
+    const space = skipFlowSpace(mutable parser, flowIndent)
+    if (space is Err(error)) {
+      return Err(error)
+    }
+  }
+  const read = parseFlowNode(mutable parser, flowIndent, depth)
+  if (read is Err(error)) {
+    return Err(error)
+  }
+  const key = read.value
+  if (inMapping || explicit) {
+    const space = skipFlowSpace(mutable parser, flowIndent)
+    if (space is Err(error)) {
+      return Err(error)
+    }
+  } else {
+    skipBlanks(mutable parser)
+  }
+  const byte = byteAt(parser, parser.position)
+  const next = byteAt(parser, parser.position + 1)
+  const jsonLike = key.kind == TokenKind.Quoted || key.kind == TokenKind.Flow
+  const hasColon = byte == COLON && (isSeparator(next) || isFlowIndicator(next) || jsonLike)
+  if (!hasColon && !inMapping && !explicit) {
+    return Ok(Entry { key: "", merge: false, value: key.value, position: start, isPair: false })
+  }
+  const text = readKeyText(parser, key, key.value)
+  if (text is Err(error)) {
+    return Err(error)
+  }
+  let value = Value.Null
+  if (hasColon) {
+    parser.position += 1
+    const space = skipFlowSpace(mutable parser, flowIndent)
+    if (space is Err(error)) {
+      return Err(error)
+    }
+    const after = byteAt(parser, parser.position)
+    if (after == COMMA || after == CLOSE_BRACKET || after == CLOSE_BRACE) {
+      parser.nodeCount += 1
+    } else {
+      const node = parseFlowNode(mutable parser, flowIndent, depth)
+      if (node is Err(error)) {
+        return Err(error)
+      }
+      value = node.value.value
+    }
+  } else {
+    parser.nodeCount += 1
+  }
+  let merge = false
+  if (parser.options.mergeKeys && key.kind == TokenKind.Plain && key.text == "<<") {
+    merge = true
+  }
+  return Ok(Entry { key: text.value, merge, value, position: start, isPair: true })
+}

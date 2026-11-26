@@ -1,0 +1,111 @@
+// The counters and helpers that the checks of the package share.
+
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Int from "std/int"
+import * as Net from "std/net"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import * as Wire from "http/framing"
+import { Cell } from "std/cell"
+import { Connection } from "std/net"
+
+/// How many checks ran and how many failed. Copies share the counts.
+export struct Report {
+  checked: Cell<int>
+  failed: Cell<int>
+}
+
+export function createReport(): Report uses alloc {
+  return Report { checked: Cells.create(0), failed: Cells.create(0) }
+}
+
+/// Counts one check. A failed check prints its line; a passed one prints nothing.
+export function expect(report: Report, name: string, condition: bool) uses io, alloc {
+  Cells.set(report.checked, Cells.get(report.checked) + 1)
+  if (!condition) {
+    Cells.set(report.failed, Cells.get(report.failed) + 1)
+    print(`FAIL - ${name}`)
+  }
+}
+
+/// A check that two texts are equal. A failure prints both.
+export function expectText(
+  report: Report,
+  name: string,
+  actual: string,
+  expected: string,
+) uses io, alloc {
+  expect(report, name, actual == expected)
+  if (actual != expected) {
+    print(`  expected: ${expected}`)
+    print(`  actual:   ${actual}`)
+  }
+}
+
+/// A check that the text holds the part.
+export function expectContains(
+  report: Report,
+  name: string,
+  text: string,
+  part: string,
+) uses io, alloc {
+  expect(report, name, Str.contains(text, part))
+  if (!Str.contains(text, part)) {
+    print(`  wanted: ${part}`)
+    print(`  in:     ${text}`)
+  }
+}
+
+/// Sends the text to the port and reads until the server closes the connection, or until
+/// three seconds pass without a byte. It gives what came back.
+export async function exchange(port: int, request: bytes): string uses io, alloc {
+  const connected = await Net.connect("127.0.0.1", port)
+  if (connected is Err(_)) {
+    return "connect failed"
+  }
+  const sent = await Net.write(connected.value, request)
+  if (sent is Err(_)) {
+    return "write failed"
+  }
+  return await readUntilClose(connected.value)
+}
+
+/// Everything the peer sends until it closes its side, or until three seconds pass without a
+/// byte.
+export async function readUntilClose(connection: Connection): string uses io, alloc {
+  const leftover = Cells.create(Bytes.fromString(""))
+  let received = Bytes.fromString("")
+  while (true) {
+    const piece = await Wire.readSome(connection, leftover, 65536, Some(Time.seconds(3)))
+    if (piece is Err(_)) {
+      break
+    }
+    if (Bytes.length(piece.value) == 0) {
+      break
+    }
+    received = Bytes.concat(received, piece.value)
+  }
+  const text = Bytes.toString(received)
+  if (text is Ok(value)) {
+    return value
+  }
+  return "not text"
+}
+
+/// The first line of a response text, which holds the status.
+export function findFirstLine(text: string): string uses alloc {
+  if (Str.indexOf(text, "\r\n") is Some(lineEnd)) {
+    const line = Str.slice(text, 0, lineEnd)
+    if (line is Some(found)) {
+      return found
+    }
+  }
+  return text
+}
+
+export function describeCount(report: Report): string uses alloc {
+  const checked = Int.toString(Cells.get(report.checked))
+  const failed = Int.toString(Cells.get(report.failed))
+  return `${checked} checks, ${failed} failed`
+}

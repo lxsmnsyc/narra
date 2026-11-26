@@ -1,7 +1,7 @@
 ---
 id: c-packages
 title: "C packages: C libraries fetched from upstream as dependencies"
-status: todo
+status: active
 priority: could
 type: feature
 story: batch-26

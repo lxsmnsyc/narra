@@ -1,0 +1,209 @@
+// The server of the checks: an http server whose routes each exercise one part of the package.
+
+import * as Cells from "std/cell"
+import * as Fields from "http/headers"
+import * as Messages from "websocket/message"
+import * as Optionals from "std/option"
+import * as Responses from "http/response"
+import * as Server from "websocket/server"
+import * as Sockets from "websocket/socket"
+import * as Time from "std/time"
+import { Cell } from "std/cell"
+import { Connection } from "std/net"
+import { Message, WebSocketError } from "websocket/message"
+import { Request } from "http/request"
+import { Response, Upgrade } from "http/response"
+import { Socket } from "websocket/socket"
+
+/// What the routes note, for the checks to read.
+export struct Probe {
+  received: Cell<int>
+  release: Cell<bool>
+  pingingEnded: Cell<bool>
+  handlerEnded: Cell<bool>
+  fullCloseMillis: Cell<int>
+  silentCloseMillis: Cell<int>
+  silentSendClosed: Cell<bool>
+  runTask: Cell<Option<Async<void>>>
+  heldSocket: Cell<Option<Socket>>
+}
+
+export function createProbe(): Probe uses alloc {
+  return Probe {
+    received: Cells.create(0),
+    release: Cells.create(false),
+    pingingEnded: Cells.create(false),
+    handlerEnded: Cells.create(false),
+    fullCloseMillis: Cells.create(-1),
+    silentCloseMillis: Cells.create(-1),
+    silentSendClosed: Cells.create(false),
+    runTask: Cells.create<Option<Async<void>>>(None),
+    heldSocket: Cells.create<Option<Socket>>(None),
+  }
+}
+
+async function closeAfterFullQueue(socket: Socket, probe: Probe) uses io, alloc {
+  // The peer has sent more than the queue holds, and this handler has taken none of it.
+  const _slept = await Time.sleep(Time.milliseconds(300))
+  const started = Time.now()
+  const _closed = await Sockets.close(socket, 1000, "")
+  Cells.set(probe.fullCloseMillis, Time.asMilliseconds(Time.elapsed(started)))
+}
+
+async function closeAndNote(socket: Socket, probe: Probe) uses io, alloc {
+  // The peer never answers the close.
+  const started = Time.now()
+  const closed = await Sockets.close(socket, 1000, "")
+  Cells.set(probe.silentCloseMillis, Time.asMilliseconds(Time.elapsed(started)))
+  const sent = await Sockets.send(socket, Message.Text("late"))
+  Cells.set(probe.silentSendClosed, closed is None && sent is Some(WebSocketError.Closed(_)))
+}
+
+async function holdSocket(socket: Socket, probe: Probe) uses io, alloc {
+  Cells.set(probe.heldSocket, Some(socket))
+  const _slept = await Time.sleep(Time.seconds(60))
+}
+
+async function trackRun(
+  connection: Connection,
+  leftover: bytes,
+  original: Upgrade,
+  probe: Probe,
+) uses io, alloc {
+  // Keeps the task of the upgrade where a check can cancel it.
+  const task = original.run(connection, leftover)
+  Cells.set(probe.runTask, Some(task))
+  await task
+}
+
+async function echo(socket: Socket) uses io, alloc {
+  for await (const result of Sockets.messages(socket)) {
+    if (result is Err(_)) {
+      return
+    }
+    const failure = await Sockets.send(socket, result.value)
+    if (failure is Some(_)) {
+      return
+    }
+  }
+}
+
+async function sleepWithoutReading(_socket: Socket) uses io, alloc {
+  const _slept = await Time.sleep(Time.milliseconds(1500))
+}
+
+async function countAfterSleep(socket: Socket, probe: Probe) uses io, alloc {
+  // Waits until the check lets it go, then takes every message and counts it.
+  while (!Cells.get(probe.release)) {
+    const _slept = await Time.sleep(Time.milliseconds(20))
+  }
+  for await (const result of Sockets.messages(socket)) {
+    if (result is Err(_)) {
+      return
+    }
+    Cells.set(probe.received, Cells.get(probe.received) + 1)
+    if (Cells.get(probe.received) == 80) {
+      const _sent = await Sockets.send(socket, Message.Text("done"))
+    }
+  }
+}
+
+async function tellProtocol(socket: Socket) uses io, alloc {
+  const chosen = Sockets.protocol(socket)
+  const _sent = await Sockets.send(socket, Message.Text(Optionals.withDefault(chosen, "none")))
+}
+
+async function waitForEnd(socket: Socket, probe: Probe) uses io, alloc {
+  for await (const result of Sockets.messages(socket)) {
+    if (result is Err(_)) {
+      Cells.set(probe.pingingEnded, true)
+      return
+    }
+  }
+}
+
+async function sayGoodbye(socket: Socket) uses io, alloc {
+  const _sent = await Sockets.send(socket, Message.Text("hello"))
+  const _closed = await Sockets.close(socket, 4001, "bye")
+}
+
+async function noteEnd(socket: Socket, probe: Probe) uses io, alloc {
+  await echo(socket)
+  Cells.set(probe.handlerEnded, true)
+}
+
+async function pauseBriefly() uses io, alloc {
+  const _slept = await Time.sleep(Time.milliseconds(50))
+}
+
+/// The routes of the checks.
+export async function route(request: Request, probe: Probe): Response uses io, alloc {
+  const path = request.url.path
+  let options = Messages.defaultOptions()
+  if (path == "/echo") {
+    return Server.accept(request, options, echo)
+  }
+  if (path == "/ends") {
+    return Server.accept(request, options, (socket: Socket) => noteEnd(socket, probe))
+  }
+  if (path == "/small") {
+    options.maxMessageBytes = 1000
+    options.maxFrameBytes = 4000
+    return Server.accept(request, options, echo)
+  }
+  if (path == "/sleep") {
+    return Server.accept(request, options, sleepWithoutReading)
+  }
+  if (path == "/slow") {
+    options.maxQueuedMessages = 2
+    return Server.accept(request, options, (socket: Socket) => countAfterSleep(socket, probe))
+  }
+  if (path == "/protocols") {
+    options.protocols = ["chat", "superchat"]
+    return Server.accept(request, options, tellProtocol)
+  }
+  if (path == "/pinger") {
+    options.pingInterval = Some(Time.milliseconds(100))
+    return Server.accept(request, options, (socket: Socket) => waitForEnd(socket, probe))
+  }
+  if (path == "/closer") {
+    return Server.accept(request, options, sayGoodbye)
+  }
+  if (path == "/full-close") {
+    options.maxQueuedMessages = 1
+    options.closeTimeout = Time.seconds(3)
+    return Server.accept(request, options, (socket: Socket) => closeAfterFullQueue(socket, probe))
+  }
+  if (path == "/silent-close") {
+    options.closeTimeout = Time.milliseconds(300)
+    return Server.accept(request, options, (socket: Socket) => closeAndNote(socket, probe))
+  }
+  if (path == "/cancel-me") {
+    const response = Server.accept(request, options, (socket: Socket) => holdSocket(socket, probe))
+    const upgrade = response.upgrade
+    if (upgrade is Some(original)) {
+      let tracked = copy(response)
+      tracked.upgrade = Some(Upgrade {
+        run: (connection: Connection, leftover: bytes) => trackRun(
+          connection,
+          leftover,
+          original,
+          probe,
+        ),
+      })
+      return tracked
+    }
+    return response
+  }
+  if (path == "/bad-accept") {
+    let response = Responses.create(101)
+    response.upgrade = Some(Upgrade {
+      run: (_connection: Connection, _leftover: bytes) => pauseBriefly(),
+    })
+    Fields.add(mutable response.headers, "Upgrade", "websocket")
+    Fields.add(mutable response.headers, "Connection", "Upgrade")
+    Fields.add(mutable response.headers, "Sec-WebSocket-Accept", "AAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+    return response
+  }
+  return Responses.text(404, "no such route")
+}

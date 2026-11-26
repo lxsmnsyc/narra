@@ -1,0 +1,737 @@
+// The state and the tasks of one open WebSocket. A reader task of its own reads the connection for
+// as long as the socket lives, so pings and the close of the peer are answered whatever the
+// handler does. This module is private: websocket/socket shows its public part, and the server
+// and client modules make sockets with `open`.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Frames from "websocket/frame"
+import * as Net from "std/net"
+import * as Randoms from "std/random"
+import * as Time from "std/time"
+import * as U8 from "std/u8"
+import * as Wakeup from "websocket/wakeup"
+import { AsyncError } from "std/async"
+import { Cell } from "std/cell"
+import { CloseInfo, Message, Options, WebSocketError } from "websocket/message"
+import { Connection } from "std/net"
+import { Duration } from "std/time"
+import { FrameHead, HeadParse } from "websocket/frame"
+import { Lock, Waiters } from "websocket/wakeup"
+import { Random } from "std/random"
+
+// A data message over this many bytes goes out as several frames, so a control frame can go
+// between them.
+const FRAGMENT_BYTES = 65536
+
+// The most pongs that wait to be written. A peer that pings faster than it reads loses the
+// oldest ones.
+const MAX_PENDING_PONGS = 64
+
+// The most bytes read from the connection at once.
+const READ_BYTES = 65536
+
+// A frame this small goes out in one write with its head.
+const JOINED_BYTES = 4096
+
+/// An open WebSocket. Copies share the connection and its state.
+export opaque struct Socket {
+  connection: Connection
+  isClient: bool
+  options: Options
+  chosenProtocol: Option<string>
+  // Bytes read from the connection, and how many of them were used.
+  buffer: Cell<bytes>
+  position: Cell<int>
+  // Whole data messages that wait for `receive`.
+  queue: Cell<Array<Message>>
+  // Why the reader ended, once; whether `receive` gave it; what the close frames carried.
+  failure: Cell<Option<WebSocketError>>
+  failureReported: Cell<bool>
+  closeInfo: Cell<Option<CloseInfo>>
+  closeSent: Cell<bool>
+  ended: Cell<bool>
+  reader: Cell<Option<Async<void>>>
+  pinger: Cell<Option<Async<void>>>
+  pongs: Cell<Array<bytes>>
+  ponger: Cell<Option<Async<void>>>
+  pongRunning: Cell<bool>
+  pingOutstanding: Cell<bool>
+  random: Cell<Random>
+  receiveWaiters: Waiters
+  roomWaiters: Waiters
+  endWaiters: Waiters
+  wireLock: Lock
+  messageLock: Lock
+}
+
+/// Makes a socket of a connection whose handshake is done, and starts its reader. `leftover` is
+/// what arrived after the handshake. A client masks what it sends and a server refuses frames
+/// that are not masked. This is for the server and client modules; a program gets its sockets
+/// from them.
+export function open(
+  connection: Connection,
+  leftover: bytes,
+  isClient: bool,
+  options: Options,
+  protocol: Option<string>,
+): Socket from connection uses io, alloc {
+  const noPongs: Array<bytes> = []
+  const socket = Socket {
+    connection,
+    isClient,
+    options: copy(options),
+    chosenProtocol: protocol,
+    buffer: Cells.create(leftover),
+    position: Cells.create(0),
+    queue: Cells.create<Array<Message>>([]),
+    failure: Cells.create<Option<WebSocketError>>(None),
+    failureReported: Cells.create(false),
+    closeInfo: Cells.create<Option<CloseInfo>>(None),
+    closeSent: Cells.create(false),
+    ended: Cells.create(false),
+    reader: Cells.create<Option<Async<void>>>(None),
+    pinger: Cells.create<Option<Async<void>>>(None),
+    pongs: Cells.create(noPongs),
+    ponger: Cells.create<Option<Async<void>>>(None),
+    pongRunning: Cells.create(false),
+    pingOutstanding: Cells.create(false),
+    random: Cells.create(Randoms.fromSystem()),
+    receiveWaiters: Wakeup.createWaiters(),
+    roomWaiters: Wakeup.createWaiters(),
+    endWaiters: Wakeup.createWaiters(),
+    wireLock: Wakeup.createLock(),
+    messageLock: Wakeup.createLock(),
+  }
+  const reading = readLoop(socket)
+  // A reader that already ended must not be kept: the task holds the socket.
+  if (Cells.get(socket.ended)) {
+    Async.detach(reading)
+  } else {
+    Cells.set(socket.reader, Some(reading))
+  }
+  if (options.pingInterval is Some(interval)) {
+    const pinging = pingLoop(socket, interval)
+    if (Cells.get(socket.ended)) {
+      Async.detach(pinging)
+    } else {
+      Cells.set(socket.pinger, Some(pinging))
+    }
+  }
+  return socket
+}
+
+/// The sub-protocol that the handshake chose, if any.
+export function protocol(socket: Socket): Option<string> {
+  return socket.chosenProtocol
+}
+
+/// The next message, waiting until one arrives. Messages come in the order they were sent. Once
+/// the socket has ended and the queue is empty the result is the reason it ended, and every call
+/// after that gives Closed.
+export async function receive(
+  socket: Socket,
+): Result<Message, WebSocketError> from socket uses io, alloc {
+  while (true) {
+    const queued = Cells.get(socket.queue)
+    if (Arrays.length(queued) > 0) {
+      const message = queued[0]
+      Cells.set(socket.queue, dropFirst(queued))
+      // The reader may be waiting for room.
+      Wakeup.wakeAll(socket.roomWaiters)
+      return Ok(message)
+    }
+    if (Cells.get(socket.ended)) {
+      return Err(describeEnd(socket))
+    }
+    if (!(await Wakeup.wait(socket.receiveWaiters))) {
+      return Err(WebSocketError.Io(AsyncError.Cancelled))
+    }
+  }
+}
+
+/// The messages of the socket, each as `receive` gives it. The stream ends after the first error.
+export async function* messages(
+  socket: Socket,
+): AsyncGenerator<Result<Message, WebSocketError>> uses (io, alloc) {
+  while (true) {
+    const result = await receive(socket)
+    yield result
+    if (result is Err(_)) {
+      return
+    }
+  }
+}
+
+/// Sends the message. Many tasks may send at once: whole messages go out one after another, and
+/// a message over 64 KiB goes out in several frames with the control frames of the socket
+/// between them. None means the message was written to the connection.
+export async function send(
+  socket: Socket,
+  message: Message,
+): Option<WebSocketError> from socket uses io, alloc {
+  if (Cells.get(socket.ended) || Cells.get(socket.closeSent)) {
+    return Some(findClosedError(socket))
+  }
+  let opcode = Frames.OPCODE_BINARY
+  let payload = Bytes.fromString("")
+  if (message is Message.Text(text)) {
+    opcode = Frames.OPCODE_TEXT
+    payload = Bytes.fromString(text)
+  } else if (message is Message.Binary(data)) {
+    payload = data
+  }
+  if (!(await Wakeup.acquire(socket.messageLock))) {
+    return Some(WebSocketError.Io(AsyncError.Cancelled))
+  }
+  const total = Bytes.length(payload)
+  let failure: Option<WebSocketError> = None
+  let start = 0
+  let frameOpcode = opcode
+  while (failure is None) {
+    let end = start + FRAGMENT_BYTES
+    if (end > total) {
+      end = total
+    }
+    const isLast = end >= total
+    if (Cells.get(socket.ended) || Cells.get(socket.closeSent)) {
+      failure = Some(findClosedError(socket))
+    } else if (start == 0 && isLast) {
+      failure = await writeFrame(socket, true, frameOpcode, payload)
+    } else {
+      const piece = Bytes.slice(payload, start, end)
+      if (piece is Some(found)) {
+        failure = await writeFrame(socket, isLast, frameOpcode, found)
+      }
+    }
+    if (isLast) {
+      break
+    }
+    start = end
+    frameOpcode = Frames.OPCODE_CONTINUATION
+  }
+  // A message that stopped half way would break the next frame on the wire.
+  if (failure is Some(error)) {
+    if (start > 0 && error is WebSocketError.Io(_)) {
+      abandon(socket, error)
+    }
+  }
+  Wakeup.release(socket.messageLock)
+  return failure
+}
+
+/// Sends a close frame with the code and reason, then waits for the reply of the peer for up to
+/// `closeTimeout`. After it, every call gives Closed. The code must be 1000 to 1003, 1007 to 1011
+/// or 3000 to 4999, and the reason at most 123 bytes.
+export async function close(
+  socket: Socket,
+  code: int,
+  reason: string,
+): Option<WebSocketError> from socket uses io, alloc {
+  if (!Frames.isValidCloseCode(code)) {
+    return Some(WebSocketError.Protocol(code, "this close code may not be sent"))
+  }
+  if (Bytes.length(Bytes.fromString(reason)) > 123) {
+    return Some(WebSocketError.Protocol(code, "the close reason is over 123 bytes"))
+  }
+  if (Cells.get(socket.ended)) {
+    return Some(findClosedError(socket))
+  }
+  if (!Cells.get(socket.closeSent)) {
+    Cells.set(socket.closeSent, true)
+    // A reader that waits for room has no reason to wait now.
+    Wakeup.wakeAll(socket.roomWaiters)
+    if (Cells.get(socket.closeInfo) is None) {
+      Cells.set(socket.closeInfo, Some(CloseInfo { code, reason }))
+    }
+    const failure = await writeFrame(
+      socket,
+      true,
+      Frames.OPCODE_CLOSE,
+      Frames.writeClosePayload(code, reason),
+    )
+    if (failure is Some(error)) {
+      abandon(socket, error)
+      return failure
+    }
+  }
+  // A timer ends the socket when the peer does not answer.
+  const timer = expireAfter(socket, socket.options.closeTimeout)
+  while (!Cells.get(socket.ended)) {
+    if (!(await Wakeup.wait(socket.endWaiters))) {
+      Async.cancel(timer)
+      return Some(WebSocketError.Io(AsyncError.Cancelled))
+    }
+  }
+  Async.cancel(timer)
+  return None
+}
+
+function dropFirst<T>(items: Array<T>): Array<T> uses alloc {
+  const rest = Arrays.slice(items, 1, Arrays.length(items))
+  if (rest is Some(found)) {
+    return found
+  }
+  return []
+}
+
+function findClosedError(socket: Socket): WebSocketError from socket uses alloc {
+  const info = Cells.get(socket.closeInfo)
+  if (info is Some(known)) {
+    return WebSocketError.Closed(known)
+  }
+  return WebSocketError.Closed(CloseInfo { code: 1006, reason: "the connection ended" })
+}
+
+function describeEnd(socket: Socket): WebSocketError from socket uses alloc {
+  // The reason the socket ended comes once if it was a failure, and Closed after that.
+  const failure = Cells.get(socket.failure)
+  if (failure is Some(error)) {
+    if (!Cells.get(socket.failureReported)) {
+      Cells.set(socket.failureReported, true)
+      return error
+    }
+  }
+  return findClosedError(socket)
+}
+
+function describeClose(error: WebSocketError): CloseInfo from error uses alloc {
+  if (error is WebSocketError.Closed(info)) {
+    return info
+  }
+  if (error is WebSocketError.Protocol(code, message)) {
+    return CloseInfo { code, reason: message }
+  }
+  if (error is WebSocketError.TooLarge) {
+    return CloseInfo { code: 1009, reason: "message too large" }
+  }
+  return CloseInfo { code: 1006, reason: "the connection was lost" }
+}
+
+function finish(socket: Socket, error: WebSocketError) uses alloc {
+  // The socket ends once: keep the first reason, free the tasks, and wake every waiter.
+  if (Cells.get(socket.ended)) {
+    return
+  }
+  Cells.set(socket.ended, true)
+  Cells.set(socket.failure, Some(error))
+  if (Cells.get(socket.closeInfo) is None) {
+    Cells.set(socket.closeInfo, Some(describeClose(error)))
+  }
+  Cells.set(socket.reader, None)
+  const pinging = Cells.get(socket.pinger)
+  Cells.set(socket.pinger, None)
+  if (pinging is Some(task)) {
+    Async.cancel(task)
+  }
+  const ponging = Cells.get(socket.ponger)
+  Cells.set(socket.ponger, None)
+  if (ponging is Some(task)) {
+    Async.cancel(task)
+  }
+  Wakeup.wakeAll(socket.receiveWaiters)
+  Wakeup.wakeAll(socket.roomWaiters)
+  Wakeup.wakeAll(socket.endWaiters)
+}
+
+function abandon(socket: Socket, error: WebSocketError) uses alloc {
+  // Ends the socket and stops the reader, which may be waiting on a peer that went silent.
+  const reading = Cells.get(socket.reader)
+  finish(socket, error)
+  if (reading is Some(task)) {
+    Async.cancel(task)
+  }
+}
+
+async function expireAfter(socket: Socket, limit: Duration) uses io, alloc {
+  const slept = await Time.sleep(limit)
+  if (slept is Ok(_)) {
+    abandon(
+      socket,
+      WebSocketError.Closed(CloseInfo {
+        code: 1006,
+        reason: "the peer did not answer the close",
+      }),
+    )
+  }
+}
+
+async function pingLoop(socket: Socket, interval: Duration) uses io, alloc {
+  while (!Cells.get(socket.ended)) {
+    const slept = await Time.sleep(interval)
+    if (slept is Err(_)) {
+      return
+    }
+    if (Cells.get(socket.ended)) {
+      return
+    }
+    if (Cells.get(socket.pingOutstanding)) {
+      abandon(
+        socket,
+        WebSocketError.Closed(CloseInfo {
+          code: 1006,
+          reason: "no pong came before the next ping",
+        }),
+      )
+      return
+    }
+    Cells.set(socket.pingOutstanding, true)
+    const failure = await writeFrame(socket, true, Frames.OPCODE_PING, Bytes.fromString(""))
+    if (failure is Some(_)) {
+      return
+    }
+  }
+}
+
+function makeMaskKey(socket: Socket): Array<u8> uses alloc {
+  let random = copy(Cells.get(socket.random))
+  let key: Array<u8> = []
+  for (const _position of Arrays.values([0, 1, 2, 3])) {
+    const next = Randoms.nextInt(mutable random, 0, 256)
+    if (next is Some(value)) {
+      Arrays.push(mutable key, U8.wrap(value))
+    } else {
+      Arrays.push(mutable key, 0)
+    }
+  }
+  Cells.set(socket.random, random)
+  return key
+}
+
+async function writeFrame(
+  socket: Socket,
+  fin: bool,
+  opcode: int,
+  payload: bytes,
+): Option<WebSocketError> uses io, alloc {
+  // One frame under the wire lock, so frames never mix on the connection.
+  if (!(await Wakeup.acquire(socket.wireLock))) {
+    return Some(WebSocketError.Io(AsyncError.Cancelled))
+  }
+  let head = Bytes.fromString("")
+  let body = payload
+  if (socket.isClient) {
+    const key = makeMaskKey(socket)
+    head = Frames.writeHead(fin, opcode, Bytes.length(payload), Some(key))
+    body = Frames.maskPayload(payload, key)
+  } else {
+    head = Frames.writeHead(fin, opcode, Bytes.length(payload), None)
+  }
+  let failure: Option<WebSocketError> = None
+  if (Bytes.length(body) <= JOINED_BYTES) {
+    const sent = await Net.write(socket.connection, Bytes.concat(head, body))
+    if (sent is Err(error)) {
+      failure = Some(WebSocketError.Io(error))
+    }
+  } else {
+    const sentHead = await Net.write(socket.connection, head)
+    if (sentHead is Err(error)) {
+      failure = Some(WebSocketError.Io(error))
+    } else {
+      const sentBody = await Net.write(socket.connection, body)
+      if (sentBody is Err(error)) {
+        failure = Some(WebSocketError.Io(error))
+      }
+    }
+  }
+  // A write that failed may have left half a frame on the wire, so the socket cannot go on.
+  if (failure is Some(error)) {
+    abandon(socket, error)
+  }
+  Wakeup.release(socket.wireLock)
+  return failure
+}
+
+/// Ends the socket at once with no close frame, and stops its tasks. It does nothing when the
+/// socket has ended. The server calls it when the handler is gone.
+export function drop(socket: Socket) uses alloc {
+  abandon(socket, WebSocketError.Closed(CloseInfo { code: 1006, reason: "the socket was dropped" }))
+}
+
+async function readLoop(socket: Socket) uses io, alloc {
+  const ending = await readFrames(socket)
+  finish(socket, ending)
+}
+
+function findQueueLimit(socket: Socket): int {
+  if (socket.options.maxQueuedMessages < 1) {
+    return 1
+  }
+  return socket.options.maxQueuedMessages
+}
+
+async function readFrames(socket: Socket): WebSocketError uses io, alloc {
+  // Reads frames until the socket ends, and gives the reason.
+  const limit = findQueueLimit(socket)
+  let message: Array<u8> = []
+  let control: Array<u8> = []
+  let inMessage = false
+  let isText = false
+  let utf8 = Frames.startUtf8()
+  let checked = 0
+  while (true) {
+    // With a full queue the reader stops reading, so the peer feels the back-pressure.
+    while (Arrays.length(Cells.get(socket.queue)) >= limit && !Cells.get(socket.closeSent)) {
+      if (!(await Wakeup.wait(socket.roomWaiters))) {
+        return WebSocketError.Io(AsyncError.Cancelled)
+      }
+    }
+    const read = await readHead(socket)
+    if (read is Err(error)) {
+      return await reject(socket, error)
+    }
+    const head = read.value
+    const isData = head.opcode < 8
+    if (head.opcode == Frames.OPCODE_CONTINUATION) {
+      if (!inMessage) {
+        return await reject(
+          socket,
+          WebSocketError.Protocol(1002, "a continuation frame has no message to continue"),
+        )
+      }
+    } else if (isData) {
+      if (inMessage) {
+        return await reject(
+          socket,
+          WebSocketError.Protocol(1002, "a new message starts before the last one ends"),
+        )
+      }
+      inMessage = true
+      isText = head.opcode == Frames.OPCODE_TEXT
+    }
+    if (isData && Arrays.length(message) + head.length > socket.options.maxMessageBytes) {
+      return await reject(socket, WebSocketError.TooLarge)
+    }
+    // The payload, unmasked as it comes.
+    let remaining = head.length
+    let done = 0
+    control = []
+    while (remaining > 0) {
+      if (Bytes.length(Cells.get(socket.buffer)) <= Cells.get(socket.position)) {
+        const problem = await refill(socket)
+        if (problem is Some(error)) {
+          return error
+        }
+      }
+      let taken = 0
+      if (isData) {
+        taken = takeBuffered(socket, mutable message, head, done, remaining)
+      } else {
+        taken = takeBuffered(socket, mutable control, head, done, remaining)
+      }
+      remaining -= taken
+      done += taken
+      // Text is checked as it comes, so a bad sequence ends the socket at once.
+      if (isData && isText) {
+        const advanced = Frames.advanceUtf8(utf8, message, checked)
+        if (advanced is None) {
+          return await reject(
+            socket,
+            WebSocketError.Protocol(1007, "a text message is not valid UTF-8"),
+          )
+        }
+        utf8 = advanced.value
+        checked = Arrays.length(message)
+      }
+    }
+    if (head.opcode == Frames.OPCODE_PING) {
+      queuePong(socket, Bytes.fromArray(control))
+    } else if (head.opcode == Frames.OPCODE_PONG) {
+      Cells.set(socket.pingOutstanding, false)
+    } else if (head.opcode == Frames.OPCODE_CLOSE) {
+      return await answerClose(socket, Bytes.fromArray(control))
+    } else if (head.fin) {
+      inMessage = false
+      if (isText && utf8.needed != 0) {
+        return await reject(
+          socket,
+          WebSocketError.Protocol(1007, "a text message ends inside a character"),
+        )
+      }
+      const built = buildMessage(isText, message)
+      message = []
+      utf8 = Frames.startUtf8()
+      checked = 0
+      if (built is Err(error)) {
+        return await reject(socket, error)
+      }
+      if (!Cells.get(socket.closeSent)) {
+        let queued = copy(Cells.get(socket.queue))
+        Arrays.push(mutable queued, built.value)
+        Cells.set(socket.queue, queued)
+        Wakeup.wakeAll(socket.receiveWaiters)
+      }
+    }
+  }
+}
+
+function buildMessage(isText: bool, data: Array<u8>): Result<Message, WebSocketError> uses alloc {
+  const content = Bytes.fromArray(data)
+  if (!isText) {
+    return Ok(Message.Binary(content))
+  }
+  const text = Bytes.toString(content)
+  if (text is Err(_)) {
+    return Err(WebSocketError.Protocol(1007, "a text message is not valid UTF-8"))
+  }
+  return Ok(Message.Text(text.value))
+}
+
+function takeBuffered(
+  socket: Socket,
+  mutable output: Array<u8>,
+  head: FrameHead,
+  done: int,
+  wanted: int,
+): int uses alloc {
+  // Moves what the buffer holds of the payload, up to `wanted` bytes, into the output.
+  const buffer = Cells.get(socket.buffer)
+  const position = Cells.get(socket.position)
+  let count = Bytes.length(buffer) - position
+  if (count > wanted) {
+    count = wanted
+  }
+  Frames.appendPayload(mutable output, buffer, position, count, head.maskKey, done)
+  Cells.set(socket.position, position + count)
+  return count
+}
+
+async function readHead(socket: Socket): Result<FrameHead, WebSocketError> uses io, alloc {
+  while (true) {
+    const parsed = Frames.parseHead(
+      Cells.get(socket.buffer),
+      Cells.get(socket.position),
+      !socket.isClient,
+      socket.options.maxFrameBytes,
+    )
+    if (parsed is HeadParse.Complete(head)) {
+      Cells.set(socket.position, Cells.get(socket.position) + head.size)
+      return Ok(head)
+    }
+    if (parsed is HeadParse.Invalid(code, message)) {
+      if (code == 1009) {
+        return Err(WebSocketError.TooLarge)
+      }
+      return Err(WebSocketError.Protocol(code, message))
+    }
+    const problem = await refill(socket)
+    if (problem is Some(error)) {
+      return Err(error)
+    }
+  }
+}
+
+async function refill(socket: Socket): Option<WebSocketError> uses io, alloc {
+  // Reads more of the connection into the buffer, keeping what was not used yet.
+  const chunk = await Net.read(socket.connection, READ_BYTES)
+  if (chunk is Err(error)) {
+    return Some(WebSocketError.Io(error))
+  }
+  if (Bytes.length(chunk.value) == 0) {
+    return Some(
+      WebSocketError.Closed(CloseInfo {
+        code: 1006,
+        reason: "the connection ended with no close frame",
+      }),
+    )
+  }
+  const buffer = Cells.get(socket.buffer)
+  const position = Cells.get(socket.position)
+  if (position >= Bytes.length(buffer)) {
+    Cells.set(socket.buffer, chunk.value)
+  } else {
+    const unused = Bytes.slice(buffer, position, Bytes.length(buffer))
+    if (unused is Some(rest)) {
+      Cells.set(socket.buffer, Bytes.concat(rest, chunk.value))
+    }
+  }
+  Cells.set(socket.position, 0)
+  return None
+}
+
+async function reject(
+  socket: Socket,
+  error: WebSocketError,
+): WebSocketError from error uses io, alloc {
+  // A peer that broke a rule gets a close frame with the code, and the socket ends. The reason is
+  // settled first, so a failed write cannot replace it.
+  finish(socket, error)
+  if (!Cells.get(socket.closeSent)) {
+    if (error is WebSocketError.Protocol(code, message)) {
+      Cells.set(socket.closeSent, true)
+      const _sent = await writeFrame(
+        socket,
+        true,
+        Frames.OPCODE_CLOSE,
+        Frames.writeClosePayload(code, message),
+      )
+    } else if (error is WebSocketError.TooLarge) {
+      Cells.set(socket.closeSent, true)
+      const _sent = await writeFrame(
+        socket,
+        true,
+        Frames.OPCODE_CLOSE,
+        Frames.writeClosePayload(1009, "message too large"),
+      )
+    }
+  }
+  return error
+}
+
+async function answerClose(socket: Socket, payload: bytes): WebSocketError uses io, alloc {
+  // The peer closed: answer with the same code, unless this side closed first.
+  const parsed = Frames.readClosePayload(payload)
+  if (parsed is Err(error)) {
+    return await reject(socket, error)
+  }
+  const info = parsed.value
+  Cells.set(socket.closeInfo, Some(info))
+  // The reason is settled before the answer is written, so a peer that is already gone cannot
+  // change it.
+  finish(socket, WebSocketError.Closed(info))
+  if (!Cells.get(socket.closeSent)) {
+    Cells.set(socket.closeSent, true)
+    let answer = Bytes.fromString("")
+    if (info.code != 1005) {
+      answer = Frames.writeClosePayload(info.code, "")
+    }
+    const _sent = await writeFrame(socket, true, Frames.OPCODE_CLOSE, answer)
+  }
+  return WebSocketError.Closed(info)
+}
+
+function queuePong(socket: Socket, payload: bytes) uses io, alloc {
+  // Pongs are written by a task of their own, so the reader never waits for a slow peer.
+  let pending = copy(Cells.get(socket.pongs))
+  if (Arrays.length(pending) >= MAX_PENDING_PONGS) {
+    pending = dropFirst(pending)
+  }
+  Arrays.push(mutable pending, payload)
+  Cells.set(socket.pongs, pending)
+  if (!Cells.get(socket.pongRunning)) {
+    Cells.set(socket.pongRunning, true)
+    const writing = writePongs(socket)
+    // A writer that already ended must not be kept: the task holds the socket.
+    if (Cells.get(socket.pongRunning)) {
+      Cells.set(socket.ponger, Some(writing))
+    } else {
+      Async.detach(writing)
+    }
+  }
+}
+
+async function writePongs(socket: Socket) uses io, alloc {
+  while (Arrays.length(Cells.get(socket.pongs)) > 0 && !Cells.get(socket.closeSent)) {
+    const pending = Cells.get(socket.pongs)
+    const payload = pending[0]
+    Cells.set(socket.pongs, dropFirst(pending))
+    const failure = await writeFrame(socket, true, Frames.OPCODE_PONG, payload)
+    if (failure is Some(_)) {
+      break
+    }
+  }
+  Cells.set(socket.pongRunning, false)
+  Cells.set(socket.ponger, None)
+}

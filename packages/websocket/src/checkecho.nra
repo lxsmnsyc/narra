@@ -1,0 +1,330 @@
+// Checks of the package's own client and server over loopback: echo in both directions, the
+// close handshake, many senders at once, the full queue and the sub-protocol.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Client from "websocket/client"
+import * as Int from "std/int"
+import * as Messages from "websocket/message"
+import * as Optionals from "std/option"
+import * as Ranges from "std/range"
+import * as Sockets from "websocket/socket"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { Cell } from "std/cell"
+import { Message, WebSocketError } from "websocket/message"
+import { Probe } from "websocket/checkserver"
+import { Report, expect, expectInt, expectText, fillBytes } from "websocket/checkkit"
+import { Socket } from "websocket/socket"
+
+function buildUrl(port: int, path: string): string uses alloc {
+  return `ws://127.0.0.1:${Int.toString(port)}${path}`
+}
+
+async function openSocket(report: Report, port: int, path: string): Option<Socket> uses io, alloc {
+  const opened = await Client.connect(buildUrl(port, path), Messages.defaultOptions())
+  if (opened is Err(error)) {
+    expect(report, `connect to ${path}: ${Messages.describe(error)}`, false)
+    return None
+  }
+  return Some(opened.value)
+}
+
+function describeMessage(message: Message): string uses alloc {
+  if (message is Message.Text(text)) {
+    return `text of ${Int.toString(Str.length(text))} bytes`
+  }
+  if (message is Message.Binary(data)) {
+    return `binary of ${Int.toString(Bytes.length(data))} bytes`
+  }
+  return "unknown"
+}
+
+async function checkRoundTrip(
+  report: Report,
+  name: string,
+  socket: Socket,
+  message: Message,
+) uses io, alloc {
+  const failure = await Sockets.send(socket, message)
+  if (failure is Some(error)) {
+    expect(report, `${name}: send ${Messages.describe(error)}`, false)
+    return
+  }
+  const echoed = await Sockets.receive(socket)
+  if (echoed is Err(error)) {
+    expect(report, `${name}: receive ${Messages.describe(error)}`, false)
+    return
+  }
+  expect(
+    report,
+    `${name}: the echo equals the message (${describeMessage(echoed.value)})`,
+    echoed.value == message,
+  )
+}
+
+async function checkEcho(report: Report, port: int) uses io, alloc {
+  const opened = await openSocket(report, port, "/echo")
+  if (opened is None) {
+    return
+  }
+  const socket = opened.value
+  await checkRoundTrip(report, "echo text", socket, Message.Text("hello"))
+  await checkRoundTrip(report, "echo empty text", socket, Message.Text(""))
+  await checkRoundTrip(report, "echo empty binary", socket, Message.Binary(Bytes.fromString("")))
+  await checkRoundTrip(report, "echo unicode", socket, Message.Text("héllo wörld € 😀"))
+  await checkRoundTrip(report, "echo binary", socket, Message.Binary(fillBytes(300, 255)))
+  // Over 64 KiB, so each side sends it as several frames.
+  await checkRoundTrip(report, "echo 100000 bytes", socket, Message.Binary(fillBytes(100000, 7)))
+  await checkRoundTrip(report, "echo 1 MiB binary", socket, Message.Binary(fillBytes(1048576, 9)))
+  await checkRoundTrip(
+    report,
+    "echo 1 MiB text",
+    socket,
+    Message.Text(Optionals.withDefault(Str.repeat("abcdefgh", 131072), "")),
+  )
+  expect(report, "echo: no protocol was chosen", Sockets.protocol(socket) is None)
+  // The close handshake.
+  const refused = await Sockets.close(socket, 1005, "")
+  expect(report, "close: 1005 may not be sent", refused is Some(_))
+  const closed = await Sockets.close(socket, 1000, "bye")
+  expect(report, "close: the handshake finishes", closed is None)
+  const after = await Sockets.receive(socket)
+  if (after is Err(WebSocketError.Closed(info))) {
+    expectInt(report, "close: receive gives the code of the reply", info.code, 1000)
+  } else {
+    expect(report, "close: receive gives Closed", false)
+  }
+  const again = await Sockets.receive(socket)
+  expect(report, "close: receive keeps giving Closed", again is Err(WebSocketError.Closed(_)))
+  const sent = await Sockets.send(socket, Message.Text("late"))
+  expect(report, "close: send gives Closed", sent is Some(WebSocketError.Closed(_)))
+}
+
+async function sendAll(socket: Socket, identifier: int, failures: Cell<int>) uses io, alloc {
+  // Half of the messages are text, half binary; the bytes of one message are all the same.
+  if (identifier % 2 == 0) {
+    const sent = await Sockets.send(socket, Message.Binary(fillBytes(150000, identifier)))
+    if (sent is Some(_)) {
+      Cells.set(failures, Cells.get(failures) + 1)
+    }
+  } else {
+    const letter = Optionals.withDefault(
+      Str.slice("abcdefghijklmnopqrstuvwxyz", identifier % 26, identifier % 26 + 1),
+      "a",
+    )
+    const sent = await Sockets.send(
+      socket,
+      Message.Text(Optionals.withDefault(Str.repeat(letter, 150000), "")),
+    )
+    if (sent is Some(_)) {
+      Cells.set(failures, Cells.get(failures) + 1)
+    }
+  }
+}
+
+function isUniform(message: Message): bool uses alloc {
+  if (message is Message.Binary(data)) {
+    const first = Bytes.at(data, 0)
+    for (const byte of Arrays.values(Bytes.toArray(data))) {
+      if (Some(byte) != first) {
+        return false
+      }
+    }
+    return Bytes.length(data) == 150000
+  }
+  if (message is Message.Text(text)) {
+    const first = Str.byteAt(text, 0)
+    for (const index of Ranges.between(0, Str.length(text))) {
+      if (Str.byteAt(text, index) != first) {
+        return false
+      }
+    }
+    return Str.length(text) == 150000
+  }
+  return false
+}
+
+async function checkManySenders(report: Report, port: int) uses io, alloc {
+  const opened = await openSocket(report, port, "/echo")
+  if (opened is None) {
+    return
+  }
+  const socket = opened.value
+  const failures = Cells.create(0)
+  const count = 40
+  let tasks: Array<Async<void>> = []
+  for (const identifier of Ranges.between(0, count)) {
+    Arrays.push(mutable tasks, sendAll(socket, identifier, failures))
+  }
+  let whole = 0
+  for (const _position of Ranges.between(0, count)) {
+    const received = await Sockets.receive(socket)
+    if (received is Ok(message)) {
+      if (isUniform(message)) {
+        whole += 1
+      }
+    }
+  }
+  for (const task of Arrays.values(tasks)) {
+    await task
+  }
+  expectInt(report, "many senders: every message arrives whole", whole, count)
+  expectInt(report, "many senders: no send failed", Cells.get(failures), 0)
+  const closed = await Sockets.close(socket, 1000, "")
+  expect(report, "many senders: close", closed is None)
+}
+
+async function checkQueue(report: Report, port: int, probe: Probe) uses io, alloc {
+  // The handler takes nothing until the check releases it, and holds two messages at most, so
+  // 80 messages of 256 KiB cannot all be written before that: the writes block.
+  const opened = await openSocket(report, port, "/slow")
+  if (opened is None) {
+    return
+  }
+  const socket = opened.value
+  const finished = Cells.create(0)
+  let tasks: Array<Async<void>> = []
+  for (const _position of Ranges.between(0, 80)) {
+    Arrays.push(mutable tasks, sendCounted(socket, finished))
+  }
+  // Wait until the count of finished sends stops growing.
+  let before = -1
+  let stable = 0
+  while (stable < 3 && Cells.get(finished) < 80) {
+    const _slept = await Time.sleep(Time.milliseconds(100))
+    if (Cells.get(finished) == before) {
+      stable += 1
+    } else {
+      stable = 0
+    }
+    before = Cells.get(finished)
+  }
+  expect(report, "queue: the sends wait while the server does not read", Cells.get(finished) < 80)
+  expectInt(report, "queue: the handler took nothing yet", Cells.get(probe.received), 0)
+  Cells.set(probe.release, true)
+  for (const task of Arrays.values(tasks)) {
+    await task
+  }
+  const done = await Sockets.receive(socket)
+  expect(report, "queue: the handler took every message", done is Ok(Message.Text("done")))
+  expectInt(report, "queue: the count of the handler", Cells.get(probe.received), 80)
+  const closed = await Sockets.close(socket, 1000, "")
+  expect(report, "queue: close", closed is None)
+}
+
+async function sendCounted(socket: Socket, finished: Cell<int>) uses io, alloc {
+  const _sent = await Sockets.send(socket, Message.Binary(fillBytes(262144, 1)))
+  Cells.set(finished, Cells.get(finished) + 1)
+}
+
+async function checkProtocol(report: Report, port: int) uses io, alloc {
+  let options = Messages.defaultOptions()
+  options.protocols = ["unknown", "superchat", "chat"]
+  const chosen = await Client.connect(buildUrl(port, "/protocols"), options)
+  if (chosen is Ok(socket)) {
+    expect(
+      report,
+      "protocol: the first of the offer that the server has",
+      Sockets.protocol(socket) == Some("superchat"),
+    )
+    const told = await Sockets.receive(socket)
+    expect(report, "protocol: the server sees the same", told is Ok(Message.Text("superchat")))
+  } else {
+    expect(report, "protocol: connect", false)
+  }
+  const none = await Client.connect(buildUrl(port, "/protocols"), Messages.defaultOptions())
+  if (none is Ok(socket)) {
+    expect(report, "protocol: no offer, no protocol", Sockets.protocol(socket) is None)
+    const told = await Sockets.receive(socket)
+    expect(report, "protocol: the server says none", told is Ok(Message.Text("none")))
+  } else {
+    expect(report, "protocol: connect without an offer", false)
+  }
+}
+
+async function checkServerClose(report: Report, port: int) uses io, alloc {
+  const opened = await openSocket(report, port, "/closer")
+  if (opened is None) {
+    return
+  }
+  const socket = opened.value
+  const greeting = await Sockets.receive(socket)
+  expect(
+    report,
+    "server close: the message before the close arrives",
+    greeting is Ok(Message.Text("hello")),
+  )
+  const ended = await Sockets.receive(socket)
+  if (ended is Err(WebSocketError.Closed(info))) {
+    expectInt(report, "server close: the code", info.code, 4001)
+    expectText(report, "server close: the reason", info.reason, "bye")
+  } else {
+    expect(report, "server close: the client sees the close", false)
+  }
+}
+
+async function checkLimits(report: Report, port: int) uses io, alloc {
+  const opened = await openSocket(report, port, "/small")
+  if (opened is None) {
+    return
+  }
+  const socket = opened.value
+  await checkRoundTrip(
+    report,
+    "limit: a message under the limit",
+    socket,
+    Message.Binary(fillBytes(900, 3)),
+  )
+  const sent = await Sockets.send(socket, Message.Binary(fillBytes(5000, 3)))
+  expect(report, "limit: the oversized send itself is written", sent is None)
+  const answer = await Sockets.receive(socket)
+  if (answer is Err(WebSocketError.Closed(info))) {
+    expectInt(report, "limit: the server closes with 1009", info.code, 1009)
+  } else {
+    expect(report, "limit: the server closes the socket", false)
+  }
+}
+
+async function checkHandshakeErrors(report: Report, port: int) uses io, alloc {
+  const wrongAccept = await Client.connect(buildUrl(port, "/bad-accept"), Messages.defaultOptions())
+  expect(report, "handshake: a wrong Sec-WebSocket-Accept is refused", wrongAccept is Err(_))
+  const notFound = await Client.connect(buildUrl(port, "/nothing"), Messages.defaultOptions())
+  expect(report, "handshake: a 404 is an error", notFound is Err(WebSocketError.Http(_)))
+  const secure = await Client.connect("wss://127.0.0.1:1/x", Messages.defaultOptions())
+  expect(report, "handshake: wss is an error", secure is Err(WebSocketError.Http(_)))
+  const plain = await Client.connect("http://127.0.0.1:1/x", Messages.defaultOptions())
+  expect(report, "handshake: another scheme is an error", plain is Err(WebSocketError.Http(_)))
+  const refused = await Client.connect("ws://127.0.0.1:1/x", Messages.defaultOptions())
+  expect(report, "handshake: a closed port is an error", refused is Err(_))
+}
+
+async function checkHandlerEnd(report: Report, port: int, probe: Probe) uses io, alloc {
+  const opened = await openSocket(report, port, "/ends")
+  if (opened is None) {
+    return
+  }
+  const socket = opened.value
+  await checkRoundTrip(report, "end: echo", socket, Message.Text("x"))
+  const closed = await Sockets.close(socket, 1000, "")
+  expect(report, "end: close", closed is None)
+  const _slept = await Time.sleep(Time.milliseconds(100))
+  expect(
+    report,
+    "end: the handler of the server ends when the peer closes",
+    Cells.get(probe.handlerEnded),
+  )
+}
+
+export async function runEchoChecks(report: Report, port: int, probe: Probe) uses io, alloc {
+  await checkEcho(report, port)
+  await checkManySenders(report, port)
+  await checkProtocol(report, port)
+  await checkServerClose(report, port)
+  await checkLimits(report, port)
+  await checkHandshakeErrors(report, port)
+  await checkHandlerEnd(report, port, probe)
+  await checkQueue(report, port, probe)
+}

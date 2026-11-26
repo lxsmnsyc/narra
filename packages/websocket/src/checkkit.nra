@@ -1,0 +1,289 @@
+// The counters and the raw-socket helpers that the checks of the package share.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Frames from "websocket/frame"
+import * as Int from "std/int"
+import * as Net from "std/net"
+import * as U8 from "std/u8"
+import * as Time from "std/time"
+import { Cell } from "std/cell"
+import { Connection } from "std/net"
+import { Duration } from "std/time"
+
+/// How many checks ran and how many failed. Copies share the counts.
+export struct Report {
+  checked: Cell<int>
+  failed: Cell<int>
+}
+
+export function createReport(): Report uses alloc {
+  return Report { checked: Cells.create(0), failed: Cells.create(0) }
+}
+
+/// Counts one check. A failed check prints its line; a passed one prints nothing.
+export function expect(report: Report, name: string, condition: bool) uses io, alloc {
+  Cells.set(report.checked, Cells.get(report.checked) + 1)
+  if (!condition) {
+    Cells.set(report.failed, Cells.get(report.failed) + 1)
+    print(`FAIL - ${name}`)
+  }
+}
+
+/// A check that two texts are equal. A failure prints both.
+export function expectText(
+  report: Report,
+  name: string,
+  actual: string,
+  expected: string,
+) uses io, alloc {
+  expect(report, name, actual == expected)
+  if (actual != expected) {
+    print(`  expected: ${expected}`)
+    print(`  actual:   ${actual}`)
+  }
+}
+
+/// A check that two numbers are equal. A failure prints both.
+export function expectInt(report: Report, name: string, actual: int, expected: int) uses io, alloc {
+  expect(report, name, actual == expected)
+  if (actual != expected) {
+    print(`  expected: ${Int.toString(expected)}`)
+    print(`  actual:   ${Int.toString(actual)}`)
+  }
+}
+
+export function describeCount(report: Report): string uses alloc {
+  const checked = Int.toString(Cells.get(report.checked))
+  const failed = Int.toString(Cells.get(report.failed))
+  return `${checked} checks, ${failed} failed`
+}
+
+/// One frame as a raw peer sees it.
+export struct RawFrame {
+  fin: bool
+  opcode: int
+  payload: bytes
+}
+
+/// A raw connection to a server: the bytes that were read and not used yet are in `pending`.
+export struct RawPeer {
+  connection: Connection
+  pending: Cell<bytes>
+}
+
+/// The text of a handshake request for the path, with the lines of `extra` added.
+export function writeHandshake(path: string, extra: string): string uses alloc {
+  return `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n${extra}\r\n`
+}
+
+async function readOnce(connection: Connection): Option<bytes> uses io, alloc {
+  const data = await Net.read(connection, 65536)
+  if (data is Ok(piece)) {
+    return Some(piece)
+  }
+  return None
+}
+
+async function timeOut(limit: Duration): Option<bytes> uses io, alloc {
+  const _slept = await Time.sleep(limit)
+  return None
+}
+
+/// Reads from the connection for up to the limit. None means nothing came, or the peer closed.
+export async function readWithin(
+  connection: Connection,
+  limit: Duration,
+): Option<bytes> uses io, alloc {
+  const reading = readOnce(connection)
+  const timer = timeOut(limit)
+  const first = await Async.race([reading, timer])
+  Async.cancel(reading)
+  Async.cancel(timer)
+  if (first is Some(result)) {
+    if (result is Some(data)) {
+      if (Bytes.length(data) > 0) {
+        return Some(data)
+      }
+    }
+  }
+  return None
+}
+
+/// Connects, sends the bytes, and reads the response head. The peer keeps what came after it.
+export async function openRaw(port: int, request: string): Option<RawPeer> uses io, alloc {
+  return await openRawWith(port, request, Bytes.fromString(""))
+}
+
+/// Like `openRaw`, with `extra` bytes in the same write as the request, so they arrive with the
+/// head.
+export async function openRawWith(
+  port: int,
+  request: string,
+  extra: bytes,
+): Option<RawPeer> uses io, alloc {
+  const connected = await Net.connect("127.0.0.1", port)
+  if (connected is Err(_)) {
+    return None
+  }
+  const sent = await Net.write(connected.value, Bytes.concat(Bytes.fromString(request), extra))
+  if (sent is Err(_)) {
+    return None
+  }
+  let received = Bytes.fromString("")
+  while (true) {
+    const headEnd = findHeadEnd(received)
+    if (headEnd >= 0) {
+      const rest = Bytes.slice(received, headEnd, Bytes.length(received))
+      if (rest is Some(leftover)) {
+        return Some(RawPeer { connection: connected.value, pending: Cells.create(leftover) })
+      }
+    }
+    const piece = await readWithin(connected.value, Time.seconds(3))
+    if (piece is None) {
+      return None
+    }
+    received = Bytes.concat(received, piece.value)
+  }
+}
+
+/// The index just after the first blank line of the bytes, or -1.
+function findHeadEnd(data: bytes): int {
+  for (let index = 0; index + 3 < Bytes.length(data); index++) {
+    if (
+      Frames.readByte(data, index) == 13 &&
+        Frames.readByte(data, index + 1) == 10 &&
+        Frames.readByte(data, index + 2) == 13 &&
+        Frames.readByte(data, index + 3) == 10
+    ) {
+      return index + 4
+    }
+  }
+  return -1
+}
+
+/// The head of the response of a raw handshake, as text.
+export async function readHandshakeAnswer(port: int, request: string): string uses io, alloc {
+  const connected = await Net.connect("127.0.0.1", port)
+  if (connected is Err(_)) {
+    return "connect failed"
+  }
+  const sent = await Net.write(connected.value, Bytes.fromString(request))
+  if (sent is Err(_)) {
+    return "write failed"
+  }
+  let received = Bytes.fromString("")
+  while (true) {
+    const headEnd = findHeadEnd(received)
+    if (headEnd >= 0) {
+      const head = Bytes.slice(received, 0, headEnd)
+      if (head is Some(found)) {
+        const text = Bytes.toString(found)
+        if (text is Ok(content)) {
+          return content
+        }
+      }
+      return "the head is not text"
+    }
+    const piece = await readWithin(connected.value, Time.seconds(3))
+    if (piece is None) {
+      return "no answer"
+    }
+    received = Bytes.concat(received, piece.value)
+  }
+}
+
+async function fillPending(peer: RawPeer, limit: Duration): bool uses io, alloc {
+  const piece = await readWithin(peer.connection, limit)
+  if (piece is None) {
+    return false
+  }
+  Cells.set(peer.pending, Bytes.concat(Cells.get(peer.pending), piece.value))
+  return true
+}
+
+/// The next frame the server sent, or None when none came within the limit or the peer ended.
+export async function readFrame(peer: RawPeer, limit: Duration): Option<RawFrame> uses io, alloc {
+  while (true) {
+    const parsed = Frames.parseHead(Cells.get(peer.pending), 0, false, 100000000)
+    if (parsed is Frames.HeadParse.Complete(head)) {
+      const total = head.size + head.length
+      while (Bytes.length(Cells.get(peer.pending)) < total) {
+        if (!(await fillPending(peer, limit))) {
+          return None
+        }
+      }
+      const all = Cells.get(peer.pending)
+      const payload = Bytes.slice(all, head.size, total)
+      const rest = Bytes.slice(all, total, Bytes.length(all))
+      if (payload is Some(found)) {
+        if (rest is Some(left)) {
+          Cells.set(peer.pending, left)
+          return Some(RawFrame { fin: head.fin, opcode: head.opcode, payload: found })
+        }
+      }
+      return None
+    }
+    if (parsed is Frames.HeadParse.Invalid(_, _)) {
+      return None
+    }
+    if (!(await fillPending(peer, limit))) {
+      return None
+    }
+  }
+}
+
+/// A masked frame of a client, with a key that is not zero.
+export function writeClientFrame(fin: bool, opcode: int, payload: bytes): bytes uses alloc {
+  const key: Array<u8> = [1, 2, 3, 4]
+  const head = Frames.writeHead(fin, opcode, Bytes.length(payload), Some(key))
+  return Bytes.concat(head, Frames.maskPayload(payload, key))
+}
+
+export async function sendRaw(peer: RawPeer, data: bytes): bool uses io, alloc {
+  const sent = await Net.write(peer.connection, data)
+  return sent is Ok(_)
+}
+
+/// The code of a close frame, or -1 when the frame is not one or has no code.
+export function readCloseCode(frame: RawFrame): int {
+  if (frame.opcode != Frames.OPCODE_CLOSE) {
+    return -1
+  }
+  if (Bytes.length(frame.payload) < 2) {
+    return -1
+  }
+  return (Frames.readByte(frame.payload, 0) << 8) | Frames.readByte(frame.payload, 1)
+}
+
+/// Reads frames until a close frame, and gives its code. -1 means none came.
+export async function awaitCloseCode(peer: RawPeer): int uses io, alloc {
+  while (true) {
+    const frame = await readFrame(peer, Time.seconds(3))
+    if (frame is None) {
+      return -1
+    }
+    if (frame.value.opcode == Frames.OPCODE_CLOSE) {
+      return readCloseCode(frame.value)
+    }
+  }
+}
+
+/// `count` bytes that all have the value.
+export function fillBytes(count: int, value: int): bytes uses alloc {
+  let data: Array<u8> = Arrays.withCapacity(count)
+  for (let index = 0; index < count; index++) {
+    Arrays.push(mutable data, U8.wrap(value))
+  }
+  return Bytes.fromArray(data)
+}
+
+export function makeBytes(values: Array<int>): bytes uses alloc {
+  let data: Array<u8> = []
+  for (const value of Arrays.values(values)) {
+    Arrays.push(mutable data, U8.wrap(value))
+  }
+  return Bytes.fromArray(data)
+}

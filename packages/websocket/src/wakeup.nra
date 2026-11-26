@@ -1,0 +1,112 @@
+// Waiting between tasks of one loop. A waiter sleeps in a ticket, a task that sleeps for a day;
+// a waker cancels the ticket, which ends the sleep at once. std has no condition or lock for
+// tasks, and a channel would block the loop.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Cells from "std/cell"
+import * as Time from "std/time"
+import { Cell } from "std/cell"
+
+struct Ticket {
+  id: int
+  task: Async<void>
+}
+
+/// The tasks that wait for one event, oldest first.
+export struct Waiters {
+  tickets: Cell<Array<Ticket>>
+  counter: Cell<int>
+}
+
+/// A lock for tasks. A waiter that gets the lock from `release` finds it held.
+export struct Lock {
+  held: Cell<bool>
+  waiters: Waiters
+}
+
+/// A list of waiters with nobody in it.
+export function createWaiters(): Waiters uses alloc {
+  const tickets: Array<Ticket> = []
+  return Waiters { tickets: Cells.create(tickets), counter: Cells.create(0) }
+}
+
+/// A lock that nobody holds.
+export function createLock(): Lock uses alloc {
+  return Lock { held: Cells.create(false), waiters: createWaiters() }
+}
+
+async function sleepOneDay() uses io, alloc {
+  const _slept = await Time.sleep(Time.seconds(86400))
+}
+
+function removeTicket(waiters: Waiters, id: int): bool uses alloc {
+  // True when the ticket was still in the list, which means nobody woke it.
+  let kept: Array<Ticket> = []
+  let found = false
+  for (const ticket of Arrays.values(Cells.get(waiters.tickets))) {
+    if (ticket.id == id) {
+      found = true
+    } else {
+      Arrays.push(mutable kept, ticket)
+    }
+  }
+  if (found) {
+    Cells.set(waiters.tickets, kept)
+  }
+  return found
+}
+
+/// Waits until `wakeOne` or `wakeAll` reaches this waiter. False means the waiting task was
+/// cancelled instead, so the caller must stop rather than wait again.
+export async function wait(waiters: Waiters): bool uses io, alloc {
+  const id = Cells.get(waiters.counter) + 1
+  Cells.set(waiters.counter, id)
+  const task = sleepOneDay()
+  let queued = copy(Cells.get(waiters.tickets))
+  Arrays.push(mutable queued, Ticket { id, task })
+  Cells.set(waiters.tickets, queued)
+  await task
+  // A ticket that is still queued was ended by the cancel of this task, not by a waker.
+  return !removeTicket(waiters, id)
+}
+
+/// Wakes the oldest waiter, if there is one.
+export function wakeOne(waiters: Waiters) uses alloc {
+  const queued = Cells.get(waiters.tickets)
+  if (Arrays.length(queued) == 0) {
+    return
+  }
+  const first = queued[0]
+  removeTicket(waiters, first.id)
+  Async.cancel(first.task)
+}
+
+/// Wakes every waiter.
+export function wakeAll(waiters: Waiters) uses alloc {
+  const queued = copy(Cells.get(waiters.tickets))
+  const none: Array<Ticket> = []
+  Cells.set(waiters.tickets, none)
+  for (const ticket of Arrays.values(queued)) {
+    Async.cancel(ticket.task)
+  }
+}
+
+/// Takes the lock, waiting for its turn. False means the waiting task was cancelled and the lock
+/// is not held.
+export async function acquire(lock: Lock): bool uses io, alloc {
+  if (!Cells.get(lock.held)) {
+    Cells.set(lock.held, true)
+    return true
+  }
+  return await wait(lock.waiters)
+}
+
+/// Gives the lock to the oldest waiter, or frees it when nobody waits.
+export function release(lock: Lock) uses alloc {
+  if (Arrays.length(Cells.get(lock.waiters.tickets)) == 0) {
+    Cells.set(lock.held, false)
+    return
+  }
+  wakeOne(lock.waiters)
+}

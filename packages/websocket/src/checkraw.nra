@@ -1,0 +1,966 @@
+// Checks with raw frames: the codec, a peer that breaks each rule, pings while the handler
+// sleeps, the handshake errors, random bytes, and what a client puts on the wire.
+
+import * as Arrays from "std/array"
+import * as Async from "std/async"
+import * as Bytes from "std/bytes"
+import * as Cells from "std/cell"
+import * as Client from "websocket/client"
+import * as Frames from "websocket/frame"
+import * as Handshake from "websocket/handshake"
+import * as Int from "std/int"
+import * as Messages from "websocket/message"
+import * as Net from "std/net"
+import * as Optionals from "std/option"
+import * as Randoms from "std/random"
+import * as Ranges from "std/range"
+import * as Sockets from "websocket/socket"
+import * as Str from "std/string"
+import * as Time from "std/time"
+import { Listener } from "std/net"
+import { Message, WebSocketError } from "websocket/message"
+import { Probe } from "websocket/checkserver"
+import {
+  RawPeer,
+  Report,
+  awaitCloseCode,
+  expect,
+  expectInt,
+  expectText,
+  fillBytes,
+  makeBytes,
+  openRaw,
+  openRawWith,
+  readFrame,
+  readHandshakeAnswer,
+  sendRaw,
+  writeClientFrame,
+  writeHandshake,
+} from "websocket/checkkit"
+
+function buildUrl(port: int, path: string): string uses alloc {
+  return `ws://127.0.0.1:${Int.toString(port)}${path}`
+}
+
+function checkCodec(report: Report) uses io, alloc {
+  expectText(
+    report,
+    "codec: the accept key of the RFC",
+    Handshake.findAccept("dGhlIHNhbXBsZSBub25jZQ=="),
+    "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+  )
+  expect(report, "codec: a generated key is valid", Handshake.isValidKey(Handshake.makeKey()))
+  expect(report, "codec: a short key is not valid", !Handshake.isValidKey("c2hvcnQ="))
+  const key: Array<u8> = [9, 8, 7, 6]
+  for (const length of Arrays.values([0, 1, 125, 126, 127, 65535, 65536, 70000, 16777216])) {
+    for (const masked of Arrays.values([false, true])) {
+      let maskKey: Option<Array<u8>> = None
+      if (masked) {
+        maskKey = Some(key)
+      }
+      const head = Frames.writeHead(true, Frames.OPCODE_BINARY, length, maskKey)
+      const parsed = Frames.parseHead(head, 0, masked, 20000000)
+      let kind = "plain"
+      if (masked) {
+        kind = "masked"
+      }
+      const name = `codec: ${kind} head of ${Int.toString(length)} bytes`
+      if (parsed is Frames.HeadParse.Complete(found)) {
+        expect(
+          report,
+          name,
+          found.length == length &&
+            found.fin &&
+            found.opcode == 2 &&
+            found.size == Bytes.length(head),
+        )
+      } else {
+        expect(report, `${name} parses`, false)
+      }
+      // A head cut short asks for more bytes.
+      const cut = Bytes.slice(head, 0, Bytes.length(head) - 1)
+      if (cut is Some(shorter)) {
+        const again = Frames.parseHead(shorter, 0, masked, 20000000)
+        expect(report, `${name} cut`, again is Frames.HeadParse.Incomplete)
+      }
+    }
+  }
+  const limited = Frames.writeHead(true, Frames.OPCODE_BINARY, 5000, None)
+  expect(
+    report,
+    "codec: a length over the limit is 1009",
+    Frames.parseHead(limited, 0, false, 4000) is Frames.HeadParse.Invalid(1009, _),
+  )
+  const topBit = makeBytes([130, 127, 128, 0, 0, 0, 0, 0, 0, 0])
+  expect(
+    report,
+    "codec: a length with its top bit set is 1002",
+    Frames.parseHead(topBit, 0, false, 100) is Frames.HeadParse.Invalid(1002, _),
+  )
+  const text = Bytes.fromString("masking works both ways")
+  expect(
+    report,
+    "codec: masking twice gives the text",
+    Frames.maskPayload(Frames.maskPayload(text, key), key) == text,
+  )
+  const closePayload = Frames.writeClosePayload(4000, "reason")
+  const read = Frames.readClosePayload(closePayload)
+  if (read is Ok(info)) {
+    expect(
+      report,
+      "codec: a close payload round trips",
+      info.code == 4000 && info.reason == "reason",
+    )
+  } else {
+    expect(report, "codec: a close payload parses", false)
+  }
+  expect(
+    report,
+    "codec: close code 1005 is refused",
+    Frames.readClosePayload(makeBytes([3, 237])) is Err(_),
+  )
+  expect(
+    report,
+    "codec: close code 999 is refused",
+    Frames.readClosePayload(makeBytes([3, 231])) is Err(_),
+  )
+  expect(
+    report,
+    "codec: close payload of one byte is refused",
+    Frames.readClosePayload(makeBytes([3])) is Err(_),
+  )
+  expect(report, "codec: close code 1000 is sendable", Frames.isValidCloseCode(1000))
+  expect(report, "codec: close code 1006 is not", !Frames.isValidCloseCode(1006))
+  expect(report, "codec: close code 5000 is not", !Frames.isValidCloseCode(5000))
+}
+
+function checkFrameFuzz(report: Report) uses io, alloc {
+  // Random bytes must give Incomplete, Invalid or a head that respects the limit, never a panic.
+  let random = Randoms.seeded(2026)
+  let accepted = 0
+  let broken = false
+  for (const _round of Ranges.between(0, 20000)) {
+    const length = Randoms.nextInt(mutable random, 0, 24)
+    const count = Optionals.withDefault(length, 0)
+    let values: Array<int> = []
+    for (const _position of Ranges.between(0, count)) {
+      Arrays.push(mutable values, Optionals.withDefault(Randoms.nextInt(mutable random, 0, 256), 0))
+    }
+    const data = makeBytes(values)
+    const expectMasked = count % 2 == 0
+    const parsed = Frames.parseHead(data, 0, expectMasked, 1000)
+    if (parsed is Frames.HeadParse.Complete(head)) {
+      accepted += 1
+      if (head.length > 1000 || head.size > count || head.length < 0) {
+        broken = true
+      }
+    }
+  }
+  expect(report, "fuzz: parseHead respects its limits on random bytes", !broken)
+  expect(report, "fuzz: some random heads are valid", accepted > 0)
+}
+
+async function checkCloseCase(
+  report: Report,
+  port: int,
+  path: string,
+  name: string,
+  frames: bytes,
+  wanted: int,
+) uses io, alloc {
+  const peer = await openRaw(port, writeHandshake(path, ""))
+  if (peer is None) {
+    expect(report, `${name}: the handshake`, false)
+    return
+  }
+  const sent = await sendRaw(peer.value, frames)
+  expect(report, `${name}: send`, sent)
+  const code = await awaitCloseCode(peer.value)
+  expectInt(report, name, code, wanted)
+}
+
+async function checkBrokenRules(report: Report, port: int) uses io, alloc {
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: an unmasked frame is 1002",
+    makeBytes([129, 2, 104, 105]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: reserved bit 1 is 1002",
+    makeBytes([193, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: reserved bit 2 is 1002",
+    makeBytes([161, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: reserved bit 3 is 1002",
+    makeBytes([145, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: opcode 3 is 1002",
+    makeBytes([131, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: opcode 7 is 1002",
+    makeBytes([135, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: opcode 11 is 1002",
+    makeBytes([139, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: opcode 15 is 1002",
+    makeBytes([143, 128, 0, 0, 0, 0]),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a control frame over 125 bytes is 1002",
+    writeClientFrame(true, Frames.OPCODE_PING, fillBytes(126, 1)),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a fragmented control frame is 1002",
+    writeClientFrame(false, Frames.OPCODE_PING, Bytes.fromString("")),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: bad UTF-8 is 1007",
+    writeClientFrame(true, Frames.OPCODE_TEXT, makeBytes([255, 254])),
+    1007,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: an overlong UTF-8 sequence is 1007",
+    writeClientFrame(true, Frames.OPCODE_TEXT, makeBytes([192, 175])),
+    1007,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a UTF-16 surrogate is 1007",
+    writeClientFrame(true, Frames.OPCODE_TEXT, makeBytes([237, 160, 128])),
+    1007,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a continuation with no message is 1002",
+    writeClientFrame(true, Frames.OPCODE_CONTINUATION, Bytes.fromString("x")),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a new message in the middle of one is 1002",
+    Bytes.concat(
+      writeClientFrame(false, Frames.OPCODE_TEXT, Bytes.fromString("a")),
+      writeClientFrame(true, Frames.OPCODE_TEXT, Bytes.fromString("b")),
+    ),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/small",
+    "raw: a message over the limit is 1009",
+    writeClientFrame(true, Frames.OPCODE_BINARY, fillBytes(2000, 1)),
+    1009,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/small",
+    "raw: a frame over the limit is 1009",
+    writeClientFrame(true, Frames.OPCODE_BINARY, fillBytes(5000, 1)),
+    1009,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/small",
+    "raw: fragments that add up over the limit are 1009",
+    Bytes.concat(
+      Bytes.concat(
+        writeClientFrame(false, Frames.OPCODE_BINARY, fillBytes(600, 1)),
+        writeClientFrame(false, Frames.OPCODE_CONTINUATION, fillBytes(600, 1)),
+      ),
+      writeClientFrame(true, Frames.OPCODE_CONTINUATION, fillBytes(600, 1)),
+    ),
+    1009,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a close of one byte is 1002",
+    writeClientFrame(true, Frames.OPCODE_CLOSE, makeBytes([3])),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: close code 999 is 1002",
+    writeClientFrame(true, Frames.OPCODE_CLOSE, makeBytes([3, 231])),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: close code 1005 is 1002",
+    writeClientFrame(true, Frames.OPCODE_CLOSE, makeBytes([3, 237])),
+    1002,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a close reason that is not UTF-8 is 1007",
+    writeClientFrame(true, Frames.OPCODE_CLOSE, makeBytes([3, 232, 255])),
+    1007,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "raw: a close with a code is answered with it",
+    writeClientFrame(true, Frames.OPCODE_CLOSE, Frames.writeClosePayload(3500, "bye")),
+    3500,
+  )
+}
+
+async function checkValidFragments(report: Report, port: int) uses io, alloc {
+  // A message in three fragments with a ping in between, and a character split between fragments.
+  const peer = await openRaw(port, writeHandshake("/echo", ""))
+  if (peer is None) {
+    expect(report, "fragments: the handshake", false)
+    return
+  }
+  const euro = makeBytes([226, 130, 172])
+  const split = Bytes.concat(
+    Bytes.concat(
+      writeClientFrame(false, Frames.OPCODE_TEXT, Bytes.fromString("Hel")),
+      writeClientFrame(true, Frames.OPCODE_PING, Bytes.fromString("p")),
+    ),
+    Bytes.concat(
+      writeClientFrame(false, Frames.OPCODE_CONTINUATION, Bytes.fromString("lo")),
+      writeClientFrame(true, Frames.OPCODE_CONTINUATION, Bytes.fromString("!")),
+    ),
+  )
+  expect(report, "fragments: send", await sendRaw(peer.value, split))
+  const pong = await readFrame(peer.value, Time.seconds(3))
+  if (pong is Some(frame)) {
+    expect(
+      report,
+      "fragments: the ping is answered between fragments",
+      frame.opcode == Frames.OPCODE_PONG && frame.payload == Bytes.fromString("p"),
+    )
+  } else {
+    expect(report, "fragments: a pong came", false)
+  }
+  const message = await readFrame(peer.value, Time.seconds(3))
+  if (message is Some(frame)) {
+    expect(
+      report,
+      "fragments: the message is whole",
+      frame.opcode == Frames.OPCODE_TEXT && frame.payload == Bytes.fromString("Hello!"),
+    )
+  } else {
+    expect(report, "fragments: the message came", false)
+  }
+  const splitCharacter = Bytes.concat(
+    writeClientFrame(false, Frames.OPCODE_TEXT, Bytes.fromString("a")),
+    Bytes.concat(
+      writeClientFrame(false, Frames.OPCODE_CONTINUATION, makeBytes([226, 130])),
+      writeClientFrame(true, Frames.OPCODE_CONTINUATION, makeBytes([172])),
+    ),
+  )
+  expect(report, "fragments: send the split character", await sendRaw(peer.value, splitCharacter))
+  const answer = await readFrame(peer.value, Time.seconds(3))
+  if (answer is Some(frame)) {
+    expect(
+      report,
+      "fragments: a character split between fragments is kept",
+      frame.payload == Bytes.concat(Bytes.fromString("a"), euro),
+    )
+  } else {
+    expect(report, "fragments: the split character came back", false)
+  }
+  // Ten pings, ten pongs, in order.
+  let pings = Bytes.fromString("")
+  for (const number of Ranges.between(0, 10)) {
+    pings = Bytes.concat(
+      pings,
+      writeClientFrame(true, Frames.OPCODE_PING, Bytes.fromString(Int.toString(number))),
+    )
+  }
+  expect(report, "pings: send", await sendRaw(peer.value, pings))
+  let inOrder = 0
+  for (const number of Ranges.between(0, 10)) {
+    const frame = await readFrame(peer.value, Time.seconds(3))
+    if (frame is Some(found)) {
+      if (
+        found.opcode == Frames.OPCODE_PONG &&
+          found.payload == Bytes.fromString(Int.toString(number))
+      ) {
+        inOrder += 1
+      }
+    }
+  }
+  expectInt(report, "pings: every ping gets its pong in order", inOrder, 10)
+  // A close without a code is answered, and the peer ends.
+  expect(
+    report,
+    "close: send an empty close",
+    await sendRaw(peer.value, writeClientFrame(true, Frames.OPCODE_CLOSE, Bytes.fromString(""))),
+  )
+  const reply = await readFrame(peer.value, Time.seconds(3))
+  expect(report, "close: an empty close is answered with a close", reply is Some(_))
+}
+
+async function checkSleepingHandler(report: Report, port: int) uses io, alloc {
+  // The handler sleeps for 1500 ms and never calls receive; the reader still answers a ping.
+  const peer = await openRaw(port, writeHandshake("/sleep", ""))
+  if (peer is None) {
+    expect(report, "sleeping handler: the handshake", false)
+    return
+  }
+  const _slept = await Time.sleep(Time.milliseconds(100))
+  expect(
+    report,
+    "sleeping handler: send a ping",
+    await sendRaw(
+      peer.value,
+      writeClientFrame(true, Frames.OPCODE_PING, Bytes.fromString("alive")),
+    ),
+  )
+  const pong = await readFrame(peer.value, Time.milliseconds(700))
+  if (pong is Some(frame)) {
+    expect(
+      report,
+      "sleeping handler: the ping is answered at once",
+      frame.opcode == Frames.OPCODE_PONG && frame.payload == Bytes.fromString("alive"),
+    )
+  } else {
+    expect(report, "sleeping handler: a pong came", false)
+  }
+  // A close frame is answered too.
+  expect(
+    report,
+    "sleeping handler: send a close",
+    await sendRaw(
+      peer.value,
+      writeClientFrame(true, Frames.OPCODE_CLOSE, Frames.writeClosePayload(1000, "")),
+    ),
+  )
+  const code = await awaitCloseCode(peer.value)
+  expectInt(report, "sleeping handler: the close is answered at once", code, 1000)
+}
+
+async function checkPingInterval(report: Report, port: int, probe: Probe) uses io, alloc {
+  const peer = await openRaw(port, writeHandshake("/pinger", ""))
+  if (peer is None) {
+    expect(report, "ping interval: the handshake", false)
+    return
+  }
+  // The first ping comes after one interval; with no pong the next interval ends the socket.
+  const frame = await readFrame(peer.value, Time.milliseconds(600))
+  if (frame is Some(found)) {
+    expect(report, "ping interval: the server pings", found.opcode == Frames.OPCODE_PING)
+  } else {
+    expect(report, "ping interval: the server pings", false)
+  }
+  // No pong came: the socket ends within a few intervals.
+  let waited = 0
+  while (!Cells.get(probe.pingingEnded) && waited < 30) {
+    const _slept = await Time.sleep(Time.milliseconds(50))
+    waited += 1
+  }
+  expect(report, "ping interval: no pong ends the socket", Cells.get(probe.pingingEnded))
+}
+
+async function checkHandshakeAnswers(report: Report, port: int) uses io, alloc {
+  const good = await readHandshakeAnswer(port, writeHandshake("/echo", ""))
+  expect(report, "handshake: a good request gets 101", Str.startsWith(good, "HTTP/1.1 101"))
+  expect(
+    report,
+    "handshake: the accept key is in the answer",
+    Str.contains(good, "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+  )
+  const plain = await readHandshakeAnswer(port, "GET /echo HTTP/1.1\r\nHost: x\r\n\r\n")
+  expect(report, "handshake: a plain GET gets 400", Str.startsWith(plain, "HTTP/1.1 400"))
+  const old = await readHandshakeAnswer(
+    port,
+    "GET /echo HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n\r\n",
+  )
+  expect(report, "handshake: another version gets 426", Str.startsWith(old, "HTTP/1.1 426"))
+  expect(report, "handshake: 426 names the version", Str.contains(old, "Sec-WebSocket-Version: 13"))
+  const badKey = await readHandshakeAnswer(
+    port,
+    "GET /echo HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: short\r\nSec-WebSocket-Version: 13\r\n\r\n",
+  )
+  expect(report, "handshake: a bad key gets 400", Str.startsWith(badKey, "HTTP/1.1 400"))
+  const noConnection = await readHandshakeAnswer(
+    port,
+    "GET /echo HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+  )
+  expect(
+    report,
+    "handshake: no Connection token gets 400",
+    Str.startsWith(noConnection, "HTTP/1.1 400"),
+  )
+  const post = await readHandshakeAnswer(
+    port,
+    "POST /echo HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n",
+  )
+  expect(report, "handshake: a POST gets 400", Str.startsWith(post, "HTTP/1.1 400"))
+  const extension = await readHandshakeAnswer(
+    port,
+    writeHandshake("/echo", "Sec-WebSocket-Extensions: permessage-deflate\r\n"),
+  )
+  expect(
+    report,
+    "handshake: an extension offer is declined, not an error",
+    Str.startsWith(extension, "HTTP/1.1 101"),
+  )
+  expect(report, "handshake: the answer names no extension", !Str.contains(extension, "Extensions"))
+  const mixed = await readHandshakeAnswer(
+    port,
+    "GET /echo HTTP/1.1\r\nHost: x\r\nupgrade: WebSocket\r\nconnection: keep-alive, UPGRADE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n",
+  )
+  expect(
+    report,
+    "handshake: header names and tokens match without regard to case",
+    Str.startsWith(mixed, "HTTP/1.1 101"),
+  )
+  const protocol = await readHandshakeAnswer(
+    port,
+    writeHandshake("/protocols", "Sec-WebSocket-Protocol: nope, superchat\r\n"),
+  )
+  expect(
+    report,
+    "handshake: the chosen protocol is named",
+    Str.contains(protocol, "Sec-WebSocket-Protocol: superchat"),
+  )
+}
+
+async function checkRandomBytes(report: Report, port: int) uses io, alloc {
+  // Random bytes after a good handshake end the socket without a panic, and the server goes on.
+  let random = Randoms.seeded(7)
+  for (const _round of Ranges.between(0, 40)) {
+    const peer = await openRaw(port, writeHandshake("/echo", ""))
+    if (peer is None) {
+      expect(report, "random: the handshake", false)
+      return
+    }
+    const length = Optionals.withDefault(Randoms.nextInt(mutable random, 1, 400), 1)
+    let values: Array<int> = []
+    for (const _position of Ranges.between(0, length)) {
+      Arrays.push(mutable values, Optionals.withDefault(Randoms.nextInt(mutable random, 0, 256), 0))
+    }
+    const _sent = await sendRaw(peer.value, makeBytes(values))
+    const _frame = await readFrame(peer.value, Time.milliseconds(100))
+  }
+  const alive = await openRaw(port, writeHandshake("/echo", ""))
+  expect(report, "random: the server still takes connections", alive is Some(_))
+}
+
+async function answerHandshake(listener: Listener): Option<RawPeer> uses io, alloc {
+  // Takes the next connection, reads its handshake and answers it as a server would.
+  const accepted = await Net.accept(listener)
+  if (accepted is Err(_)) {
+    return None
+  }
+  const peer = RawPeer { connection: accepted.value, pending: Cells.create(Bytes.fromString("")) }
+  let head = ""
+  let waited = 0
+  while (!Str.contains(head, "\r\n\r\n") && waited < 30) {
+    head = Str.concat(head, await readFrameBytes(peer))
+    waited += 1
+  }
+  const key = findHeaderValue(head, "Sec-WebSocket-Key")
+  const answer = `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${Handshake.findAccept(key)}\r\n\r\n`
+  const _written = await Net.write(peer.connection, Bytes.fromString(answer))
+  return Some(peer)
+}
+
+async function checkCancelledSender(report: Report) uses io, alloc {
+  // The peer takes the handshake and then reads nothing, so a large send blocks. Cancelling it
+  // leaves part of a frame on the wire, so the socket must end.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "cancelled sender: listen", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  const connecting = Client.connect(buildUrl(port, "/x"), Messages.defaultOptions())
+  const silent = await answerHandshake(listener.value)
+  const opened = await connecting
+  if (opened is Err(_)) {
+    expect(report, "cancelled sender: connect", false)
+    return
+  }
+  if (silent is None) {
+    expect(report, "cancelled sender: the peer", false)
+    return
+  }
+  const socket = opened.value
+  const sending = Sockets.send(socket, Message.Binary(fillBytes(33554432, 1)))
+  const _slept = await Time.sleep(Time.milliseconds(500))
+  expect(report, "cancelled sender: the send is blocked", Async.peek(sending) is None)
+  Async.cancel(sending)
+  const result = await sending
+  expect(report, "cancelled sender: the send gives an error", result is Some(_))
+  const later = await Sockets.send(socket, Message.Text("after"))
+  expect(report, "cancelled sender: the socket has ended", later is Some(WebSocketError.Closed(_)))
+}
+
+async function checkCancelledHandler(report: Report, port: int, probe: Probe) uses io, alloc {
+  // A handler that is cancelled leaves nobody to close the socket, so the server ends it.
+  const peer = await openRaw(port, writeHandshake("/cancel-me", ""))
+  if (peer is None) {
+    expect(report, "cancelled handler: the handshake", false)
+    return
+  }
+  let waited = 0
+  while ((Cells.get(probe.runTask) is None || Cells.get(probe.heldSocket) is None) && waited < 50) {
+    const _slept = await Time.sleep(Time.milliseconds(20))
+    waited += 1
+  }
+  const task = Cells.get(probe.runTask)
+  const held = Cells.get(probe.heldSocket)
+  if (task is Some(running)) {
+    if (held is Some(socket)) {
+      const before = await Sockets.send(socket, Message.Text("still open"))
+      expect(report, "cancelled handler: the socket is open before the cancel", before is None)
+      Async.cancel(running)
+      const _settled = await Time.sleep(Time.milliseconds(200))
+      const after = await Sockets.send(socket, Message.Text("late"))
+      expect(
+        report,
+        "cancelled handler: the socket ends with the handler",
+        after is Some(WebSocketError.Closed(_)),
+      )
+    } else {
+      expect(report, "cancelled handler: the handler ran", false)
+    }
+  } else {
+    expect(report, "cancelled handler: the upgrade ran", false)
+  }
+  Cells.set(probe.runTask, None)
+  Cells.set(probe.heldSocket, None)
+}
+
+async function checkFullQueueClose(report: Report, port: int, probe: Probe) uses io, alloc {
+  // Three messages and a queue of one: the reader stops with two unread. A close must not wait
+  // for room the handler never makes.
+  const first = writeClientFrame(true, Frames.OPCODE_TEXT, Bytes.fromString("a"))
+  const three = Bytes.concat(first, Bytes.concat(first, first))
+  const peer = await openRawWith(port, writeHandshake("/full-close", ""), three)
+  if (peer is None) {
+    expect(report, "full queue close: the handshake", false)
+    return
+  }
+  const code = await awaitCloseCode(peer.value)
+  expectInt(report, "full queue close: the server closes", code, 1000)
+  const _answered = await sendRaw(
+    peer.value,
+    writeClientFrame(true, Frames.OPCODE_CLOSE, Frames.writeClosePayload(1000, "")),
+  )
+  let waited = 0
+  while (Cells.get(probe.fullCloseMillis) < 0 && waited < 100) {
+    const _slept = await Time.sleep(Time.milliseconds(50))
+    waited += 1
+  }
+  const millis = Cells.get(probe.fullCloseMillis)
+  expect(
+    report,
+    "full queue close: close returns when the peer answers, not at the timeout",
+    millis >= 0 && millis < 1500,
+  )
+}
+
+async function checkSilentClose(report: Report, port: int, probe: Probe) uses io, alloc {
+  // The peer takes the close and never answers: close gives up after closeTimeout.
+  const peer = await openRaw(port, writeHandshake("/silent-close", ""))
+  if (peer is None) {
+    expect(report, "silent close: the handshake", false)
+    return
+  }
+  const code = await awaitCloseCode(peer.value)
+  expectInt(report, "silent close: the close frame arrives", code, 1000)
+  let waited = 0
+  while (Cells.get(probe.silentCloseMillis) < 0 && waited < 100) {
+    const _slept = await Time.sleep(Time.milliseconds(50))
+    waited += 1
+  }
+  const millis = Cells.get(probe.silentCloseMillis)
+  expect(
+    report,
+    "silent close: close waits for closeTimeout and then ends",
+    millis >= 250 && millis < 2000,
+  )
+  expect(report, "silent close: the socket has ended after it", Cells.get(probe.silentSendClosed))
+}
+
+async function checkHandshakeLeftover(report: Report, port: int) uses io, alloc {
+  // A frame in the same write as the handshake is the leftover of the upgrade, and must be read.
+  const frame = writeClientFrame(true, Frames.OPCODE_TEXT, Bytes.fromString("early"))
+  const peer = await openRawWith(port, writeHandshake("/echo", ""), frame)
+  if (peer is None) {
+    expect(report, "leftover: the handshake", false)
+    return
+  }
+  const echoed = await readFrame(peer.value, Time.seconds(3))
+  if (echoed is Some(found)) {
+    expect(
+      report,
+      "leftover: the frame sent with the handshake is echoed",
+      found.opcode == Frames.OPCODE_TEXT && found.payload == Bytes.fromString("early"),
+    )
+  } else {
+    expect(report, "leftover: an echo came", false)
+  }
+}
+
+async function checkIncrementalUtf8(report: Report, port: int) uses io, alloc {
+  // A first fragment with a bad sequence ends the socket at once; no later fragment is sent.
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "utf8: a bad sequence in the first fragment is 1007 before the rest arrives",
+    writeClientFrame(false, Frames.OPCODE_TEXT, makeBytes([206, 186, 244, 144, 128, 128])),
+    1007,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "utf8: a text that ends inside a character is 1007",
+    Bytes.concat(
+      writeClientFrame(false, Frames.OPCODE_TEXT, makeBytes([97, 226, 130])),
+      writeClientFrame(true, Frames.OPCODE_CONTINUATION, Bytes.fromString("")),
+    ),
+    1007,
+  )
+  await checkCloseCase(
+    report,
+    port,
+    "/echo",
+    "utf8: a continuation byte that does not continue is 1007",
+    Bytes.concat(
+      writeClientFrame(false, Frames.OPCODE_TEXT, makeBytes([226, 130])),
+      writeClientFrame(true, Frames.OPCODE_CONTINUATION, makeBytes([65])),
+    ),
+    1007,
+  )
+}
+
+function checkUtf8(report: Report) uses io, alloc {
+  const valid = Bytes.toArray(Bytes.fromString("aé€😀"))
+  const whole = Frames.advanceUtf8(Frames.startUtf8(), valid, 0)
+  if (whole is Some(state)) {
+    expectInt(report, "utf8: valid text passes and is whole", state.needed, 0)
+  } else {
+    expect(report, "utf8: valid text passes", false)
+  }
+  // A character cut in every possible place carries over.
+  for (const cut of Ranges.between(0, Arrays.length(valid) + 1)) {
+    const first = Arrays.slice(valid, 0, cut)
+    const second = Arrays.slice(valid, cut, Arrays.length(valid))
+    if (first is Some(head)) {
+      const middle = Frames.advanceUtf8(Frames.startUtf8(), head, 0)
+      if (middle is Some(state)) {
+        if (second is Some(tail)) {
+          const done = Frames.advanceUtf8(state, tail, 0)
+          expect(report, `utf8: a cut at ${Int.toString(cut)} passes`, done is Some(_))
+        }
+      } else {
+        expect(report, `utf8: a head cut at ${Int.toString(cut)} passes`, false)
+      }
+    }
+  }
+  for (const bad of Arrays.values([
+    [192, 128],
+    [193, 191],
+    [237, 160, 128],
+    [244, 144, 128, 128],
+    [128],
+    [255],
+    [224, 128, 128],
+    [240, 128, 128, 128],
+    [245, 128, 128, 128],
+  ])) {
+    const bytes = Bytes.toArray(makeBytes(bad))
+    expect(
+      report,
+      `utf8: ${Int.toString(Arrays.length(bad))} bad bytes starting ${Int.toString(bad[0])} fail`,
+      Frames.advanceUtf8(Frames.startUtf8(), bytes, 0) is None,
+    )
+  }
+}
+
+async function checkClientWire(report: Report) uses io, alloc {
+  // A raw server that sees what the client puts on the wire, and answers with a frame that is
+  // masked, which a client must refuse.
+  const listener = Net.listen("127.0.0.1", 0)
+  if (listener is Err(_)) {
+    expect(report, "client wire: listen", false)
+    return
+  }
+  const port = Net.localPort(listener.value)
+  const connecting = Client.connect(buildUrl(port, "/x"), Messages.defaultOptions())
+  const accepted = await Net.accept(listener.value)
+  if (accepted is Err(_)) {
+    expect(report, "client wire: accept", false)
+    return
+  }
+  const peer = RawPeer { connection: accepted.value, pending: Cells.create(Bytes.fromString("")) }
+  // Read the request head.
+  let head = ""
+  let waited = 0
+  while (!Str.contains(head, "\r\n\r\n") && waited < 30) {
+    const piece = await readFrameBytes(peer)
+    head = Str.concat(head, piece)
+    waited += 1
+  }
+  const key = findHeaderValue(head, "Sec-WebSocket-Key")
+  expect(report, "client wire: the request has a 16 byte key", Handshake.isValidKey(key))
+  expect(
+    report,
+    "client wire: the request names version 13",
+    Str.contains(head, "Sec-WebSocket-Version: 13"),
+  )
+  const answer = `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${Handshake.findAccept(key)}\r\n\r\n`
+  const _written = await Net.write(peer.connection, Bytes.fromString(answer))
+  const opened = await connecting
+  if (opened is Err(error)) {
+    expect(report, `client wire: connect ${Messages.describe(error)}`, false)
+    return
+  }
+  const socket = opened.value
+  const failure = await Sockets.send(socket, Message.Text("hi"))
+  expect(report, "client wire: send", failure is None)
+  const wire = await readFrameBytesRaw(peer)
+  const parsed = Frames.parseHead(wire, 0, true, 1000)
+  if (parsed is Frames.HeadParse.Complete(frame)) {
+    expect(report, "client wire: the client masks its frames", frame.masked)
+    const payload = Bytes.slice(wire, frame.size, frame.size + frame.length)
+    if (payload is Some(masked)) {
+      expect(report, "client wire: the payload is masked", masked != Bytes.fromString("hi"))
+      expect(
+        report,
+        "client wire: the mask gives the text back",
+        Frames.maskPayload(masked, frame.maskKey) == Bytes.fromString("hi"),
+      )
+    }
+  } else {
+    expect(report, "client wire: a frame came", false)
+  }
+  // A frame with the mask bit set from a server is a protocol error.
+  const _masked = await Net.write(
+    peer.connection,
+    writeClientFrame(true, Frames.OPCODE_TEXT, Bytes.fromString("no")),
+  )
+  const received = await Sockets.receive(socket)
+  if (received is Err(WebSocketError.Protocol(code, _))) {
+    expectInt(report, "client wire: a masked server frame is 1002", code, 1002)
+  } else {
+    expect(report, "client wire: a masked server frame is refused", false)
+  }
+}
+
+async function readFrameBytes(peer: RawPeer): string uses io, alloc {
+  const data = await readFrameBytesRaw(peer)
+  const text = Bytes.toString(data)
+  if (text is Ok(content)) {
+    return content
+  }
+  return ""
+}
+
+async function readFrameBytesRaw(peer: RawPeer): bytes uses io, alloc {
+  const piece = await Net.read(peer.connection, 65536)
+  if (piece is Ok(data)) {
+    return data
+  }
+  return Bytes.fromString("")
+}
+
+function findHeaderValue(head: string, name: string): string uses alloc {
+  const lines = Str.split(head, "\r\n")
+  if (lines is Some(found)) {
+    for (const line of Arrays.values(found)) {
+      if (Str.startsWith(line, `${name}: `)) {
+        return Str.sliceFrom(line, Str.length(name) + 2)
+      }
+    }
+  }
+  return ""
+}
+
+export async function runRawChecks(report: Report, port: int, probe: Probe) uses io, alloc {
+  checkCodec(report)
+  checkFrameFuzz(report)
+  checkUtf8(report)
+  await checkHandshakeAnswers(report, port)
+  await checkHandshakeLeftover(report, port)
+  await checkIncrementalUtf8(report, port)
+  await checkFullQueueClose(report, port, probe)
+  await checkSilentClose(report, port, probe)
+  await checkCancelledHandler(report, port, probe)
+  await checkCancelledSender(report)
+  await checkBrokenRules(report, port)
+  await checkValidFragments(report, port)
+  await checkSleepingHandler(report, port)
+  await checkPingInterval(report, port, probe)
+  await checkRandomBytes(report, port)
+  await checkClientWire(report)
+}

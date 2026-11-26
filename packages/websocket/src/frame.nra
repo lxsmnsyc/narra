@@ -1,0 +1,298 @@
+// The frame codec: the head of a frame, masking and the payload of a close frame. Everything here
+// is pure, so the checks can feed it any bytes.
+
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Ranges from "std/range"
+import * as U8 from "std/u8"
+import { CloseInfo, WebSocketError } from "websocket/message"
+
+export const OPCODE_CONTINUATION = 0
+export const OPCODE_TEXT = 1
+export const OPCODE_BINARY = 2
+export const OPCODE_CLOSE = 8
+export const OPCODE_PING = 9
+export const OPCODE_PONG = 10
+
+/// The most bytes in the payload of a control frame.
+export const MAX_CONTROL_BYTES = 125
+
+/// What the head of a frame holds. size is the bytes of the head itself, the mask key included.
+export struct FrameHead {
+  fin: bool
+  opcode: int
+  masked: bool
+  maskKey: Array<u8>
+  length: int
+  size: int
+}
+
+/// The result of reading a frame head: Incomplete when more bytes are needed, Complete with the
+/// head, or Invalid with the close code that answers it (1002 for a broken rule, 1009 for a frame
+/// over the limit).
+export enum HeadParse {
+  Incomplete
+  Complete(head: FrameHead)
+  Invalid(code: int, message: string)
+}
+
+/// The byte at the index as an int, or -1 outside the data.
+export function readByte(data: bytes, index: int): int {
+  if (Bytes.at(data, index) is Some(byte)) {
+    return Int.from(byte)
+  }
+  return -1
+}
+
+function isControl(opcode: int): bool {
+  return opcode >= 8
+}
+
+/// Reads the head of the frame that starts at `start`. `expectMasked` is true on a server, which
+/// takes only masked frames, and false on a client, which takes only unmasked ones. A frame with
+/// a payload over `maxFrameBytes` is Invalid with 1009.
+export function parseHead(
+  data: bytes,
+  start: int,
+  expectMasked: bool,
+  maxFrameBytes: int,
+): HeadParse uses alloc {
+  const available = Bytes.length(data) - start
+  if (available < 2) {
+    return HeadParse.Incomplete
+  }
+  const first = readByte(data, start)
+  const second = readByte(data, start + 1)
+  const fin = (first & 128) != 0
+  const opcode = first & 15
+  const masked = (second & 128) != 0
+  const lengthCode = second & 127
+  // The rules that need only the first two bytes fail the frame before the rest arrives.
+  if ((first & 112) != 0) {
+    return HeadParse.Invalid(1002, "reserved bits are set")
+  }
+  if ((opcode >= 3 && opcode <= 7) || opcode >= 11) {
+    return HeadParse.Invalid(1002, "unknown opcode")
+  }
+  if (isControl(opcode)) {
+    if (!fin) {
+      return HeadParse.Invalid(1002, "a control frame is fragmented")
+    }
+    if (lengthCode > MAX_CONTROL_BYTES) {
+      return HeadParse.Invalid(1002, "a control frame is too long")
+    }
+  }
+  if (masked != expectMasked) {
+    if (expectMasked) {
+      return HeadParse.Invalid(1002, "a client frame is not masked")
+    }
+    return HeadParse.Invalid(1002, "a server frame is masked")
+  }
+  let size = 2
+  let length = lengthCode
+  if (lengthCode == 126) {
+    size = 4
+  } else if (lengthCode == 127) {
+    size = 10
+  }
+  if (masked) {
+    size += 4
+  }
+  if (available < size) {
+    return HeadParse.Incomplete
+  }
+  if (lengthCode == 126) {
+    length = (readByte(data, start + 2) << 8) | readByte(data, start + 3)
+  } else if (lengthCode == 127) {
+    if (readByte(data, start + 2) >= 128) {
+      return HeadParse.Invalid(1002, "the length has its top bit set")
+    }
+    length = 0
+    for (const offset of Ranges.between(2, 10)) {
+      length = (length << 8) | readByte(data, start + offset)
+    }
+  }
+  if (length > maxFrameBytes) {
+    return HeadParse.Invalid(1009, "a frame is over the limit")
+  }
+  let maskKey: Array<u8> = []
+  if (masked) {
+    for (const offset of Ranges.between(size - 4, size)) {
+      Arrays.push(mutable maskKey, U8.wrap(readByte(data, start + offset)))
+    }
+  }
+  return HeadParse.Complete(FrameHead { fin, opcode, masked, maskKey, length, size })
+}
+
+/// The head of a frame. A mask key of four bytes sets the mask bit and ends the head.
+export function writeHead(
+  fin: bool,
+  opcode: int,
+  length: int,
+  maskKey: Option<Array<u8>>,
+): bytes uses alloc {
+  let head: Array<u8> = []
+  let first = opcode
+  if (fin) {
+    first = first | 128
+  }
+  Arrays.push(mutable head, U8.wrap(first))
+  let masked = 0
+  if (maskKey is Some(_)) {
+    masked = 128
+  }
+  if (length < 126) {
+    Arrays.push(mutable head, U8.wrap(masked | length))
+  } else if (length < 65536) {
+    Arrays.push(mutable head, U8.wrap(masked | 126))
+    Arrays.push(mutable head, U8.wrap(length >> 8))
+    Arrays.push(mutable head, U8.wrap(length))
+  } else {
+    Arrays.push(mutable head, U8.wrap(masked | 127))
+    Arrays.push(mutable head, U8.wrap(length >> 56))
+    Arrays.push(mutable head, U8.wrap(length >> 48))
+    Arrays.push(mutable head, U8.wrap(length >> 40))
+    Arrays.push(mutable head, U8.wrap(length >> 32))
+    Arrays.push(mutable head, U8.wrap(length >> 24))
+    Arrays.push(mutable head, U8.wrap(length >> 16))
+    Arrays.push(mutable head, U8.wrap(length >> 8))
+    Arrays.push(mutable head, U8.wrap(length))
+  }
+  if (maskKey is Some(key)) {
+    for (const byte of Arrays.values(key)) {
+      Arrays.push(mutable head, byte)
+    }
+  }
+  return Bytes.fromArray(head)
+}
+
+/// Adds `count` bytes of `data` from `start` to the output, xor with the mask key when there is
+/// one. `offset` is how many payload bytes came before, which picks the key byte.
+export function appendPayload(
+  mutable output: Array<u8>,
+  data: bytes,
+  start: int,
+  count: int,
+  maskKey: Array<u8>,
+  offset: int,
+) uses alloc {
+  const keyed = Arrays.length(maskKey) == 4
+  for (const index of Ranges.between(0, count)) {
+    const byte = U8.wrap(readByte(data, start + index))
+    if (keyed) {
+      Arrays.push(mutable output, byte ^ maskKey[(offset + index) & 3])
+    } else {
+      Arrays.push(mutable output, byte)
+    }
+  }
+}
+
+/// The payload xor with the mask key.
+export function maskPayload(data: bytes, maskKey: Array<u8>): bytes uses alloc {
+  let output: Array<u8> = Arrays.withCapacity(Bytes.length(data))
+  appendPayload(mutable output, data, 0, Bytes.length(data), maskKey, 0)
+  return Bytes.fromArray(output)
+}
+
+/// Where a UTF-8 check stands between two pieces of a text: how many continuation bytes the
+/// character in progress still needs, and the range of the next one.
+export struct Utf8State {
+  needed: int
+  lower: int
+  upper: int
+}
+
+/// The state at the start of a text.
+export function startUtf8(): Utf8State {
+  return Utf8State { needed: 0, lower: 128, upper: 191 }
+}
+
+/// Checks the bytes of `data` from `start` on, as the next piece of a text. None means an invalid
+/// sequence (an overlong form, a surrogate, a value over U+10FFFF or a stray byte); the state
+/// that comes back carries a character cut in the middle over to the next piece. A text is whole
+/// when its last state needs nothing more.
+export function advanceUtf8(state: Utf8State, data: Array<u8>, start: int): Option<Utf8State> {
+  let needed = state.needed
+  let lower = state.lower
+  let upper = state.upper
+  for (const index of Ranges.between(start, Arrays.length(data))) {
+    const byte = Int.from(data[index])
+    if (needed > 0) {
+      if (byte < lower || byte > upper) {
+        return None
+      }
+      needed -= 1
+      lower = 128
+      upper = 191
+    } else if (byte >= 128) {
+      if (byte >= 194 && byte <= 223) {
+        needed = 1
+      } else if (byte >= 224 && byte <= 239) {
+        needed = 2
+        if (byte == 224) {
+          lower = 160
+        } else if (byte == 237) {
+          upper = 159
+        }
+      } else if (byte >= 240 && byte <= 244) {
+        needed = 3
+        if (byte == 240) {
+          lower = 144
+        } else if (byte == 244) {
+          upper = 143
+        }
+      } else {
+        return None
+      }
+    }
+  }
+  return Some(Utf8State { needed, lower, upper })
+}
+
+/// Whether a close frame may carry the code: 1000 to 1003, 1007 to 1011, and 3000 to 4999.
+export function isValidCloseCode(code: int): bool {
+  if (code >= 1000 && code <= 1003) {
+    return true
+  }
+  if (code >= 1007 && code <= 1011) {
+    return true
+  }
+  return code >= 3000 && code <= 4999
+}
+
+/// The payload of a close frame: the code in two bytes, then the reason.
+export function writeClosePayload(code: int, reason: string): bytes uses alloc {
+  let payload: Array<u8> = []
+  Arrays.push(mutable payload, U8.wrap(code >> 8))
+  Arrays.push(mutable payload, U8.wrap(code))
+  for (const byte of Arrays.values(Bytes.toArray(Bytes.fromString(reason)))) {
+    Arrays.push(mutable payload, byte)
+  }
+  return Bytes.fromArray(payload)
+}
+
+/// The code and reason of a close frame. An empty payload means no code (1005). A payload of one
+/// byte, a code that may not be sent and a reason that is not UTF-8 are protocol errors.
+export function readClosePayload(payload: bytes): Result<CloseInfo, WebSocketError> uses alloc {
+  const length = Bytes.length(payload)
+  if (length == 0) {
+    return Ok(CloseInfo { code: 1005, reason: "" })
+  }
+  if (length == 1) {
+    return Err(WebSocketError.Protocol(1002, "a close frame has a payload of one byte"))
+  }
+  const code = (readByte(payload, 0) << 8) | readByte(payload, 1)
+  if (!isValidCloseCode(code)) {
+    return Err(WebSocketError.Protocol(1002, "a close frame has a code that may not be sent"))
+  }
+  const rest = Bytes.slice(payload, 2, length)
+  if (rest is None) {
+    return Err(WebSocketError.Protocol(1002, "a close frame is cut short"))
+  }
+  const reason = Bytes.toString(rest.value)
+  if (reason is Err(_)) {
+    return Err(WebSocketError.Protocol(1007, "the reason of a close frame is not UTF-8"))
+  }
+  return Ok(CloseInfo { code, reason: reason.value })
+}

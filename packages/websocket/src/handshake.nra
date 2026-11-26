@@ -1,0 +1,70 @@
+// The parts of the opening handshake that the server and the client share.
+
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Digest from "std/digest"
+import * as Fields from "http/headers"
+import * as Randoms from "std/random"
+import * as Str from "std/string"
+import * as U8 from "std/u8"
+import * as Unicode from "std/unicode"
+import { Headers } from "http/headers"
+
+const KEY_SUFFIX = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+/// The Sec-WebSocket-Accept value for a key: the SHA-1 of the key and a fixed text, in base64.
+export function findAccept(key: string): string uses alloc {
+  return Bytes.toBase64(Digest.sha1(Bytes.fromString(`${key}${KEY_SUFFIX}`)))
+}
+
+/// A new Sec-WebSocket-Key: sixteen random bytes in base64.
+export function makeKey(): string uses io, alloc {
+  let random = Randoms.fromSystem()
+  let bytes: Array<u8> = []
+  for (const _position of Arrays.values([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])) {
+    const next = Randoms.nextInt(mutable random, 0, 256)
+    if (next is Some(value)) {
+      Arrays.push(mutable bytes, U8.wrap(value))
+    } else {
+      Arrays.push(mutable bytes, 0)
+    }
+  }
+  return Bytes.toBase64(Bytes.fromArray(bytes))
+}
+
+/// Whether the key is base64 of sixteen bytes.
+export function isValidKey(key: string): bool uses alloc {
+  const decoded = Bytes.fromBase64(key)
+  if (decoded is Some(data)) {
+    return Bytes.length(data) == 16
+  }
+  return false
+}
+
+/// The comma-separated items of every field with the name, trimmed and not empty.
+export function listItems(headers: Headers, name: string): Array<string> uses alloc {
+  let items: Array<string> = []
+  for (const value of Arrays.values(Fields.getAll(headers, name))) {
+    const parts = Str.split(value, ",")
+    if (parts is Some(pieces)) {
+      for (const piece of Arrays.values(pieces)) {
+        const trimmed = Str.trim(piece)
+        if (Str.length(trimmed) > 0) {
+          Arrays.push(mutable items, trimmed)
+        }
+      }
+    }
+  }
+  return items
+}
+
+/// Whether one of the comma-separated items of the field is the token, without regard to case.
+export function hasToken(headers: Headers, name: string, token: string): bool uses alloc {
+  const wanted = Unicode.toLowerCase(token)
+  for (const item of Arrays.values(listItems(headers, name))) {
+    if (Unicode.toLowerCase(item) == wanted) {
+      return true
+    }
+  }
+  return false
+}

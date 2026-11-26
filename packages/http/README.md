@@ -17,7 +17,7 @@ import { Request } from "http/request"
 import { Response } from "http/response"
 ```
 
-The package exposes these modules: `http/headers`, `http/error`, `http/body`, `http/request`, `http/response`, `http/server` and `http/client`. Its parsing and framing code is private.
+The package exposes these modules: `http/headers`, `http/error`, `http/body`, `http/request`, `http/response`, `http/server`, `http/client` and `http/cookie`. Its parsing and framing code is private.
 
 ## A server
 
@@ -120,6 +120,41 @@ if (response is Ok(found)) {
 - **Timeout.** `ClientOptions.timeout` is the longest wait for the server in one step: connecting, writing, or reading. `None` waits as long as the server does.
 - **Upgrades.** When the server answers `101`, `response.upgraded` holds the connection and the bytes that arrived after the head. The body is empty.
 
+## Cookies
+
+`http/cookie` reads the cookies of a request and sets cookies on a response, as RFC 6265 describes.
+
+```narra fragment
+import * as Cookies from "http/cookie"
+import * as Options from "std/option"
+import * as Responses from "http/response"
+import * as Time from "std/time"
+import { Request } from "http/request"
+import { Response } from "http/response"
+import { SameSite } from "http/cookie"
+
+async function handleLogin(request: Request): Response uses io, alloc {
+  const visits = Options.withDefault(Cookies.get(request, "visits"), "0")
+  let response = Responses.text(200, `visits so far: ${visits}`)
+  let session = Cookies.create("session", "abc123")
+  session.path = Some("/")
+  session.maxAge = Some(Time.seconds(3600))
+  session.httpOnly = true
+  session.sameSite = Some(SameSite.Lax)
+  const problem = Cookies.set(mutable response, session)
+  if (problem is Some(_)) {
+    return Responses.text(500, "bad cookie")
+  }
+  return response
+}
+```
+
+- **Reading.** `read(request)` gives every `Cookie { name, value }` of every `Cookie` header, in the order they were sent. `get(request, name)` gives the value of the first cookie with the name. Reading is lenient: a pair with no `=`, a name that is not a token, or a control character in the value is skipped, and a value in double quotes loses its quotes.
+- **Writing.** `SetCookie` has `name`, `value`, `path`, `domain`, `maxAge` (a `Duration`), `expires` (seconds since 1970), `secure`, `httpOnly` and `sameSite` (`Some(SameSite.Strict)`, `Some(SameSite.Lax)` or `Some(SameSite.None)`). `create(name, value)` gives one with no attributes. `set(mutable response, cookie)` adds one `Set-Cookie` header and leaves the earlier ones, so several cookies can be set. `format(cookie)` gives the header value without adding it.
+- **Refusals.** `set`, `format` and `validate` refuse a cookie instead of writing it: a name that is not a token, a value with a character outside the RFC 6265 set (control characters, space, `"`, `,`, `;`, `\` and bytes above 126), a path that does not start with `/` or holds a control character or `;`, a domain that is not a host name, an `expires` before 1970, `SameSite=None` without `Secure`, a `__Host-` cookie without `Secure`, `Path=/` or with a `Domain`, and a `__Secure-` cookie without `Secure`. `set` gives `Some(error)` then and adds no header, so a value from a client cannot add a header line. `None` means the header was added.
+- **Lifetime.** A `maxAge` below zero is written as `Max-Age=0`. `expires` is written as an HTTP date, such as `Sun, 06 Nov 1994 08:49:37 GMT`.
+- **Removing.** `remove(mutable response, name, path)` adds a cookie with an empty value that expired in 1970. The path must be the one the cookie was set with, or the client keeps it.
+
 ## Types
 
 - `Headers` is a list of `Header { name, value }` that keeps the order. Names match without regard to case. `get` gives the first value, `getAll` all of them, `set` replaces every field of the name with one, `add` appends and `remove` deletes.
@@ -143,4 +178,4 @@ if (response is Ok(found)) {
 
 ## Tests
 
-`narrac run -sanitize packages/http` builds the test program of the package and runs it. It checks the parsers (with a fuzz run of random text), a server and a client over loopback (keep-alive, chunked bodies both ways, the 400, 408, 413, 431, 501 and 505 answers, redirects, an upgrade, timeouts), and a server against `curl` when `curl` is installed. `sh scripts/test.sh` runs it in a full run.
+`narrac run -sanitize packages/http` builds the test program of the package and runs it. It checks the parsers (with a fuzz run of random text), a server and a client over loopback (keep-alive, chunked bodies both ways, the 400, 408, 413, 431, 501 and 505 answers, redirects, an upgrade, timeouts), the cookie code (reading, writing, refusals, a fuzz run, and a cookie jar of `curl` that sets, sends back and removes cookies), and a server against `curl` when `curl` is installed. `sh scripts/test.sh` runs it in a full run.

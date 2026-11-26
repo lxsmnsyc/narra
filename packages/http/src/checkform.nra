@@ -24,6 +24,7 @@ import * as Ranges from "std/range"
 import * as Requests from "http/request"
 import * as Responses from "http/response"
 import * as Server from "http/server"
+import * as State from "http/bodystate"
 import * as Str from "std/string"
 import * as Thread from "std/thread"
 import * as Time from "std/time"
@@ -222,14 +223,18 @@ function checkResponseHelpers(report: Report) uses io, alloc {
   )
   const streamed = Responses.stream(206, generateChunks(Bytes.fromString("one two"), 2))
   expect(report, "response: stream has its status", streamed.status == 206)
-  expect(report, "response: stream keeps the stream", streamed.body.stream is Some(_))
+  expect(report, "response: stream has no length", State.findLength(streamed.body) is None)
+  expect(report, "response: stream is sent once", !State.isReplayable(streamed.body))
+  const texted = Responses.text(200, "abc")
+  expect(report, "response: text knows its length", State.findLength(texted.body) is Some(3))
+  expect(report, "response: text can be sent again", State.isReplayable(texted.body))
   const sent = Requests.createWithBody(
     Method.Post,
     "http://127.0.0.1/upload",
     Bodies.fromStream(generateChunks(Bytes.fromString("up"), 1)),
   )
   if (sent is Ok(request)) {
-    expect(report, "request: createWithBody keeps the body", request.body.stream is Some(_))
+    expect(report, "request: createWithBody keeps the body", State.findLength(request.body) is None)
   } else {
     expect(report, "request: createWithBody parses the url", false)
   }
@@ -282,6 +287,17 @@ async function checkReaders(report: Report) uses io, alloc {
     100,
   )
   expect(report, "readText: reads a stream", streamed is Ok("one two"))
+  // A body of text or bytes is read again; a stream is used up by the first read.
+  const held = Bodies.fromText("again")
+  const heldFirst = await Bodies.readText(held, 100)
+  const heldSecond = await Bodies.readText(held, 100)
+  expect(report, "readText: a text body reads the first time", heldFirst is Ok("again"))
+  expect(report, "readText: a text body reads again", heldSecond is Ok("again"))
+  const piped = Bodies.fromStream(generateChunks(Bytes.fromString("one two"), 1))
+  const pipedFirst = await Bodies.readText(piped, 100)
+  const pipedSecond = await Bodies.readText(piped, 100)
+  expect(report, "readText: a stream reads the first time", pipedFirst is Ok("one two"))
+  expect(report, "readText: a second read of a stream is empty", pipedSecond is Ok(""))
 }
 
 async function checkSplits(report: Report) uses io, alloc {

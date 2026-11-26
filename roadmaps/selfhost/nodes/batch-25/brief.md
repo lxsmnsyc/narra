@@ -45,6 +45,8 @@ The branch `feat/batch-25` starts from `main` at 24a59973. Worktree `../narra-ba
 - pkg-http-cookies: after pkg-http.
 - std-net-lookup: after pkg-http. Needs runtime text, so two seed updates on landing.
 
+- pkg-websocket: after pkg-http (maintainer, 2026-11-26). The story pull request opens after it lands.
+
 pkg-http-pool and pkg-http-compress are outlines outside the batch.
 
 ## Acceptance

@@ -31,15 +31,21 @@ const MAX_INTERIM = 10
 
 /// maxRedirects is how many redirects send follows: 0 returns every redirect response as it is.
 /// timeout is the longest wait for the server in one step (the connection, a write, a read),
-/// and None waits as long as the server does.
+/// and None waits as long as the server does. maxBodyBytes caps the body of a response, and
+/// every reader of that body gives TooLarge("body") once it is over.
 export struct ClientOptions {
   maxRedirects: int
   timeout: Option<Duration>
+  maxBodyBytes: int
 }
 
-/// No redirects and a timeout of 30 seconds.
+/// No redirects, a timeout of 30 seconds and 64 MiB of response body.
 export function defaultOptions(): ClientOptions {
-  return ClientOptions { maxRedirects: 0, timeout: Some(Time.seconds(30)) }
+  return ClientOptions {
+    maxRedirects: 0,
+    timeout: Some(Time.seconds(30)),
+    maxBodyBytes: 67108864,
+  }
 }
 
 /// Fetches the url with a GET and the default options.
@@ -199,6 +205,12 @@ async function sendOnce(
   // The framing headers come from the body, never from the caller.
   Fields.remove(mutable headers, "Transfer-Encoding")
   Fields.remove(mutable headers, "Content-Length")
+  // The body names its content type when the caller gave none.
+  if (Fields.get(headers, "Content-Type") is None) {
+    if (State.findContentType(request.body) is Some(contentType)) {
+      Fields.set(mutable headers, "Content-Type", contentType)
+    }
+  }
   let chunked = false
   const length = State.findLength(request.body)
   if (length is Some(count)) {
@@ -252,7 +264,14 @@ async function sendOnce(
       })
     }
     if (status >= 200) {
-      return openResponse(connection, leftover, request.method, parsed.value, limit)
+      return openResponse(
+        connection,
+        leftover,
+        request.method,
+        parsed.value,
+        limit,
+        options.maxBodyBytes,
+      )
     }
   }
   return Err(HttpError.Malformed("too many interim responses"))
@@ -268,6 +287,7 @@ function openResponse(
   method: Method,
   head: ResponseHead,
   limit: Option<Duration>,
+  maxBodyBytes: int,
 ): Result<Response, HttpError> from head uses alloc {
   const framing = Message.responseFraming(method, head.status, head.headers)
   if (framing is Err(rejection)) {
@@ -278,14 +298,20 @@ function openResponse(
     body = State.fromIncoming(
       Wire.streamLength(connection, leftover, count, limit, None),
       Some(count),
+      maxBodyBytes,
     )
   } else if (framing.value is Framing.Chunked) {
     body = State.fromIncoming(
-      Wire.streamChunked(connection, leftover, Wire.NO_LIMIT, limit, None),
+      Wire.streamChunked(connection, leftover, maxBodyBytes, limit, None),
       None,
+      maxBodyBytes,
     )
   } else if (framing.value is Framing.UntilClose) {
-    body = State.fromIncoming(Wire.streamUntilClose(connection, leftover, limit), None)
+    body = State.fromIncoming(
+      Wire.streamUntilClose(connection, leftover, limit),
+      None,
+      maxBodyBytes,
+    )
   }
   return Ok(Response {
     status: head.status,

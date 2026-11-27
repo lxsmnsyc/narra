@@ -138,7 +138,7 @@ async function summarize(
       Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
       break
     }
-    const content = await Bodies.readAll(piece.value.body, 1000000)
+    const content = await Bodies.readAll(piece.value.body)
     if (content is Err(error)) {
       Arrays.push(mutable lines, `error: ${Errors.describe(error)}`)
       break
@@ -158,7 +158,9 @@ async function summarizeText(
 }
 
 async function describeFields(request: Request, maxBytes: int): string uses io, alloc {
-  const fields = await Forms.readFields(request, maxBytes)
+  let limited = copy(request)
+  limited.body = Bodies.limit(request.body, maxBytes)
+  const fields = await Forms.readFields(limited)
   if (fields is Err(error)) {
     return `error: ${Errors.describe(error)}`
   }
@@ -261,41 +263,40 @@ function checkResponseHelpers(report: Report) uses io, alloc {
 }
 
 async function checkReaders(report: Report) uses io, alloc {
-  const text = await Bodies.readText(Bodies.fromText("héllo"), 100)
+  const text = await Bodies.readText(Bodies.fromText("héllo"))
   expect(report, "readText: reads text", text is Ok("héllo"))
   const badBytes = Bytes.fromHex("fffe")
   if (badBytes is Some(data)) {
-    const bad = await Bodies.readText(Bodies.fromBytes(data), 100)
+    const bad = await Bodies.readText(Bodies.fromBytes(data))
     expect(
       report,
       "readText: bytes that are not UTF-8 are Malformed",
       bad is Err(HttpError.Malformed(_)),
     )
   }
-  const large = await Bodies.readText(Bodies.fromText("abcdef"), 3)
+  const large = await Bodies.readText(Bodies.limit(Bodies.fromText("abcdef"), 3))
   expect(report, "readText: a body over the limit is TooLarge", large is Err(HttpError.TooLarge(_)))
-  const json = await Bodies.readJson(Bodies.fromText("{\"a\":[1,2]}"), 100)
+  const json = await Bodies.readJson(Bodies.fromText("{\"a\":[1,2]}"))
   if (json is Ok(value)) {
     expectText(report, "readJson: reads JSON", Json.stringify(value), "{\"a\":[1,2]}")
   } else {
     expect(report, "readJson: reads JSON", false)
   }
-  const invalid = await Bodies.readJson(Bodies.fromText("{\"a\":"), 100)
+  const invalid = await Bodies.readJson(Bodies.fromText("{\"a\":"))
   expect(report, "readJson: bad JSON is Malformed", invalid is Err(HttpError.Malformed(_)))
   const streamed = await Bodies.readText(
     Bodies.fromStream(generateChunks(Bytes.fromString("one two"), 1)),
-    100,
   )
   expect(report, "readText: reads a stream", streamed is Ok("one two"))
   // A body of text or bytes is read again; a stream is used up by the first read.
   const held = Bodies.fromText("again")
-  const heldFirst = await Bodies.readText(held, 100)
-  const heldSecond = await Bodies.readText(held, 100)
+  const heldFirst = await Bodies.readText(held)
+  const heldSecond = await Bodies.readText(held)
   expect(report, "readText: a text body reads the first time", heldFirst is Ok("again"))
   expect(report, "readText: a text body reads again", heldSecond is Ok("again"))
   const piped = Bodies.fromStream(generateChunks(Bytes.fromString("one two"), 1))
-  const pipedFirst = await Bodies.readText(piped, 100)
-  const pipedSecond = await Bodies.readText(piped, 100)
+  const pipedFirst = await Bodies.readText(piped)
+  const pipedSecond = await Bodies.readText(piped)
   expect(report, "readText: a stream reads the first time", pipedFirst is Ok("one two"))
   expect(report, "readText: a second read of a stream is empty", pipedSecond is Ok(""))
 }
@@ -541,18 +542,19 @@ async function checkParameters(report: Report) uses io, alloc {
 async function checkFields(report: Report) uses io, alloc {
   await checkParameters(report)
   const names = `--${BOUNDARY}\r\nContent-Disposition: form-data; name="abcd"\r\n\r\n12\r\n--${BOUNDARY}--`
+  const namesLength = Bytes.length(Bytes.fromString(names))
   const named = buildRequest(multipartType(), Bodies.fromText(names))
   expectText(
     report,
-    "fields: a name counts against the limit",
-    await describeFields(named, 5),
+    "fields: a body one byte over the limit",
+    await describeFields(named, namesLength - 1),
     "error: body too large",
   )
   const fitting = buildRequest(multipartType(), Bodies.fromText(names))
   expectText(
     report,
-    "fields: a name and a value at the limit",
-    await describeFields(fitting, 6),
+    "fields: a body at the limit",
+    await describeFields(fitting, namesLength),
     "abcd=12",
   )
   const wide = buildRequest(
@@ -562,7 +564,7 @@ async function checkFields(report: Report) uses io, alloc {
   expectText(
     report,
     "fields: bytes are counted, not characters",
-    await describeFields(wide, 7),
+    await describeFields(wide, namesLength),
     "error: body too large",
   )
   const urlencoded = buildRequest(
@@ -731,14 +733,14 @@ async function checkMutations(report: Report) uses io, alloc {
 async function routeForms(request: Request): Response uses io, alloc {
   const path = request.url.path
   if (path == "/text") {
-    const text = await Bodies.readText(request.body, 1000)
+    const text = await Bodies.readText(request.body)
     if (text is Err(error)) {
       return Responses.text(400, Errors.describe(error))
     }
     return Responses.text(200, `text:${text.value}`)
   }
   if (path == "/json") {
-    const json = await Bodies.readJson(request.body, 1000)
+    const json = await Bodies.readJson(request.body)
     if (json is Err(error)) {
       return Responses.text(400, Errors.describe(error))
     }
@@ -785,7 +787,7 @@ async function readReply(result: Result<Response, HttpError>): string uses io, a
   if (result is Err(error)) {
     return `error: ${Errors.describe(error)}`
   }
-  const text = await Bodies.readText(result.value.body, 100000)
+  const text = await Bodies.readText(result.value.body)
   if (text is Ok(value)) {
     return `${Int.toString(result.value.status)} ${value}`
   }

@@ -1,0 +1,200 @@
+// The form that a program builds to send, and the multipart/form-data body made from it. This
+// module is private: http/form shows the builder, and http/body shows fromForm.
+
+import * as Arrays from "std/array"
+import * as Bytes from "std/bytes"
+import * as Int from "std/int"
+import * as Options from "std/option"
+import * as Random from "std/random"
+import * as State from "http/bodystate"
+import * as Str from "std/string"
+import { Body } from "http/bodystate"
+import { HttpError } from "http/error"
+
+// A boundary is 30 random hex digits after this prefix: 41 characters, under the limit of 70.
+const BOUNDARY_PREFIX = "narra-form-"
+
+// A boundary is picked again while it occurs in the text of the form, at most this many times.
+const MAX_PICKS = 16
+
+/// One part of a form to send: a text field when filename is None, a file otherwise.
+struct FormEntry {
+  name: string
+  filename: Option<string>
+  contentType: Option<string>
+  body: Body
+}
+
+/// The fields and files of a form that a program sends, in the order they were added. Names may
+/// repeat.
+export opaque struct FormData {
+  entries: Array<FormEntry>
+}
+
+/// A form with no fields.
+export function create(): FormData uses alloc {
+  return FormData { entries: [] }
+}
+
+/// Adds a text field to the end of the form.
+export function append(mutable form: FormData, name: string, value: string) uses alloc {
+  Arrays.push(mutable form.entries, FormEntry {
+    name,
+    filename: None,
+    contentType: None,
+    body: State.fromBytes(Bytes.fromString(value)),
+  })
+}
+
+/// Adds a file to the end of the form. The body is any body: held bytes are written with the form,
+/// and a stream is read when the form is sent.
+export function appendFile(
+  mutable form: FormData,
+  name: string,
+  filename: string,
+  contentType: string,
+  body: Body,
+) uses alloc {
+  Arrays.push(mutable form.entries, FormEntry {
+    name,
+    filename: Some(filename),
+    contentType: Some(contentType),
+    body,
+  })
+}
+
+function escapeValue(text: string): string uses alloc {
+  // A quote, a carriage return and a line feed would end the quoted value or the line, so each
+  // is written as a percent escape, as a browser writes it.
+  let escaped = Str.replace(text, "\"", "%22")
+  escaped = Str.replace(escaped, "\r", "%0D")
+  return Str.replace(escaped, "\n", "%0A")
+}
+
+function removeLineBreaks(text: string): string uses alloc {
+  return Str.replace(Str.replace(text, "\r", ""), "\n", "")
+}
+
+function writeHead(entry: FormEntry, boundary: string, isFirst: bool): bytes uses alloc {
+  // The line break before a delimiter belongs to the delimiter, so the first one has none.
+  const builder = Str.builder()
+  if (!isFirst) {
+    Str.append(mutable builder, "\r\n")
+  }
+  Str.append(mutable builder, `--${boundary}\r\n`)
+  Str.append(mutable builder, `Content-Disposition: form-data; name="${escapeValue(entry.name)}"`)
+  if (entry.filename is Some(filename)) {
+    Str.append(mutable builder, `; filename="${escapeValue(filename)}"`)
+  }
+  Str.append(mutable builder, "\r\n")
+  if (entry.contentType is Some(contentType)) {
+    Str.append(mutable builder, `Content-Type: ${removeLineBreaks(contentType)}\r\n`)
+  }
+  Str.append(mutable builder, "\r\n")
+  return Bytes.fromString(Str.build(builder))
+}
+
+function writeClosing(boundary: string, isEmpty: bool): bytes uses alloc {
+  if (isEmpty) {
+    return Bytes.fromString(`--${boundary}--\r\n`)
+  }
+  return Bytes.fromString(`\r\n--${boundary}--\r\n`)
+}
+
+function occursInForm(form: FormData, boundary: string): bool uses alloc {
+  // Looks in the names and in the text of the bytes that the form holds.
+  for (const entry of form.entries) {
+    if (Str.contains(entry.name, boundary)) {
+      return true
+    }
+    if (entry.filename is Some(filename)) {
+      if (Str.contains(filename, boundary)) {
+        return true
+      }
+    }
+    if (entry.contentType is Some(contentType)) {
+      if (Str.contains(contentType, boundary)) {
+        return true
+      }
+    }
+    if (State.findHeldBytes(entry.body) is Some(content)) {
+      if (Bytes.toString(content) is Ok(text)) {
+        if (Str.contains(text, boundary)) {
+          return true
+        }
+      }
+    }
+  }
+  return false
+}
+
+function pickBoundary(form: FormData): string uses io, alloc {
+  let random = Random.fromSystem()
+  let candidate = ""
+  for (let attempt = 0; attempt < MAX_PICKS; attempt++) {
+    // Two numbers of 15 hex digits each.
+    const high = Options.withDefault(Random.nextInt(mutable random, 0, 1152921504606846976), 0)
+    const low = Options.withDefault(Random.nextInt(mutable random, 0, 1152921504606846976), 0)
+    candidate = `${BOUNDARY_PREFIX}${Str.padStart(Int.toHex(high), 15, '0')}${Str.padStart(Int.toHex(low), 15, '0')}`
+    if (!occursInForm(form, candidate)) {
+      return candidate
+    }
+  }
+  return candidate
+}
+
+function isHeld(form: FormData): bool {
+  for (const entry of form.entries) {
+    if (State.findHeldBytes(entry.body) is None) {
+      return false
+    }
+  }
+  return true
+}
+
+function joinHeld(form: FormData, boundary: string): bytes uses alloc {
+  let content = Bytes.fromString("")
+  let isFirst = true
+  for (const entry of form.entries) {
+    content = Bytes.concat(content, writeHead(entry, boundary, isFirst))
+    if (State.findHeldBytes(entry.body) is Some(held)) {
+      content = Bytes.concat(content, held)
+    }
+    isFirst = false
+  }
+  return Bytes.concat(content, writeClosing(boundary, isFirst))
+}
+
+async function* streamEntries(
+  entries: Array<FormEntry>,
+  boundary: string,
+): AsyncGenerator<Result<bytes, HttpError>> uses (io, alloc) {
+  let isFirst = true
+  for (const entry of entries) {
+    yield Ok(writeHead(entry, boundary, isFirst))
+    isFirst = false
+    // The content of the part, piece by piece.
+    for await (const piece of State.chunks(entry.body)) {
+      yield piece
+      if (piece is Err(_)) {
+        return
+      }
+    }
+  }
+  yield Ok(writeClosing(boundary, isFirst))
+}
+
+/// A multipart/form-data body of the form. A form whose parts all hold their bytes becomes held
+/// bytes, with a length, and can be sent again. A form with a stream in it becomes a stream that
+/// reads each file as it is sent, with no length.
+export function toBody(form: FormData): Body from form uses io, alloc {
+  const boundary = pickBoundary(form)
+  const contentType = `multipart/form-data; boundary=${boundary}`
+  if (isHeld(form)) {
+    return State.withContentType(State.fromBytes(joinHeld(form, boundary)), contentType)
+  }
+  return State.withContentType(
+    State.fromStream(streamEntries(copy(form.entries), boundary)),
+    contentType,
+  )
+}

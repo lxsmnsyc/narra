@@ -2,6 +2,8 @@
 // each dependency at each version some manifest names. Every package ends at the highest version
 // that any manifest in the graph requires as its minimum, so no solver is needed. [overrides] of
 // the root of the build replace the URL and the version of every requirement on their names.
+// A version is compatible only with versions on its line, so a requirement on another line than
+// the selected version is an error.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Ranges from "std/range"
@@ -10,6 +12,7 @@ import {
   LoadError,
   Manifest,
   findUpstream,
+  isVersion,
   parseManifest,
 } from "narrac/driver/manifest"
 import { Member, Workspace, listMembers } from "narrac/driver/workspace"
@@ -23,13 +26,16 @@ import {
 } from "narrac/driver/depcache"
 import * as Sets from "std/set"
 import { Set } from "std/set"
+import { splitString } from "narrac/driver/textops"
 
 struct Requirement {
   name: string
   git: string
   version: string
   isSibling: bool // from `workspace = true` in a fetched checkout
-  requiredBy: string // the package whose manifest asks, for sibling errors
+  requiredBy: string // the package whose manifest asks
+  requiredByVersion: string // its version; empty for a root manifest
+  isFromRoot: bool
 }
 
 function createResolveError(code: string, message: string): LoadError {
@@ -250,7 +256,9 @@ function pushRequirements(mutable queue: Array<Requirement>, manifest: Manifest)
       git: dependency.git,
       version: dependency.version,
       isSibling: false,
-      requiredBy: "",
+      requiredBy: manifest.name,
+      requiredByVersion: "",
+      isFromRoot: true,
     })
   }
 }
@@ -269,7 +277,9 @@ function pushFetchedRequirements(
         git: dependency.git,
         version: dependency.version,
         isSibling: false,
-        requiredBy: "",
+        requiredBy: name,
+        requiredByVersion: version,
+        isFromRoot: false,
       })
       continue
     }
@@ -308,7 +318,91 @@ function pushFetchedRequirements(
       version: sibling.value.version,
       isSibling: true,
       requiredBy: name,
+      requiredByVersion: version,
+      isFromRoot: false,
     })
+  }
+  return Ok(true)
+}
+
+function findCompatibilityLine(version: string): string uses alloc {
+  // The line is the major version from 1.0.0 up, 0.MINOR below it, and 0.0.PATCH for 0.0.x.
+  if (!isVersion(version)) {
+    return version
+  }
+  const parts = splitString(version, ".")
+  if (parts[0] != "0") {
+    return parts[0]
+  }
+  if (parts[1] != "0") {
+    return `0.${parts[1]}`
+  }
+  return version
+}
+
+function describeRequester(requirement: Requirement): string uses alloc {
+  if (requirement.isFromRoot && requirement.requiredBy == "") {
+    return "the root manifest"
+  }
+  if (requirement.isFromRoot) {
+    return requirement.requiredBy
+  }
+  return `${requirement.requiredBy} ${requirement.requiredByVersion}`
+}
+
+function isRequesterSelected(requirement: Requirement, selected: Map<string, LockEntry>): bool {
+  if (requirement.isFromRoot) {
+    return true
+  }
+  if (selected[requirement.requiredBy] is Some(entry)) {
+    return entry.version == requirement.requiredByVersion
+  }
+  return false
+}
+
+function checkCompatibilityLines(
+  requirements: Array<Requirement>,
+  selected: Map<string, LockEntry>,
+  overrideByName: Map<string, Dependency>,
+): Result<bool, LoadError> uses alloc {
+  // Only the roots and the selected versions count: a version that lost the selection does not
+  // end up in the build, so its requirements do not either. An override forces one version.
+  for (const requirement of Arrays.values(requirements)) {
+    if (overrideByName[requirement.name] is Some(_)) {
+      continue
+    }
+    if (!isRequesterSelected(requirement, selected)) {
+      continue
+    }
+    const entry = selected[requirement.name]
+    if (entry is None) {
+      continue
+    }
+    const selectedLine = findCompatibilityLine(entry.value.version)
+    const requiredLine = findCompatibilityLine(requirement.version)
+    if (selectedLine == requiredLine) {
+      continue
+    }
+    // Name a package that asks for the selected version, one in the build when there is one.
+    let selectedBy = ""
+    for (const other of Arrays.values(requirements)) {
+      if (other.name != requirement.name || other.version != entry.value.version) {
+        continue
+      }
+      if (isRequesterSelected(other, selected)) {
+        selectedBy = describeRequester(other)
+        break
+      }
+      if (selectedBy == "") {
+        selectedBy = describeRequester(other)
+      }
+    }
+    return Err(
+      createResolveError(
+        "E0459",
+        `${requirement.name} ${entry.value.version} is selected because ${selectedBy} requires it, but ${describeRequester(requirement)} requires ${requirement.version}, which is on line ${requiredLine}, not ${selectedLine}`,
+      ),
+    )
   }
   return Ok(true)
 }
@@ -419,6 +513,10 @@ export function resolveDependencies(
     } else {
       selected[requirement.name] = entry
     }
+  }
+  const checked = checkCompatibilityLines(queue, selected, overrideByName)
+  if (checked is Err(error)) {
+    return Err(error)
   }
   for (const override of Arrays.values(overrides)) {
     if (!Sets.has(overrideUsed, override.name)) {

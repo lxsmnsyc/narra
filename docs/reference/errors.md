@@ -2030,6 +2030,16 @@ cannot read or write %s: %s
 
 Fix: check that the file exists and that you may read and write it.
 
+#### E0459
+
+```text
+%s %s is selected because %s requires it, but %s requires %s, which is on line %s, not %s
+```
+
+Two packages in the build require versions of one package on different compatibility lines. The line is the major version from 1.0.0 up, `0.MINOR` below it, and the whole version for `0.0.PATCH`. A version on another line may break the package that asked for the older one, so the two are not merged. Only the roots and the selected version of each package count.
+
+Fix: update the package that requires the older line, or force one version with `[overrides]` in the root manifest.
+
 #### E0460
 
 ```text

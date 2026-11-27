@@ -96,6 +96,8 @@ A dependency is a git repository tagged with its versions. The key is the packag
 
 `git` and `version` are both required. `narrac build` resolves the dependencies, writes `narra.lock` and loads the sources of each one. A package may import only itself, `std` and the packages in its own `[dependencies]`.
 
+Each package gets one version in a build: the highest version that some package in the build requires. That version must be on the same compatibility line as every requirement on it. The line is the major version from 1.0.0 up, so `1.2.0` accepts `1.9.0` but not `2.0.0`. Below 1.0.0 the line is `0.MINOR`, so `0.1.0` accepts `0.1.4` but not `0.2.0`, and each `0.0.PATCH` is a line of its own. A requirement on another line is error E0459. Only the roots and the selected version of each package count, and `[overrides]` forces one version past the check.
+
 Errors:
 
 | Code | Cause |
@@ -110,10 +112,11 @@ Errors:
 | E0483 | `workspace` has a value other than `true`, or another key stands beside it. |
 | E0484 | `workspace = true` names a package that is not a member, or the package is not in a workspace. |
 | E0450 | A git dependency has the name of a workspace member, or two packages require one name from two repositories. |
+| E0459 | Two packages require versions of one package on different compatibility lines. |
 | E0463 | A package imports a package it does not list in `[dependencies]`. |
 | E0462 | A dependency has no `.nra` file in `src/`. |
 
-The errors E0440 to E0458 come from fetching and resolving. Four examples:
+The errors E0440 to E0459 come from fetching and resolving. Four examples:
 
 - E0440: git is not on `PATH`.
 - E0442: the repository has no tag for the version.
@@ -129,7 +132,7 @@ The cache folder is `$NARRA_CACHE`, or `$HOME/.cache/narra` when the variable is
 json = { git = "https://example.com/my-json-fork", version = "1.2.0" }
 ```
 
-An override has the same form as a dependency, without `workspace`. It replaces the repository and the version of that package wherever any package in the build asks for it. Only the root `narra.toml` of a build may have this table.
+An override has the same form as a dependency, without `workspace`. It replaces the repository and the version of that package wherever any package in the build asks for it, on any compatibility line. Only the root `narra.toml` of a build may have this table.
 
 Errors:
 

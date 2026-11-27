@@ -2088,3 +2088,18 @@ Decision (maintainer, 2026-11-20, batch-22): each std function has one form, asy
 - **Amends** D109 items 7 and 8.
 
 Built (node std-async-fold).
+
+## D126. Compatibility lines in version selection
+
+Decision (maintainer, 2026-11-27): minimal version selection checks that the selected version of each package is on the compatibility line of every requirement on it. A requirement on another line is error E0459.
+
+1. **The line.** The major version from 1.0.0 up. Below 1.0.0 it is `0.MINOR`, so a 0.x minor bump is a breaking change, as in Cargo and npm's `^`. Each `0.0.PATCH` is a line of its own.
+2. **Which requirements count.** Those of the root manifests and of the selected version of each package. A version that lost the selection is not in the build, so its requirements are not checked.
+3. **Overrides.** An `[overrides]` entry forces one version, and requirements on its name are not checked.
+4. **The message** names both requesters: `c 0.2.0 is selected because b 1.0.0 requires it, but a 1.0.0 requires 0.1.0, which is on line 0.1, not 0.2`.
+
+- **Reason.** Before this, a requirement on `json 1.2.0` and one on `json 2.0.0` were merged into `2.0.0` without a word, and the package that asked for 1.2.0 was built against an API it never saw. The first-party packages are at 0.x, where every minor bump may break.
+- **Rejected:** two versions of one package in a build (SPEC section 15 forbids it; a new major line that must live beside the old one takes a new name, such as `json2`); Go's rule that a major version from 2 up changes the import path (it puts the version into every import).
+- **Amends** D16.
+
+Built (branch feat/compatibility-lines): `checkCompatibilityLines` in `selfhost/src/driver/depresolve.nra`.

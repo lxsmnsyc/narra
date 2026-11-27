@@ -11,7 +11,7 @@ Add this line to the `[dependencies]` table of your `narra.toml`:
 yaml = { git = "https://github.com/lxsmnsyc/narra", version = "0.1.0" }
 ```
 
-The next `narrac build` downloads the package and records it in `narra.lock`. Then import the one module:
+It needs narrac 0.2.0 or later. The next `narrac build` downloads the package and records it in `narra.lock`. Then import the one module:
 
 ```narra fragment
 import * as Yaml from "yaml"

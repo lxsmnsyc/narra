@@ -20,7 +20,7 @@ http = { git = "https://github.com/lxsmnsyc/narra", version = "0.1.0" }
 websocket = { git = "https://github.com/lxsmnsyc/narra", version = "0.1.0" }
 ```
 
-The next `narrac build` downloads both packages and records them in `narra.lock`.
+It needs narrac 0.2.0 or later. The next `narrac build` downloads both packages and records them in `narra.lock`.
 
 An echo server. `accept` turns a request into a 101 response, and the handler runs once the
 http server has written it:

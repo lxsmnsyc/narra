@@ -4,7 +4,14 @@ A YAML 1.2 reader and writer for Narra. It reads YAML text into the `Value` of `
 
 ## Using the package
 
-Add it to the `[dependencies]` of your `narra.toml` (or as a workspace member, with `yaml = { workspace = true }`), then import the one module:
+Add this line to the `[dependencies]` table of your `narra.toml`:
+
+```toml
+[dependencies]
+yaml = { git = "https://github.com/lxsmnsyc/narra", version = "0.1.0" }
+```
+
+The next `narrac build` downloads the package and records it in `narra.lock`. Then import the one module:
 
 ```narra fragment
 import * as Yaml from "yaml"

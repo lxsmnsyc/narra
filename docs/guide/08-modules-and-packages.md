@@ -325,7 +325,7 @@ import { parse } from "json/parse"
 
 The first `narrac build`, `narrac run` or `narrac test` does three things:
 
-1. It reads the `[dependencies]` of your package and of each dependency, and picks one version of every package. When two packages ask for different versions of the same one, the higher version wins. Your package never gets two versions of one package. A new major version is a new package name, such as `json2`.
+1. It reads the `[dependencies]` of your package and of each dependency, and picks one version of every package. When two packages ask for different versions of the same one on the same compatibility line, the higher version wins. The line is the major version from 1.0.0 up, so `1.2.0` and `1.9.0` share a line. Below 1.0.0 the line is the minor version, so `0.1.0` and `0.1.4` share a line but `0.2.0` starts another. When two packages ask for different lines, for example `1.2.0` and `2.0.0`, the build holds both, and each package gets the line it asked for. A value from one line cannot be passed where the other line's type is expected: an error names them `json@1` and `json@2`. A package with C sources can only have one line in a build (error E0459).
 2. It downloads each chosen tag with `git` into a cache folder (`$NARRA_CACHE`, or `~/.cache/narra`) and makes it read-only. A version that is already in the cache is not downloaded again.
 3. It writes `narra.lock` next to `narra.toml`.
 

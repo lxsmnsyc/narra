@@ -1,7 +1,9 @@
 // The dependencies of one build. A build resolves the manifests, checks the result against
 // narra.lock, writes the lock when it changed, and returns the folder of each dependency's
 // checkout. The language service takes the lock as it is and never fetches. Every step that
-// needs git runs in depresolve.nra and depcache.nra.
+// needs git runs in depresolve.nra and depcache.nra. A package selected on one compatibility line
+// keeps its name; each line of a package selected on several is a package of its own, named
+// `name@line`, and the imports of each package are renamed to the line it requires.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Ranges from "std/range"
@@ -12,6 +14,8 @@ import { checkTree, checkoutPath, isVersionBefore, readRecorded } from "narrac/d
 import {
   checkAgainstLock,
   findCheckoutPackage,
+  findLineKey,
+  findPackageName,
   resolveDependencies,
 } from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
@@ -21,6 +25,7 @@ import {
   ExportEntry,
   LoadError,
   Manifest,
+  findCompatibilityLine,
   findUpstream,
 } from "narrac/driver/manifest"
 import {
@@ -32,18 +37,121 @@ import {
 } from "narrac/driver/workspace"
 
 export struct DependencyPackage {
-  name: string
+  name: string // the package name, or `name@line` when the build has several lines of it
   version: string
   directory: string // the checkout of the version
   git: string // the URL it was fetched from; empty for a member of the workspace
-  declared: Array<string> // the names in the [dependencies] of its manifest
+  declared: Array<string> // its [dependencies], each by the name it has in this build
   exports: Array<ExportEntry> // its [exports] table; empty when every module is exposed
   cTables: Array<CTable> // its [c] and [c.os.*] tables
   upstream: string = "" // the checkout of its `[c] git` and `tag`; empty when the C files are in the package
 }
 
+export struct PreparedDependencies {
+  packages: Array<DependencyPackage>
+  declared: Array<string> // the [dependencies] of the package being built, by their names in the build
+}
+
 function createDependencyError(code: string, message: string): LoadError {
   return LoadError { code, file: "", line: 0, column: 1, message }
+}
+
+function buildLineNames(entries: Array<LockEntry>): Map<string, string> uses alloc {
+  // The key is `name@line`; the value is the name the line has in this build.
+  let counts: Map<string, int> = Map {}
+  for (const entry of Arrays.values(entries)) {
+    if (counts[entry.name] is Some(count)) {
+      counts[entry.name] = count + 1
+    } else {
+      counts[entry.name] = 1
+    }
+  }
+  let names: Map<string, string> = Map {}
+  for (const entry of Arrays.values(entries)) {
+    const key = findLineKey(entry.name, entry.version)
+    names[key] = entry.name
+    if (counts[entry.name] is Some(count)) {
+      if (count > 1) {
+        names[key] = key
+      }
+    }
+  }
+  return names
+}
+
+function findBuildName(
+  lineNames: Map<string, string>,
+  name: string,
+  version: string,
+): string uses alloc {
+  // An override leaves one line, so a requirement on any other line keeps the plain name.
+  if (lineNames[findLineKey(name, version)] is Some(buildName)) {
+    return buildName
+  }
+  return name
+}
+
+function listDeclaredNames(
+  lineNames: Map<string, string>,
+  manifest: Manifest,
+): Array<string> uses alloc {
+  let declared: Array<string> = []
+  for (const dependency of Arrays.values(manifest.dependencies)) {
+    if (dependency.workspace) {
+      Arrays.push(mutable declared, dependency.name)
+    } else {
+      Arrays.push(mutable declared, findBuildName(lineNames, dependency.name, dependency.version))
+    }
+  }
+  return declared
+}
+
+function renameExportKeys(
+  entries: Array<ExportEntry>,
+  name: string,
+  buildName: string,
+): Array<ExportEntry> uses alloc {
+  // The keys of a package on several lines name the line, as its importers' paths do.
+  let renamed: Array<ExportEntry> = []
+  for (const entry of Arrays.values(entries)) {
+    let key = entry.key
+    if (key == name) {
+      key = buildName
+    } else if (Str.startsWith(key, `${name}/`)) {
+      key = `${buildName}${Str.sliceFrom(key, Str.length(name))}`
+    }
+    Arrays.push(mutable renamed, ExportEntry { ...entry, key })
+  }
+  return renamed
+}
+
+export function renameLineImports(
+  imports: Array<ImportDecl>,
+  ownName: string,
+  declared: Array<string>,
+): Array<ImportDecl> from imports uses alloc {
+  // An import of `http/...` goes to the line of http that this package requires, and a package on
+  // one of several lines imports its own modules on its line.
+  let renamed: Array<ImportDecl> = []
+  for (const importDecl of Arrays.values(imports)) {
+    let segment = importDecl.path
+    let rest = ""
+    if (Str.indexOf(importDecl.path, "/") is Some(position)) {
+      segment = substring(importDecl.path, 0, position)
+      rest = Str.sliceFrom(importDecl.path, position)
+    }
+    let path = importDecl.path
+    if (ownName != segment && findPackageName(ownName) == segment) {
+      path = `${ownName}${rest}`
+    }
+    for (const buildName of Arrays.values(declared)) {
+      if (buildName != segment && findPackageName(buildName) == segment) {
+        path = `${buildName}${rest}`
+      }
+    }
+    Arrays.push(mutable renamed, ImportDecl { ...importDecl, path })
+  }
+  return renamed
 }
 
 function readLock(lockPath: string): Result<Array<LockEntry>, LoadError> uses io, alloc {
@@ -97,6 +205,7 @@ function findUpstreamFolder(
 function listPackages(
   entries: Array<LockEntry>,
 ): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
+  const lineNames = buildLineNames(entries)
   let packages: Array<DependencyPackage> = []
   for (const entry of Arrays.values(entries)) {
     const folder = checkoutPath(entry.git, entry.tag)
@@ -124,19 +233,34 @@ function listPackages(
       return Err(error)
     }
     for (const dependency of Arrays.values(manifest.dependencies)) {
-      Arrays.push(mutable declared, dependency.name)
+      if (!dependency.workspace) {
+        Arrays.push(mutable declared, findBuildName(lineNames, dependency.name, dependency.version))
+        continue
+      }
+      // A sibling in the fetched workspace is required at the version its manifest has here.
+      let siblingVersion = ""
+      for (const member of Arrays.values(found.value.members)) {
+        if (member.name == dependency.name) {
+          const sibling = readManifestAt(member.directory)
+          if (sibling is Ok(siblingManifest)) {
+            siblingVersion = siblingManifest.version
+          }
+        }
+      }
+      Arrays.push(mutable declared, findBuildName(lineNames, dependency.name, siblingVersion))
     }
     const upstream = findUpstreamFolder(entry, manifest)
     if (upstream is Err(error)) {
       return Err(error)
     }
+    const buildName = findBuildName(lineNames, entry.name, entry.version)
     Arrays.push(mutable packages, DependencyPackage {
-      name: entry.name,
+      name: buildName,
       version: entry.version,
       git: entry.git,
       directory: found.value.directory,
       declared,
-      exports: manifest.exports,
+      exports: renameExportKeys(manifest.exports, entry.name, buildName),
       cTables: manifest.cTables,
       upstream: upstream.value,
     })
@@ -161,6 +285,7 @@ function checkLockCovers(
       if (
         entry.name == wanted.name &&
           entry.git == wanted.git &&
+          findCompatibilityLine(entry.version) == findCompatibilityLine(wanted.version) &&
           !isVersionBefore(entry.version, wanted.version)
       ) {
         covered = true
@@ -200,12 +325,17 @@ function checkPackagesLocked(
   return Ok(true)
 }
 
+struct GitPackages {
+  packages: Array<DependencyPackage>
+  lineNames: Map<string, string> // from buildLineNames
+}
+
 function prepareGitPackages(
   lockPath: string,
   roots: Array<Manifest>,
   overrides: Array<Dependency>,
   fetch: bool,
-): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
+): Result<GitPackages, LoadError> uses io, alloc {
   let hasRequirements = Arrays.length(overrides) > 0
   for (const root of Arrays.values(roots)) {
     if (Arrays.length(root.dependencies) > 0) {
@@ -214,7 +344,7 @@ function prepareGitPackages(
   }
   if (!hasRequirements) {
     if (!fetch || !Fs.exists(lockPath)) {
-      return Ok([])
+      return Ok(GitPackages { packages: [], lineNames: Map {} })
     }
     // A lock that lists packages the manifests no longer name is emptied.
     const stale = readLock(lockPath)
@@ -227,7 +357,7 @@ function prepareGitPackages(
         return Err(error)
       }
     }
-    return Ok([])
+    return Ok(GitPackages { packages: [], lineNames: Map {} })
   }
   const locked = readLock(lockPath)
   if (locked is Err(error)) {
@@ -249,7 +379,7 @@ function prepareGitPackages(
     if (complete is Err(error)) {
       return Err(error)
     }
-    return listed
+    return Ok(GitPackages { packages: listed.value, lineNames: buildLineNames(locked.value) })
   }
   const resolved = resolveDependencies(roots, overrides, locked.value)
   if (resolved is Err(error)) {
@@ -265,7 +395,11 @@ function prepareGitPackages(
   if (written is Err(error)) {
     return Err(error)
   }
-  return listPackages(resolved.value)
+  const listed = listPackages(resolved.value)
+  if (listed is Err(error)) {
+    return Err(error)
+  }
+  return Ok(GitPackages { packages: listed.value, lineNames: buildLineNames(resolved.value) })
 }
 
 function findMemberIndex(members: Array<Member>, name: string): int {
@@ -372,7 +506,7 @@ function prepareWorkspaceDependencies(
   workspace: Workspace,
   manifest: Manifest,
   fetch: bool,
-): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
+): Result<PreparedDependencies, LoadError> uses io, alloc {
   const listed = listMembers(workspace)
   if (listed is Err(errors)) {
     return Err(errors[0])
@@ -401,8 +535,9 @@ function prepareWorkspaceDependencies(
     return Err(error)
   }
   // A package deeper in the git graph, or an override, may also take a member's name.
-  for (const gitPackage of Arrays.values(gitPackages.value)) {
-    if (findMemberIndex(members, gitPackage.name) >= 0) {
+  const lineNames = gitPackages.value.lineNames
+  for (const gitPackage of Arrays.values(gitPackages.value.packages)) {
+    if (findMemberIndex(members, findPackageName(gitPackage.name)) >= 0) {
       return Err(
         createDependencyError(
           "E0450",
@@ -421,7 +556,10 @@ function prepareWorkspaceDependencies(
     position++
     for (const dependency of Arrays.values(current.dependencies)) {
       if (!dependency.workspace) {
-        Arrays.push(mutable startNames, dependency.name)
+        Arrays.push(
+          mutable startNames,
+          findBuildName(lineNames, dependency.name, dependency.version),
+        )
         continue
       }
       const found = findMemberIndex(members, dependency.name)
@@ -435,10 +573,7 @@ function prepareWorkspaceDependencies(
   let packages: Array<DependencyPackage> = []
   for (const name of Arrays.values(reachable)) {
     const found = findMemberIndex(members, name)
-    let declared: Array<string> = []
-    for (const dependency of Arrays.values(manifests[found].dependencies)) {
-      Arrays.push(mutable declared, dependency.name)
-    }
+    const declared = listDeclaredNames(lineNames, manifests[found])
     Arrays.push(mutable packages, DependencyPackage {
       name,
       version: manifests[found].version,
@@ -449,17 +584,19 @@ function prepareWorkspaceDependencies(
       cTables: copy(manifests[found].cTables),
     })
   }
-  for (const gitPackage of Arrays.values(pickReachablePackages(gitPackages.value, startNames))) {
+  for (const gitPackage of Arrays.values(
+    pickReachablePackages(gitPackages.value.packages, startNames),
+  )) {
     Arrays.push(mutable packages, copy(gitPackage))
   }
-  return Ok(packages)
+  return Ok(PreparedDependencies { packages, declared: listDeclaredNames(lineNames, manifest) })
 }
 
 export function prepareDependencies(
   directory: string,
   manifest: Manifest,
   fetch: bool,
-): Result<Array<DependencyPackage>, LoadError> uses io, alloc {
+): Result<PreparedDependencies, LoadError> uses io, alloc {
   const found = findWorkspace(directory)
   if (found is Some(workspace)) {
     return prepareWorkspaceDependencies(workspace, manifest, fetch)
@@ -474,7 +611,19 @@ export function prepareDependencies(
       )
     }
   }
-  return prepareGitPackages(`${directory}/narra.lock`, [manifest], manifest.overrides, fetch)
+  const gitPackages = prepareGitPackages(
+    `${directory}/narra.lock`,
+    [manifest],
+    manifest.overrides,
+    fetch,
+  )
+  if (gitPackages is Err(error)) {
+    return Err(error)
+  }
+  return Ok(PreparedDependencies {
+    packages: copy(gitPackages.value.packages),
+    declared: listDeclaredNames(gitPackages.value.lineNames, manifest),
+  })
 }
 
 function writeLockIfChanged(
@@ -505,6 +654,22 @@ export function findUndeclaredImports(
 ): Array<LoadError> uses alloc {
   let errors: Array<LoadError> = []
   for (const importDecl of Arrays.values(imports)) {
+    // A line is never written: only the loader renames an import to `name@line`.
+    let writtenSegment = importDecl.writtenPath
+    if (Str.indexOf(importDecl.writtenPath, "/") is Some(position)) {
+      writtenSegment = substring(importDecl.writtenPath, 0, position)
+    }
+    if (Str.indexOf(writtenSegment, "@") is Some(at)) {
+      const plain = `${substring(writtenSegment, 0, at)}${Str.sliceFrom(importDecl.writtenPath, Str.length(writtenSegment))}`
+      Arrays.push(mutable errors, LoadError {
+        code: "E0464",
+        file,
+        line: importDecl.pos.line,
+        column: importDecl.pos.column,
+        message: `the import path "${importDecl.writtenPath}" names a compatibility line; write "${plain}", and narra.toml picks the line`,
+      })
+      continue
+    }
     // Only the package itself, std and the packages its manifest lists may be imported.
     const slash = Str.indexOf(importDecl.path, "/")
     if (slash is None) {

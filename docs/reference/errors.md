@@ -1872,10 +1872,10 @@ Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it ag
 #### E0439
 
 ```text
-two entries are named %q
+two entries are named %q on line %s
 ```
 
-Two entries of `narra.lock` have the same name. Each package has one entry.
+Two entries of `narra.lock` have the same name and the same compatibility line. A package has one entry for each line in the build.
 
 Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it again.
 
@@ -2030,6 +2030,16 @@ cannot read or write %s: %s
 
 Fix: check that the file exists and that you may read and write it.
 
+#### E0459
+
+```text
+%s has C sources, so a build can have one version of it, but %s requires %s and %s requires %s, on lines %s and %s
+```
+
+Two packages in the build require versions of a package with C sources on different compatibility lines. A build can hold two lines of a Narra package, but the C files of a package compile and link once, so a package with `[c]` tables has one version in a build. The line is the major version from 1.0.0 up, `0.MINOR` below it, and the whole version for `0.0.PATCH`.
+
+Fix: update the package that requires the older line, or force one version with `[overrides]` in the root manifest.
+
 #### E0460
 
 ```text
@@ -2069,6 +2079,16 @@ package %s imports %s, but its narra.toml has no [dependencies] entry for it
 A package may import only itself, `std` and the packages in its own `[dependencies]`. A package that another dependency brings in does not count.
 
 Fix: add the package to `[dependencies]` of the importing package.
+
+#### E0464
+
+```text
+the import path %q names a compatibility line; write %q, and narra.toml picks the line
+```
+
+An import path starts with a package name and has no `@`. When a build holds two compatibility lines of one package, diagnostics name them `name@line`, but code always imports the plain name, and the `version` in `[dependencies]` picks the line.
+
+Fix: drop the `@` and the line from the import path.
 
 #### E0470
 

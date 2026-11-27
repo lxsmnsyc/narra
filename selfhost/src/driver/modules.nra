@@ -10,7 +10,12 @@ import * as Lexer from "narrac/syntax/lexer"
 import { File, Decl } from "narrac/syntax/ast"
 import { parse } from "narrac/syntax/parser"
 import { hashModule } from "narrac/driver/hash"
-import { findUndeclaredImports, prepareDependencies } from "narrac/driver/depload"
+import {
+  findUndeclaredImports,
+  prepareDependencies,
+  renameLineImports,
+} from "narrac/driver/depload"
+import { findPackageName } from "narrac/driver/depresolve"
 import { ExportTable, checkExportFiles, rewriteImports } from "narrac/driver/exports"
 import { Binary, CTable, LoadError, findUpstream, parseManifest } from "narrac/driver/manifest"
 import {
@@ -284,9 +289,13 @@ function loadPackage(
   let errors: Array<LoadError> = []
   let dependencyNames: Array<string> = []
   let dependencyTable: Set<string> = Sets.create()
-  for (const dependency of Arrays.values(prepared.value)) {
+  // The undeclared import check also knows the plain name of a package on several lines.
+  let importableNames: Array<string> = []
+  for (const dependency of Arrays.values(prepared.value.packages)) {
     Arrays.push(mutable dependencyNames, dependency.name)
     Sets.add(mutable dependencyTable, dependency.name)
+    Arrays.push(mutable importableNames, dependency.name)
+    Arrays.push(mutable importableNames, findPackageName(dependency.name))
   }
   const own = loadPackageModules(
     config.name,
@@ -301,12 +310,9 @@ function loadPackage(
   if (own is Err(found)) {
     return Err(found)
   }
-  let declaredNames: Array<string> = []
-  for (const dependency of Arrays.values(config.dependencies)) {
-    Arrays.push(mutable declaredNames, dependency.name)
-  }
+  const declaredNames = prepared.value.declared
   let exportTables: Array<ExportTable> = []
-  for (const dependency of Arrays.values(prepared.value)) {
+  for (const dependency of Arrays.values(prepared.value.packages)) {
     if (Arrays.length(dependency.exports) > 0) {
       Arrays.push(mutable exportTables, ExportTable {
         name: dependency.name,
@@ -336,7 +342,9 @@ function loadPackage(
   if (findUpstream(config.cTables).git != "") {
     Arrays.push(mutable errors, createUpstreamError(config.name, "narra.toml", config.cTables))
   }
-  for (const module of Arrays.values(own.value)) {
+  for (const ownModule of Arrays.values(own.value)) {
+    let module = copy(ownModule)
+    module.ast.imports = renameLineImports(ownModule.ast.imports, config.name, declaredNames)
     for (const problem of Arrays.values(
       checkExternFiles(ownC, module.file, module.ast, findSourceFolder(module.path)),
     )) {
@@ -347,7 +355,7 @@ function loadPackage(
       module.ast.imports,
       config.name,
       declaredNames,
-      dependencyNames,
+      importableNames,
     )
     for (const problem of Arrays.values(undeclared)) {
       Arrays.push(mutable errors, problem)
@@ -358,7 +366,7 @@ function loadPackage(
     }
     Arrays.push(mutable modules, exposed.module)
   }
-  for (const dependency of Arrays.values(prepared.value)) {
+  for (const dependency of Arrays.values(prepared.value.packages)) {
     const loaded = loadPackageModules(
       dependency.name,
       dependency.directory,
@@ -399,7 +407,13 @@ function loadPackage(
     for (const problem of Arrays.values(checkSources(dependencyC, manifestFile))) {
       Arrays.push(mutable errors, problem)
     }
-    for (const module of Arrays.values(loaded.value)) {
+    for (const loadedModule of Arrays.values(loaded.value)) {
+      let module = copy(loadedModule)
+      module.ast.imports = renameLineImports(
+        loadedModule.ast.imports,
+        dependency.name,
+        dependency.declared,
+      )
       for (const problem of Arrays.values(
         checkExternFiles(dependencyC, module.file, module.ast, findSourceFolder(module.path)),
       )) {
@@ -410,7 +424,7 @@ function loadPackage(
         module.ast.imports,
         dependency.name,
         dependency.declared,
-        dependencyNames,
+        importableNames,
       )
       for (const problem of Arrays.values(undeclared)) {
         Arrays.push(mutable errors, problem)

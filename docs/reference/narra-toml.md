@@ -96,6 +96,14 @@ A dependency is a git repository tagged with its versions. The key is the packag
 
 `git` and `version` are both required. `narrac build` resolves the dependencies, writes `narra.lock` and loads the sources of each one. A package may import only itself, `std` and the packages in its own `[dependencies]`.
 
+Versions are grouped into compatibility lines. The line is the major version from 1.0.0 up, so `1.2.0` and `1.9.0` share a line and `2.0.0` starts another. Below 1.0.0 the line is `0.MINOR`, so `0.1.0` and `0.1.4` share a line and `0.2.0` does not, and each `0.0.PATCH` is a line of its own.
+
+Each line of a package gets one version in a build: the highest version that some package in the build requires on that line. When two packages require one package on two lines, the build holds both lines, and each package imports the line it requires. The two lines are separate packages: a type from one is not the type of the same name from the other, and an error names them `c@1` and `c@2`. A package with C sources is the exception: its C files compile and link once, so two lines of it are error E0459.
+
+Only the requirements of the root manifests and of the selected versions count. `narrac` reads the manifest of every version some manifest names, but a version that lost the selection adds no package, raises no version and causes no error, even when a version it names has no tag. An `[overrides]` entry puts every requirement on its name on one version.
+
+An import path never names a line: `import * as Info from "c@2/info"` is error E0464. Write `"c/info"`, and the `version` in `[dependencies]` picks the line.
+
 Errors:
 
 | Code | Cause |
@@ -110,10 +118,12 @@ Errors:
 | E0483 | `workspace` has a value other than `true`, or another key stands beside it. |
 | E0484 | `workspace = true` names a package that is not a member, or the package is not in a workspace. |
 | E0450 | A git dependency has the name of a workspace member, or two packages require one name from two repositories. |
+| E0459 | Two packages require a package with C sources on different compatibility lines. |
 | E0463 | A package imports a package it does not list in `[dependencies]`. |
+| E0464 | An import path names a compatibility line, as in `"c@2/info"`. |
 | E0462 | A dependency has no `.nra` file in `src/`. |
 
-The errors E0440 to E0458 come from fetching and resolving. Four examples:
+The errors E0440 to E0459 come from fetching and resolving. Four examples:
 
 - E0440: git is not on `PATH`.
 - E0442: the repository has no tag for the version.
@@ -129,7 +139,7 @@ The cache folder is `$NARRA_CACHE`, or `$HOME/.cache/narra` when the variable is
 json = { git = "https://example.com/my-json-fork", version = "1.2.0" }
 ```
 
-An override has the same form as a dependency, without `workspace`. It replaces the repository and the version of that package wherever any package in the build asks for it. Only the root `narra.toml` of a build may have this table.
+An override has the same form as a dependency, without `workspace`. It replaces the repository and the version of that package wherever any package in the build asks for it, on any compatibility line. Only the root `narra.toml` of a build may have this table.
 
 Errors:
 
@@ -355,7 +365,7 @@ Errors:
 | --- | --- |
 | E0437 | A line is not `[[package]]` or `key = "value"`, or a value is not well formed. |
 | E0438 | An entry has an unknown, missing or repeated key, or a `tag` that does not belong to its `version`. |
-| E0439 | Two entries have one name. |
+| E0439 | Two entries have one name and one compatibility line. |
 | E0443 | The cached copy has no recorded hash, or another tree hash than the lock records. |
 | E0452 | The repository has other hashes than the lock records, for example after someone moved a tag. |
 | E0460 | The lock names a dependency that is not in the cache. `narrac lsp` reports this. |

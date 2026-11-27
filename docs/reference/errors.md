@@ -2080,6 +2080,16 @@ A package may import only itself, `std` and the packages in its own `[dependenci
 
 Fix: add the package to `[dependencies]` of the importing package.
 
+#### E0464
+
+```text
+the import path %q names a compatibility line; write %q, and narra.toml picks the line
+```
+
+An import path starts with a package name and has no `@`. When a build holds two compatibility lines of one package, diagnostics name them `name@line`, but code always imports the plain name, and the `version` in `[dependencies]` picks the line.
+
+Fix: drop the `@` and the line from the import path.
+
 #### E0470
 
 ```text

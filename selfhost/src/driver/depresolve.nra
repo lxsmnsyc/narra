@@ -7,6 +7,7 @@
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Ranges from "std/range"
+import * as Str from "std/string"
 import {
   Dependency,
   LoadError,
@@ -26,7 +27,7 @@ import {
 } from "narrac/driver/depcache"
 import * as Sets from "std/set"
 import { Set } from "std/set"
-import { hasName } from "narrac/driver/textops"
+import { hasName, substring } from "narrac/driver/textops"
 
 struct Requirement {
   name: string
@@ -329,14 +330,21 @@ export function findLineKey(name: string, version: string): string uses alloc {
   return `${name}@${findCompatibilityLine(version)}`
 }
 
+function findRequiredVersion(
+  requirement: Requirement,
+  overrideByName: Map<string, Dependency>,
+): string {
+  if (overrideByName[requirement.name] is Some(override)) {
+    return override.version
+  }
+  return requirement.version
+}
+
 function findRequiredKey(
   requirement: Requirement,
   overrideByName: Map<string, Dependency>,
 ): string uses alloc {
-  if (overrideByName[requirement.name] is Some(override)) {
-    return findLineKey(requirement.name, override.version)
-  }
-  return findLineKey(requirement.name, requirement.version)
+  return findLineKey(requirement.name, findRequiredVersion(requirement, overrideByName))
 }
 
 function describeRequester(requirement: Requirement): string uses alloc {
@@ -349,57 +357,132 @@ function describeRequester(requirement: Requirement): string uses alloc {
   return `${requirement.requiredBy} ${requirement.requiredByVersion}`
 }
 
-function isRequesterInBuild(
-  requirement: Requirement,
-  selected: Map<string, LockEntry>,
-  reached: Set<string>,
-): bool uses alloc {
+// The selected version of each line, by the key findLineKey writes.
+struct Selection {
+  versions: Map<string, string>
+  reached: Set<string> // the lines in the build
+}
+
+function isRequesterInBuild(requirement: Requirement, selection: Selection): bool uses alloc {
   if (requirement.isFromRoot) {
     return true
   }
   const key = findLineKey(requirement.requiredBy, requirement.requiredByVersion)
-  if (!Sets.has(reached, key)) {
+  if (!Sets.has(selection.reached, key)) {
     return false
   }
-  if (selected[key] is Some(entry)) {
-    return entry.version == requirement.requiredByVersion
+  if (selection.versions[key] is Some(version)) {
+    return version == requirement.requiredByVersion
   }
   return false
 }
 
 function findReachedLines(
   requirements: Array<Requirement>,
-  selected: Map<string, LockEntry>,
+  versions: Map<string, string>,
   overrideByName: Map<string, Dependency>,
-): Set<string> uses alloc {
+): Selection uses alloc {
   // A line is in the build when a root or the selected version of a line in the build requires it.
-  let reached: Set<string> = Sets.create()
+  let selection = Selection { versions: copy(versions), reached: Sets.create() }
   let changed = true
   while (changed) {
     changed = false
     for (const requirement of Arrays.values(requirements)) {
       const key = findRequiredKey(requirement, overrideByName)
-      if (Sets.has(reached, key) || !isRequesterInBuild(requirement, selected, reached)) {
+      if (Sets.has(selection.reached, key) || !isRequesterInBuild(requirement, selection)) {
         continue
       }
-      Sets.add(mutable reached, key)
+      Sets.add(mutable selection.reached, key)
       changed = true
     }
   }
-  return reached
+  return selection
+}
+
+function selectHighest(
+  requirements: Array<Requirement>,
+  selection: Selection,
+  onlyInBuild: bool,
+  overrideByName: Map<string, Dependency>,
+): Map<string, string> uses alloc {
+  // Each line gets the highest version that a counted requirement names.
+  let versions: Map<string, string> = Map {}
+  for (const requirement of Arrays.values(requirements)) {
+    if (onlyInBuild && !isRequesterInBuild(requirement, selection)) {
+      continue
+    }
+    const key = findRequiredKey(requirement, overrideByName)
+    const version = findRequiredVersion(requirement, overrideByName)
+    if (versions[key] is Some(current)) {
+      if (isVersionBefore(current, version)) {
+        versions[key] = version
+      }
+    } else {
+      versions[key] = version
+    }
+  }
+  return versions
+}
+
+function isSameSelection(
+  first: Map<string, string>,
+  second: Map<string, string>,
+  keys: Array<string>,
+): bool {
+  for (const key of Arrays.values(keys)) {
+    const left = first[key]
+    const right = second[key]
+    if (left is Some(leftVersion)) {
+      if (right is Some(rightVersion)) {
+        if (leftVersion != rightVersion) {
+          return false
+        }
+      } else {
+        return false
+      }
+    } else if (right is Some(_)) {
+      return false
+    }
+  }
+  return true
+}
+
+function selectVersions(
+  requirements: Array<Requirement>,
+  keys: Array<string>,
+  overrideByName: Map<string, Dependency>,
+): Selection uses alloc {
+  // Start from the highest version any fetched manifest names: every requirement of that set is
+  // met. Then count only the requirements of the roots and of the selected versions, until the
+  // selection stops changing. A selection that settles meets every requirement in the build and
+  // holds no version that only a lost version asked for. One that does not settle keeps the start.
+  const everything = Selection { versions: Map {}, reached: Sets.create() }
+  const start = findReachedLines(
+    requirements,
+    selectHighest(requirements, everything, false, overrideByName),
+    overrideByName,
+  )
+  let current = copy(start)
+  for (const _ of Ranges.between(0, Arrays.length(requirements) + 1)) {
+    const next = selectHighest(requirements, current, true, overrideByName)
+    if (isSameSelection(next, current.versions, keys)) {
+      return current
+    }
+    current = findReachedLines(requirements, next, overrideByName)
+  }
+  return start
 }
 
 function findLineRequester(
   requirements: Array<Requirement>,
   key: string,
-  selected: Map<string, LockEntry>,
-  reached: Set<string>,
+  selection: Selection,
   overrideByName: Map<string, Dependency>,
 ): string uses alloc {
   for (const requirement of Arrays.values(requirements)) {
     if (
       findRequiredKey(requirement, overrideByName) == key &&
-        isRequesterInBuild(requirement, selected, reached)
+        isRequesterInBuild(requirement, selection)
     ) {
       return describeRequester(requirement)
     }
@@ -410,50 +493,116 @@ function findLineRequester(
 function checkCLines(
   keys: Array<string>,
   requirements: Array<Requirement>,
-  selected: Map<string, LockEntry>,
-  reached: Set<string>,
+  selection: Selection,
   withC: Set<string>,
   overrideByName: Map<string, Dependency>,
 ): Result<bool, LoadError> uses alloc {
   // The C files of a package compile and link once, so a package with C sources has one line.
   for (const key of Arrays.values(keys)) {
-    if (!Sets.has(reached, key)) {
+    if (!Sets.has(selection.reached, key)) {
       continue
     }
-    const found = selected[key]
+    const found = selection.versions[key]
     if (found is None) {
       continue
     }
-    const entry = found.value
+    const name = findPackageName(key)
     for (const otherKey of Arrays.values(keys)) {
-      if (otherKey == key || !Sets.has(reached, otherKey)) {
+      if (otherKey == key || !Sets.has(selection.reached, otherKey)) {
         continue
       }
-      const otherFound = selected[otherKey]
+      if (findPackageName(otherKey) != name) {
+        continue
+      }
+      const otherFound = selection.versions[otherKey]
       if (otherFound is None) {
         continue
       }
-      const other = otherFound.value
-      if (other.name != entry.name) {
+      const version = found.value
+      const otherVersion = otherFound.value
+      if (!Sets.has(withC, `${name} ${version}`) && !Sets.has(withC, `${name} ${otherVersion}`)) {
         continue
       }
-      if (
-        !Sets.has(withC, `${entry.name} ${entry.version}`) &&
-          !Sets.has(withC, `${other.name} ${other.version}`)
-      ) {
-        continue
-      }
-      const firstBy = findLineRequester(requirements, key, selected, reached, overrideByName)
-      const secondBy = findLineRequester(requirements, otherKey, selected, reached, overrideByName)
+      const firstBy = findLineRequester(requirements, key, selection, overrideByName)
+      const secondBy = findLineRequester(requirements, otherKey, selection, overrideByName)
       return Err(
         createResolveError(
           "E0459",
-          `${entry.name} has C sources, so a build can have one version of it, but ${firstBy} requires ${entry.version} and ${secondBy} requires ${other.version}, on lines ${findCompatibilityLine(entry.version)} and ${findCompatibilityLine(other.version)}`,
+          `${name} has C sources, so a build can have one version of it, but ${firstBy} requires ${version} and ${secondBy} requires ${otherVersion}, on lines ${findCompatibilityLine(version)} and ${findCompatibilityLine(otherVersion)}`,
         ),
       )
     }
   }
   return Ok(true)
+}
+
+export function findPackageName(buildName: string): string uses alloc {
+  // `name@line` is the key of a line and the name of a package on several lines.
+  if (Str.indexOf(buildName, "@") is Some(position)) {
+    return substring(buildName, 0, position)
+  }
+  return buildName
+}
+
+struct FetchedVersion {
+  entry: LockEntry
+  hasC: bool
+}
+
+function fetchRequirement(
+  mutable queue: Array<Requirement>,
+  requirement: Requirement,
+  git: string,
+  version: string,
+  isOverride: bool,
+  locked: Array<LockEntry>,
+): Result<FetchedVersion, LoadError> uses io, alloc {
+  const found = findTag(git, requirement.name, version, isOverride, locked)
+  if (found is Err(error)) {
+    if (requirement.isSibling && error.code == "E0451") {
+      return Err(
+        createResolveError(
+          "E0487",
+          `${requirement.requiredBy} needs ${requirement.name} ${version}, but the repository ${git} has no tag for it`,
+        ),
+      )
+    }
+    return Err(error)
+  }
+  const read = readPackage(found.value.fetched, requirement.name, version)
+  if (read is Err(error)) {
+    return Err(error)
+  }
+  const pushed = pushFetchedRequirements(mutable queue, read.value, git, requirement.name, version)
+  if (pushed is Err(error)) {
+    return Err(error)
+  }
+  // A C package also fetches its upstream checkout, which the lock records beside the package.
+  let entry = LockEntry {
+    name: requirement.name,
+    git,
+    version,
+    tag: found.value.tag,
+    commit: found.value.fetched.commit,
+    content: found.value.fetched.tree,
+  }
+  const upstream = findUpstream(read.value.manifest.cTables)
+  if (upstream.git != "") {
+    const upstreamFetched = fetchVersion(upstream.git, upstream.tag)
+    if (upstreamFetched is Err(error)) {
+      return Err(
+        createResolveError(
+          error.code,
+          `the C source of ${requirement.name} ${version}: ${error.message}`,
+        ),
+      )
+    }
+    entry.cGit = upstream.git
+    entry.cTag = upstream.tag
+    entry.cCommit = upstreamFetched.value.commit
+    entry.cContent = upstreamFetched.value.tree
+  }
+  return Ok(FetchedVersion { entry, hasC: Arrays.length(read.value.manifest.cTables) > 0 })
 }
 
 export function resolveDependencies(
@@ -471,9 +620,12 @@ export function resolveDependencies(
     pushRequirements(mutable queue, root)
   }
   let firstGit: Map<string, string> = Map {}
-  let selected: Map<string, LockEntry> = Map {} // by name and line, as findLineKey writes them
-  let keys: Array<string> = []
-  let withC: Set<string> = Sets.create() // "name version" of each version with [c] tables
+  let keys: Array<string> = [] // every line any manifest names, by findLineKey
+  // Each version named anywhere is fetched to read its manifest. Its failure is kept, and reported
+  // only when the version is in the build, so a version that lost the selection adds no error.
+  let fetched: Map<string, LockEntry> = Map {} // by "name version"
+  let failures: Map<string, LoadError> = Map {}
+  let withC: Set<string> = Sets.create()
   let visited: Set<string> = Sets.create()
   let position = 0
   while (position < Arrays.length(queue)) {
@@ -504,73 +656,42 @@ export function resolveDependencies(
     if (!hasName(keys, lineKey)) {
       Arrays.push(mutable keys, lineKey)
     }
-    if (!Sets.add(mutable visited, `${requirement.name} ${version}`)) {
+    const versionKey = `${requirement.name} ${version}`
+    if (!Sets.add(mutable visited, versionKey)) {
       continue
     }
-    const found = findTag(git, requirement.name, version, isOverride, locked)
-    if (found is Err(error)) {
-      if (requirement.isSibling && error.code == "E0451") {
-        return Err(
-          createResolveError(
-            "E0487",
-            `${requirement.requiredBy} needs ${requirement.name} ${version}, but the repository ${git} has no tag for it`,
-          ),
-        )
-      }
-      return Err(error)
+    const outcome = fetchRequirement(mutable queue, requirement, git, version, isOverride, locked)
+    if (outcome is Err(error)) {
+      failures[versionKey] = error
+      continue
     }
-    const read = readPackage(found.value.fetched, requirement.name, version)
-    if (read is Err(error)) {
-      return Err(error)
-    }
-    if (Arrays.length(read.value.manifest.cTables) > 0) {
-      Sets.add(mutable withC, `${requirement.name} ${version}`)
-    }
-    const pushed = pushFetchedRequirements(
-      mutable queue,
-      read.value,
-      git,
-      requirement.name,
-      version,
-    )
-    if (pushed is Err(error)) {
-      return Err(error)
-    }
-    // A C package also fetches its upstream checkout, which the lock records beside the package.
-    let entry = LockEntry {
-      name: requirement.name,
-      git,
-      version,
-      tag: found.value.tag,
-      commit: found.value.fetched.commit,
-      content: found.value.fetched.tree,
-    }
-    const upstream = findUpstream(read.value.manifest.cTables)
-    if (upstream.git != "") {
-      const upstreamFetched = fetchVersion(upstream.git, upstream.tag)
-      if (upstreamFetched is Err(error)) {
-        return Err(
-          createResolveError(
-            error.code,
-            `the C source of ${requirement.name} ${version}: ${error.message}`,
-          ),
-        )
-      }
-      entry.cGit = upstream.git
-      entry.cTag = upstream.tag
-      entry.cCommit = upstreamFetched.value.commit
-      entry.cContent = upstreamFetched.value.tree
-    }
-    if (selected[lineKey] is Some(current)) {
-      if (isVersionBefore(current.version, version)) {
-        selected[lineKey] = entry
-      }
-    } else {
-      selected[lineKey] = entry
+    fetched[versionKey] = copy(outcome.value.entry)
+    if (outcome.value.hasC) {
+      Sets.add(mutable withC, versionKey)
     }
   }
-  const reached = findReachedLines(queue, selected, overrideByName)
-  const checked = checkCLines(keys, queue, selected, reached, withC, overrideByName)
+  const selection = selectVersions(queue, keys, overrideByName)
+  // A requirement in the build whose version, or the selected version of its line, failed.
+  for (const requirement of Arrays.values(queue)) {
+    if (!isRequesterInBuild(requirement, selection)) {
+      continue
+    }
+    const required = `${requirement.name} ${findRequiredVersion(requirement, overrideByName)}`
+    if (failures[required] is Some(error)) {
+      return Err(error)
+    }
+  }
+  for (const key of Arrays.values(keys)) {
+    if (!Sets.has(selection.reached, key)) {
+      continue
+    }
+    if (selection.versions[key] is Some(version)) {
+      if (failures[`${findPackageName(key)} ${version}`] is Some(error)) {
+        return Err(error)
+      }
+    }
+  }
+  const checked = checkCLines(keys, queue, selection, withC, overrideByName)
   if (checked is Err(error)) {
     return Err(error)
   }
@@ -586,11 +707,13 @@ export function resolveDependencies(
   }
   let entries: Array<LockEntry> = []
   for (const key of Arrays.values(keys)) {
-    if (!Sets.has(reached, key)) {
+    if (!Sets.has(selection.reached, key)) {
       continue
     }
-    if (selected[key] is Some(entry)) {
-      Arrays.push(mutable entries, entry)
+    if (selection.versions[key] is Some(version)) {
+      if (fetched[`${findPackageName(key)} ${version}`] is Some(entry)) {
+        Arrays.push(mutable entries, entry)
+      }
     }
   }
   return Ok(entries)

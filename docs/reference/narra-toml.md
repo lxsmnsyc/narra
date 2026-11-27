@@ -100,7 +100,9 @@ Versions are grouped into compatibility lines. The line is the major version fro
 
 Each line of a package gets one version in a build: the highest version that some package in the build requires on that line. When two packages require one package on two lines, the build holds both lines, and each package imports the line it requires. The two lines are separate packages: a type from one is not the type of the same name from the other, and an error names them `c@1` and `c@2`. A package with C sources is the exception: its C files compile and link once, so two lines of it are error E0459.
 
-Only the requirements of the root manifests and of the selected versions count. A version that lost the selection is not fetched into the build, and nothing it requires is either. An `[overrides]` entry puts every requirement on its name on one version.
+Only the requirements of the root manifests and of the selected versions count. `narrac` reads the manifest of every version some manifest names, but a version that lost the selection adds no package, raises no version and causes no error, even when a version it names has no tag. An `[overrides]` entry puts every requirement on its name on one version.
+
+An import path never names a line: `import * as Info from "c@2/info"` is error E0464. Write `"c/info"`, and the `version` in `[dependencies]` picks the line.
 
 Errors:
 
@@ -118,6 +120,7 @@ Errors:
 | E0450 | A git dependency has the name of a workspace member, or two packages require one name from two repositories. |
 | E0459 | Two packages require a package with C sources on different compatibility lines. |
 | E0463 | A package imports a package it does not list in `[dependencies]`. |
+| E0464 | An import path names a compatibility line, as in `"c@2/info"`. |
 | E0462 | A dependency has no `.nra` file in `src/`. |
 
 The errors E0440 to E0459 come from fetching and resolving. Four examples:

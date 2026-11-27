@@ -39,6 +39,9 @@ const CASE_NAMES = [
   "build-error-undeclared-dependency",
   "build-definition",
   "build-two-lines",
+  "build-two-lines-exports",
+  "build-two-lines-workspace",
+  "build-error-line-import",
   "build-error-two-lines-type",
 ]
 
@@ -119,6 +122,9 @@ function findErrorText(code: string): string {
   }
   if (code == "E0101") {
     return "module \"lib/stream\" has no export \"missing\""
+  }
+  if (code == "E0464") {
+    return "the import path \"c@2/info\" names a compatibility line; write \"c/info\", and narra.toml picks the line"
   }
   if (code == "E0119") {
     return "expected c@2/text.Item, found c@1/text.Item"
@@ -609,14 +615,28 @@ function runBuilt(
     return runStaleLock(context, scratch, appFolder)
   }
   if (variant == "build-two-lines") {
-    // The second run reads the lock with two entries for c.
+    // The second run reads the lock with two entries for c, and so does the language service.
     const first = runSamePath(context, scratch, appFolder, caseFolder)
     if (first is Err(message)) {
       return Err(`first run: ${message}`)
     }
-    return runSamePath(context, scratch, appFolder, caseFolder)
+    const second = runSamePath(context, scratch, appFolder, caseFolder)
+    if (second is Err(message)) {
+      return Err(`second run: ${message}`)
+    }
+    const fetched = runNarrac(context, scratch, scratch.work, [], ["pkg", appFolder])
+    const locked = runNarrac(context, scratch, scratch.work, [], ["pkg", "--locked", appFolder])
+    if (fetched.code != 0 || locked.code != 0) {
+      return Err(`pkg: ${Common.describeRun(fetched)}\npkg --locked: ${Common.describeRun(locked)}`)
+    }
+    return Common.compareText("pkg --locked against pkg", fetched.output, locked.output)
   }
-  if (variant == "build-same-path" || variant == "build-exports") {
+  if (
+    variant == "build-same-path" ||
+      variant == "build-exports" ||
+      variant == "build-two-lines-exports" ||
+      variant == "build-two-lines-workspace"
+  ) {
     return runSamePath(context, scratch, appFolder, caseFolder)
   }
   if (variant == "build-error-lock-mismatch") {

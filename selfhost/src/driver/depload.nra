@@ -15,6 +15,7 @@ import {
   checkAgainstLock,
   findCheckoutPackage,
   findLineKey,
+  findPackageName,
   resolveDependencies,
 } from "narrac/driver/depresolve"
 import { LockEntry, formatLock, parseLock } from "narrac/driver/lockfile"
@@ -105,11 +106,23 @@ function listDeclaredNames(
   return declared
 }
 
-export function findPackageName(buildName: string): string uses alloc {
-  if (Str.indexOf(buildName, "@") is Some(position)) {
-    return substring(buildName, 0, position)
+function renameExportKeys(
+  entries: Array<ExportEntry>,
+  name: string,
+  buildName: string,
+): Array<ExportEntry> uses alloc {
+  // The keys of a package on several lines name the line, as its importers' paths do.
+  let renamed: Array<ExportEntry> = []
+  for (const entry of Arrays.values(entries)) {
+    let key = entry.key
+    if (key == name) {
+      key = buildName
+    } else if (Str.startsWith(key, `${name}/`)) {
+      key = `${buildName}${Str.sliceFrom(key, Str.length(name))}`
+    }
+    Arrays.push(mutable renamed, ExportEntry { ...entry, key })
   }
-  return buildName
+  return renamed
 }
 
 export function renameLineImports(
@@ -240,13 +253,14 @@ function listPackages(
     if (upstream is Err(error)) {
       return Err(error)
     }
+    const buildName = findBuildName(lineNames, entry.name, entry.version)
     Arrays.push(mutable packages, DependencyPackage {
-      name: findBuildName(lineNames, entry.name, entry.version),
+      name: buildName,
       version: entry.version,
       git: entry.git,
       directory: found.value.directory,
       declared,
-      exports: manifest.exports,
+      exports: renameExportKeys(manifest.exports, entry.name, buildName),
       cTables: manifest.cTables,
       upstream: upstream.value,
     })
@@ -640,6 +654,22 @@ export function findUndeclaredImports(
 ): Array<LoadError> uses alloc {
   let errors: Array<LoadError> = []
   for (const importDecl of Arrays.values(imports)) {
+    // A line is never written: only the loader renames an import to `name@line`.
+    let writtenSegment = importDecl.writtenPath
+    if (Str.indexOf(importDecl.writtenPath, "/") is Some(position)) {
+      writtenSegment = substring(importDecl.writtenPath, 0, position)
+    }
+    if (Str.indexOf(writtenSegment, "@") is Some(at)) {
+      const plain = `${substring(writtenSegment, 0, at)}${Str.sliceFrom(importDecl.writtenPath, Str.length(writtenSegment))}`
+      Arrays.push(mutable errors, LoadError {
+        code: "E0464",
+        file,
+        line: importDecl.pos.line,
+        column: importDecl.pos.column,
+        message: `the import path "${importDecl.writtenPath}" names a compatibility line; write "${plain}", and narra.toml picks the line`,
+      })
+      continue
+    }
     // Only the package itself, std and the packages its manifest lists may be imported.
     const slash = Str.indexOf(importDecl.path, "/")
     if (slash is None) {

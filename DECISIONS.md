@@ -2094,7 +2094,7 @@ Built (node std-async-fold).
 Decision (maintainer, 2026-11-27): minimal version selection checks that the selected version of each package is on the compatibility line of every requirement on it. A requirement on another line is error E0459.
 
 1. **The line.** The major version from 1.0.0 up. Below 1.0.0 it is `0.MINOR`, so a 0.x minor bump is a breaking change, as in Cargo and npm's `^`. Each `0.0.PATCH` is a line of its own.
-2. **Which requirements count.** Those of the root manifests and of the selected version of each package. A version that lost the selection is not in the build, so its requirements are not checked.
+2. **Which requirements are checked.** Those of the root manifests and of the selected version of each package. A version that lost the selection is not in the build, so its requirements are not checked. They still raise the selection, as in Go's minimal version selection, so a lost version can pick a version on another line than a selected package asks for. The error then names the lost version, marked `(a version not in the build)`, and the fix is the same: update a requirement or add an override.
 3. **Overrides.** An `[overrides]` entry forces one version, and requirements on its name are not checked.
 4. **The message** names both requesters: `c 0.2.0 is selected because b 1.0.0 requires it, but a 1.0.0 requires 0.1.0, which is on line 0.1, not 0.2`.
 

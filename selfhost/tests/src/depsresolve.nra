@@ -3,7 +3,8 @@
 // `repos/<repo>/<tag folder>/` (one commit per folder, a `+` in the folder name stands for the `/`
 // of a member tag) and `expected.txt` (name, version and URL of each locked package) or `error.txt`
 // (the code of the error). `@REPOS@` in a manifest or in `expected.txt` is the folder of the
-// fixture repositories as a file:// URL, so no case reaches the network.
+// fixture repositories as a file:// URL, so no case reaches the network. An `error.txt` with more
+// than the code holds the whole first line of stderr after `error `, such as `E0459: c 2.0.0 is ...`.
 import * as Arrays from "std/array"
 import * as Fs from "std/fs"
 import * as Path from "std/path"
@@ -39,6 +40,7 @@ const CASE_NAMES = [
   "resolve-error-two-lines",
   "resolve-error-two-zero-minors",
   "resolve-error-two-zero-patches",
+  "resolve-error-lines-unselected",
 ]
 
 const MEMBER_CASE_NAMES = [
@@ -155,12 +157,19 @@ function runResolve(
   return Common.runNarracWith(context, scratch.work, environment, command)
 }
 
-function expectFailure(result: CommandResult, code: string): Result<bool, string> uses alloc {
+function expectFailure(result: CommandResult, want: string): Result<bool, string> uses alloc {
   if (result.code != 1 || result.output != "") {
     return Err(`want exit code 1 and no stdout, got ${Common.describeRun(result)}`)
   }
-  if (!Str.startsWith(result.errorOutput, `error ${code}: `)) {
-    return Err(`want error ${code}, got ${Common.describeRun(result)}`)
+  // A bare code checks the code; a code with its message checks the whole line.
+  if (Str.length(want) > 5) {
+    if (splitString(result.errorOutput, "\n")[0] != `error ${want}`) {
+      return Err(`want error ${want}, got ${Common.describeRun(result)}`)
+    }
+    return Ok(true)
+  }
+  if (!Str.startsWith(result.errorOutput, `error ${want}: `)) {
+    return Err(`want error ${want}, got ${Common.describeRun(result)}`)
   }
   return Ok(true)
 }

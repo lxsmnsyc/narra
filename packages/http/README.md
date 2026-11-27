@@ -6,7 +6,14 @@ This package speaks plain HTTP. It has no TLS: run a server behind a proxy that 
 
 ## Using the package
 
-Add it to the `[dependencies]` of your `narra.toml` (or as a workspace member, with `http = { workspace = true }`), then import the modules you need:
+Add this line to the `[dependencies]` table of your `narra.toml`:
+
+```toml
+[dependencies]
+http = { git = "https://github.com/lxsmnsyc/narra", version = "0.1.0" }
+```
+
+It needs narrac 0.2.0 or later. The next `narrac build` downloads the package and records it in `narra.lock`. Then import the modules you need:
 
 ```narra fragment
 import * as Bodies from "http/body"

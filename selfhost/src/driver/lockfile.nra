@@ -8,11 +8,13 @@ import * as Arrays from "std/array"
 import * as Ranges from "std/range"
 import {
   LoadError,
+  findCompatibilityLine,
   isValidPackageName,
   isVersion,
   parseString,
   stripComment,
 } from "narrac/driver/manifest"
+import { isVersionBefore } from "narrac/driver/depcache"
 import * as Sets from "std/set"
 import { Set } from "std/set"
 
@@ -83,8 +85,15 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
             ),
           )
         }
-        if (!Sets.add(mutable seen, name)) {
-          return Err(lockError(entryLine, "E0439", `two entries are named ${quoteToml(name)}`))
+        // One package may have one entry per compatibility line.
+        if (!Sets.add(mutable seen, `${name}@${findCompatibilityLine(version)}`)) {
+          return Err(
+            lockError(
+              entryLine,
+              "E0439",
+              `two entries are named ${quoteToml(name)} on line ${findCompatibilityLine(version)}`,
+            ),
+          )
         }
         Arrays.push(mutable entries, LockEntry {
           name,
@@ -169,14 +178,28 @@ export function parseLock(text: string): Result<Array<LockEntry>, LoadError> use
   return Ok(entries)
 }
 
+function compareEntries(first: LockEntry, second: LockEntry): Ordering uses alloc {
+  const byName = Ordered.compare(first.name, second.name)
+  if (byName != Ordering.Equal) {
+    return byName
+  }
+  if (isVersionBefore(first.version, second.version)) {
+    return Ordering.Less
+  }
+  if (isVersionBefore(second.version, first.version)) {
+    return Ordering.Greater
+  }
+  return Ordering.Equal
+}
+
 export function formatLock(entries: Array<LockEntry>): string uses alloc {
   let order: Array<int> = []
   for (const index of Ranges.between(0, Arrays.length(entries))) {
     Arrays.push(mutable order, index)
   }
-  Arrays.sortBy(mutable order, (first: int, second: int) => Ordered.compare(
-    entries[first].name,
-    entries[second].name,
+  Arrays.sortBy(mutable order, (first: int, second: int) => compareEntries(
+    entries[first],
+    entries[second],
   ))
   let builder = Str.builder()
   Str.append(mutable builder, LOCK_HEADER)

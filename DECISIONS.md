@@ -2089,17 +2089,20 @@ Decision (maintainer, 2026-11-20, batch-22): each std function has one form, asy
 
 Built (node std-async-fold).
 
-## D126. Compatibility lines in version selection
+## D126. One version per compatibility line, and several lines in one build
 
-Decision (maintainer, 2026-11-27): minimal version selection checks that the selected version of each package is on the compatibility line of every requirement on it. A requirement on another line is error E0459.
+Decision (maintainer, 2026-11-27): version selection picks one version per compatibility line of a package, and a build may hold several lines of one package.
 
 1. **The line.** The major version from 1.0.0 up. Below 1.0.0 it is `0.MINOR`, so a 0.x minor bump is a breaking change, as in Cargo and npm's `^`. Each `0.0.PATCH` is a line of its own.
-2. **Which requirements are checked.** Those of the root manifests and of the selected version of each package. A version that lost the selection is not in the build, so its requirements are not checked. They still raise the selection, as in Go's minimal version selection, so a lost version can pick a version on another line than a selected package asks for. The error then names the lost version, marked `(a version not in the build)`, and the fix is the same: update a requirement or add an override.
-3. **Overrides.** An `[overrides]` entry forces one version, and requirements on its name are not checked.
-4. **The message** names both requesters: `c 0.2.0 is selected because b 1.0.0 requires it, but a 1.0.0 requires 0.1.0, which is on line 0.1, not 0.2`.
+2. **Selection.** Each line gets the highest version that a requirement on that line names. Requirements on one line merge; requirements on two lines give two packages, as in Cargo.
+3. **Only what is in the build counts.** A line is in the build when a root, or the selected version of a line in the build, requires it. A version that lost the selection may have been fetched to read its manifest, but its requirements add no package and no line to the build or the lock, so it cannot cause an error either.
+4. **Names in the build.** A package on one line keeps its name, so module paths and C names do not change. A package on several lines becomes `name@line` (`json@1`, `json@0.2`) in module paths, C name hashes and diagnostics. Each importer's `"json/..."` is renamed to the line its own manifest requires, and a package imports its own modules on its own line. The two lines share no types.
+5. **C packages.** A package with `[c]` tables has one line per build, since its C files compile and link once. Two lines of it are error E0459, which names both requesters.
+6. **Overrides** put every requirement on their name on one version, so an overridden package has one line.
+7. **The lock** has one entry per name and line (E0439 for a repeat), sorted by name, then version.
 
-- **Reason.** Before this, a requirement on `json 1.2.0` and one on `json 2.0.0` were merged into `2.0.0` without a word, and the package that asked for 1.2.0 was built against an API it never saw. The first-party packages are at 0.x, where every minor bump may break.
-- **Rejected:** two versions of one package in a build (SPEC section 15 forbids it; a new major line that must live beside the old one takes a new name, such as `json2`); Go's rule that a major version from 2 up changes the import path (it puts the version into every import).
-- **Amends** D16.
+- **Reason.** Merging requirements on different lines built a package against an API it never saw, and an error on every split left a user stuck until each dependency moved to the same line. The first-party packages are at 0.x, where every minor bump may break, so splits will be common.
+- **Rejected:** an error for every split (users cannot fix it in their own manifest); Go's rule that a lost version's requirements still raise the selection (it adds packages and errors from versions not in the build); Go's major version in the import path (it puts the version into every import); npm's copy per range (two versions of one line add size and split types for no compatibility gain).
+- **Amends** D16 and SPEC section 15 ("one version per package").
 
-Built (branch feat/compatibility-lines): `checkCompatibilityLines` in `selfhost/src/driver/depresolve.nra`.
+Built (branch feat/compatibility-lines): selection by line, pruning and the C check in `selfhost/src/driver/depresolve.nra`; build names and import renaming in `selfhost/src/driver/depload.nra` and `modules.nra`.

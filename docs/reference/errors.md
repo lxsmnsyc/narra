@@ -1872,10 +1872,10 @@ Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it ag
 #### E0439
 
 ```text
-two entries are named %q
+two entries are named %q on line %s
 ```
 
-Two entries of `narra.lock` have the same name. Each package has one entry.
+Two entries of `narra.lock` have the same name and the same compatibility line. A package has one entry for each line in the build.
 
 Fix: undo the edit, or delete `narra.lock` and run `narrac build` to write it again.
 
@@ -2033,10 +2033,10 @@ Fix: check that the file exists and that you may read and write it.
 #### E0459
 
 ```text
-%s %s is selected because %s requires it, but %s requires %s, which is on line %s, not %s
+%s has C sources, so a build can have one version of it, but %s requires %s and %s requires %s, on lines %s and %s
 ```
 
-Two packages in the build require versions of one package on different compatibility lines. The line is the major version from 1.0.0 up, `0.MINOR` below it, and the whole version for `0.0.PATCH`. A version on another line may break the package that asked for the older one, so the two are not merged. Only the roots and the selected version of each package count.
+Two packages in the build require versions of a package with C sources on different compatibility lines. A build can hold two lines of a Narra package, but the C files of a package compile and link once, so a package with `[c]` tables has one version in a build. The line is the major version from 1.0.0 up, `0.MINOR` below it, and the whole version for `0.0.PATCH`.
 
 Fix: update the package that requires the older line, or force one version with `[overrides]` in the root manifest.
 
